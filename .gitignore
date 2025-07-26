@@ -1,0 +1,6 @@
+.DS_Store
+*.log
+*.db
+__pycache__/*
+env.json
+backup/backups/*
