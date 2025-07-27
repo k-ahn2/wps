@@ -169,10 +169,14 @@ def connect_handler(callsign, connect_object, CONN):
     # Create user if not seen already
     if callsign_search['data'] == None:
         is_new_user = 1
+        
+        default_subscriptions = env.get('autoSubscribeToChannelIds', [])
+        
         new_user_object = {
             "callsign": callsign,
             "name": name_from_client,
-            "last_connected": connect_timestamp
+            "last_connected": connect_timestamp,
+            "channel_subscriptions": default_subscriptions,
         }
 
         wps_logger("CONNECT HANDLER", callsign, f"New user to create: {new_user_object}")
@@ -1575,6 +1579,34 @@ def socket_send_handler(conn, payload):
         wps_logger("SOCKET SEND HANDLER", conn['callsign'], f"Error {e} when sending to {conn}", "ERROR")
         close_connection(conn['callsign'], conn)
 
+def check_auto_subscriptions():
+    try:
+        default_subscriptions = env.get('autoSubscribeToChannelIds', [])
+        
+        select_query = f"""
+        SELECT json_extract(user, '$.callsign') as callsign,
+                json_extract(user, '$.channel_subscriptions') as channel_subscriptions
+        FROM users
+        """
+        cursor.execute(select_query)
+        
+        for row in list(cursor):
+            channel_subscriptions = [] if row[1] is None else json.loads(row[1])
+            callsign = row[0]
+            original_length = len(channel_subscriptions)
+
+            for default_subscription in default_subscriptions:
+                channel_subscriptions.append(default_subscription) if default_subscription not in channel_subscriptions else None
+            
+            if len(channel_subscriptions) > original_length:
+                user_update_response = dbUserUpdate(callsign, { "channel_subscriptions": channel_subscriptions })
+                if user_update_response['result'] == 'failure':
+                    wps_logger("AUTO SUBSCRIBE HANDLER", row[0], f"Failed to update user subscriptions for {row[0]}", "ERROR")
+
+    except Exception as e:
+        wps_logger("AUTO SUBSCRIBE HANDLER", "-----", f"Error processing auto-subscription: {e}", "ERROR")
+        return
+
 def startup_and_listen():
     print('WPS Started')
     print(f"Using database {env['dbFilename']}")
@@ -1582,6 +1614,9 @@ def startup_and_listen():
 
     # Create the database tables, if they don't exist
     dbInit()
+
+    # Confirm users are subscribed to the default channels
+    check_auto_subscriptions()
 
     # Update all users as offline in the database
     online_users_response = dbGetOnlineUsers()

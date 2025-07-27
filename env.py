@@ -16,6 +16,7 @@ env_template = {
     "notificationsEnabled": False,
     "notificationsProdId": "",
     "notificationsProdRestKey": "",
+    "autoSubscribeToChannelIds": [],
     "channels": {}
 }
 
