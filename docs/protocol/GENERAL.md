@@ -180,7 +180,7 @@ Used by Channels to fetch a user's name.
 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
-|Type|`t`|`he`|String|Always type ‘hE’ for Ham Enquiry
+|Type|`t`|`he`|String|Always type ‘he’ for Ham Enquiry
 |Callsigns as Strings|`h`|`[]`|Array|An array of callsigns, each as a string
 
 ### JSON Example
@@ -199,7 +199,7 @@ Used by Channels to fetch a user's name.
 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
-|Type|`t`|`he`|String|Always type ‘hE’ for Ham Enquiry
+|Type|`t`|`he`|String|Always type ‘he’ for Ham Enquiry
 |Callsigns as Objects|`h`|`[]`|Array|An array of callsign objects
 |**Callsign Objects**|
 |Callsign|`c`|`M0AHN`|String|User's callsign, from the user record in the WPS database
