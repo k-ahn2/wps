@@ -139,7 +139,7 @@ Used to determine if a user is registered with WPS
 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
-|Type|`t`|`ue`|String|Always type ‘uE’ for User Enquiry
+|Type|`t`|`ue`|String|Always type ‘ue’ for User Enquiry
 |Callsign|`c`|`M0AHN`|String|The callsign of the user you're enquiring about
 
 ### JSON Example
@@ -156,7 +156,7 @@ Used to determine if a user is registered with WPS
 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
-|Type|`t`|`ue`|String|Always type `ueR` for User Enquiry Response
+|Type|`t`|`ue`|String|Always type `ue` for User Enquiry response
 |Registered|`r`|`true` or `false`|Boolean|True if registered
 |Callsign|`c`|`G5ALF`|String|Callsign of the user enquired about
 
