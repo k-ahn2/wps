@@ -1,6 +1,6 @@
 # WPS - A Messaging Service and Protocol for Packet Radio
 
-WPS is a backend service and Layer 7 application protocol that provides messaging services over Packet Radio. Currently built to be published via a BPQ or Xrouter node, WPS is directly exposed to the AX:25 packet network and can be systematically accessed by end user applications. 
+WPS is a backend service and Layer 7 application protocol that provides messaging services over Packet Radio. Currently built to be published via a BPQ or Xrouter node, WPS is directly exposed to the AX.25 packet network and can be systematically accessed by end user applications. 
 
 WPS was built specifically to enable the functionality in the WhatsPac front end, but could be used by any Packet Radio messaging application that implements its protocol.
 
@@ -64,12 +64,12 @@ Links to documentation in the `/docs` directory
 
 WPS is designed for system access only - it does not provide a human interface for direct user access. To connect to WPS:
 
-1. An application opens an AX:25 connection to the node hosting WPS
+1. An application opens an AX.25 connection to the node hosting WPS
 2. The application sends `WPS` (or whichever name configured) and the node opens the TCP connection to WPS. WPS expects the first string to be the connecting user's callsign 
 3. The application then sends JSON compatible with the WPS Protocol and returns the corresponding JSON in response
 
 > [!TIP]
-> BPQ and Xrouter support publising an application directly onto the AX:25 network with a callsign and alias. If configured, steps 1 and 2 can be merged. A connecting application can invoke WPS directly upon connecting
+> BPQ and Xrouter support publicising an application directly onto the AX.25 network with a callsign and alias. If configured, steps 1 and 2 can be merged. A connecting application can invoke WPS directly upon connecting
 
 WPS is a reactive service - activity is only triggered upon receipt of an instruction from a connected user. It is also connection aware - if it recieves a message from M0AHN addressed to G5ALF and G5ALF is connected, WPS will send the message to G5ALF in real-time
 
@@ -90,14 +90,14 @@ Timestamps are used extensively in the design of WPS:
 - For Posts, the timestamp is also used to:
   - tell the sender how long a message took to reach the WPS by returning the server delivery timestamp `dts` to the client
   - tell connected recipients of a post the end-to-end delivery time, calculated by comparing the `ts` of the post to the timestamp it was received
-- When downloading new posts, either on connect, subscribe or in real time, WPS always sends Posts and Messages in timestamp ASCENDING order - i.e. oldest first. This ensures if a user gets disconnected, the client can resume from the last message
+- When downloading new posts, either on connect, subscribe or in real time, WPS always sends Posts and Messages in timestamp ASCENDING order - i.e. oldest first. This ensures if a user gets disconnected, the client can resume from the last message.
 
 > [!WARNING]
-> WPS works on the assumption that modern OSs have time syncronisation and therefore accurate clocks. Beware if offline or time syncronisation is not setup that sending posts and messages with an incorrect system clock could cause issues with certain functions
+> WPS works on the assumption that modern OSs have time synchronisation and therefore accurate clocks. Beware if offline or time synchronisation is not setup that sending posts and messages with an incorrect system clock could cause issues with certain functions
 
 ## How WPS handles JSON
 
-WPS receives everything from the packet network and node as a string, with discreet packets delimited by `\r\n` (13 decimal & 10 decimal), Additional delimiters are used for compressed packets. 
+WPS receives everything from the packet network and node as a string, with discrete packets delimited by `\r\n` (13 decimal & 10 decimal), Additional delimiters are used for compressed packets. 
 
 WPS preprocesses received strings by:
 - adding the string to an RX buffer
@@ -114,7 +114,7 @@ The only exceptions to the above are the first and second strings received:
 - If the second string fails conversion, this is likely a manual connect by a human. WPS returns a friendly message (configurable in `wps.py`) and then disconnects
 
 > [!IMPORTANT]
-> WPS strips the SSID, if one is received from the node. The WPS user is always the callsign minus any SSID
+> WPS strips the SSID, if one is received from the node. The WPS user is always the callsign minus any SSID.
 
 > [!NOTE]
 > The use of JSON offered many advantages when developing WPS:
