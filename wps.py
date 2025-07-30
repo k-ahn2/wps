@@ -544,7 +544,7 @@ def existing_connect_handler(callsign, connect_object, CONN, user_db_record, pre
     updated_hams_result = dbGetUpdatedHams(last_ham_timestamp)
 
     for ham in updated_hams_result['data']:
-        print(ham)
+        
         response["h"].append({
             "c": ham['callsign'],
             "n": ham['name'],
