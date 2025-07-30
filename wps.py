@@ -522,7 +522,7 @@ def existing_connect_handler(callsign, connect_object, CONN, user_db_record, pre
     
     # Quit if no channels are subscribed
     if 'cc' not in connect_object:
-        return None
+        connect_object['cc'] = []
     
     user_server_channel_subscriptions = user_db_record.get('channel_subscriptions', [])
 
@@ -544,13 +544,12 @@ def existing_connect_handler(callsign, connect_object, CONN, user_db_record, pre
     updated_hams_result = dbGetUpdatedHams(last_ham_timestamp)
 
     for ham in updated_hams_result['data']:
-
-        if ham['name_last_updated'] > previous_connect_timestamp:
-            response["h"].append({
-                "c": ham['callsign'],
-                "n": ham['name'],
-                "ts": ham.get('name_last_updated', 0)
-            })
+        print(ham)
+        response["h"].append({
+            "c": ham['callsign'],
+            "n": ham['name'],
+            "ts": ham.get('name_last_updated', 0)
+        })
 
     if len(response["h"]) > 0:
         wps_logger("CONNECT HANDLER", callsign, f"User name change response {response}")

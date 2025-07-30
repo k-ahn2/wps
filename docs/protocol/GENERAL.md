@@ -33,6 +33,7 @@ ___
 |Last Message|`lm`|`1740299150`|Number|Timestamp of last message - seconds since epoch|
 |Last Emoji|`le`|`1740266497`|Number|Timestamp of last message emoji - seconds since epoch|
 |Last Edit|`led`|`1739318078`|Number|Timestamp of last message edit - seconds since epoch|
+|Last Ham Timestamp|`lhts`|`1739318078`|Number|Timestamp of last Ham (i.e. User) update. Currently only changes on Name change|
 |Version|`v`|`0.44`|Number|Version of client, used for logging only|
 |Channel Connect|`cc`|`[]`|Array of Objects|Contains one JSON object per channel subscribed|
 |**Channel Connect Objects**|
@@ -51,6 +52,7 @@ ___
    "lm": 1740299150,
    "le": 1740266497,
    "led": 1739318078,
+   "lhts": 1740292240,
    "v": 0.44,
    "cc":[
       {
