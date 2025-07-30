@@ -909,7 +909,7 @@ def dbGetUpdatedHams(last_ham_update_timestamp):
         select_query = f"""
         SELECT user
         FROM users
-        WHERE json_extract(user, '$.name_last_updated') >= {sourceValueToJsonValue(last_ham_update_timestamp)}
+        WHERE json_extract(user, '$.name_last_updated') > {sourceValueToJsonValue(last_ham_update_timestamp)}
         """
         db_logger("dbGetUpdatedHams", "Query: " + ' '.join(select_query.split()))
 
