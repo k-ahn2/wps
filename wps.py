@@ -176,6 +176,7 @@ def connect_handler(callsign, connect_object, CONN):
             "callsign": callsign,
             "name": name_from_client,
             "last_connected": connect_timestamp,
+            "name_last_updated": connect_timestamp,
             "channel_subscriptions": default_subscriptions,
         }
 
@@ -249,7 +250,7 @@ def first_time_connect_handler(callsign, CONN, is_new_user):
     response = {
         "t": "c",
         "mc": 0,
-        "pc": [],
+        "pc": 0,
         "w": 1 if is_new_user else 0
     }
     CONN.send(frame_and_compress_json_object(response).encode())
@@ -322,6 +323,7 @@ def existing_connect_handler(callsign, connect_object, CONN, user_db_record, pre
     last_message = connect_object.get('lm', 0)
     last_message_emoji = connect_object.get('le', 0)
     last_message_edit = connect_object.get('led', 0)
+    last_ham_timestamp = connect_object.get('lhts', 0)
     channel_subscriptions = connect_object.get('cc', [])
     client_version = connect_object.get('v', 0)
 
@@ -539,16 +541,15 @@ def existing_connect_handler(callsign, connect_object, CONN, user_db_record, pre
 
     response = { "t": "he", "h": [] }
 
-    for user in messaged_users_result['data']:
-        # wps_logger("CONNECT HANDLER", callsign, "Sending name update for " + user['callsign'])
+    updated_hams_result = dbGetUpdatedHams(last_ham_timestamp)
 
-        # if not user.has_key('name'):
-        #     continue
+    for ham in updated_hams_result['data']:
 
-        if user['name_last_updated'] > previous_connect_timestamp:
+        if ham['name_last_updated'] > previous_connect_timestamp:
             response["h"].append({
-                "c": user['callsign'],
-                "n": user['name']
+                "c": ham['callsign'],
+                "n": ham['name'],
+                "ts": ham.get('name_last_updated', 0)
             })
 
     if len(response["h"]) > 0:
@@ -1252,7 +1253,7 @@ def post_batch_handler(post_batch_request, callsign, CONN):
             post_count = channel_posts_batch_array['m']['pt']
 
         channel_posts_batch_array['p'] = post_batch
-        channel_posts_batch_array['m']['pC'] = post_count
+        channel_posts_batch_array['m']['pc'] = post_count
         wps_logger('POST BATCH HANDLER', callsign, f"Channel connect response batch: {channel_posts_batch_array}")
         CONN.send(frame_and_compress_json_object(channel_posts_batch_array).encode()) 
 

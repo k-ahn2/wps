@@ -903,3 +903,33 @@ def dbMessageCountToRecipient(callsign, recipient_callsign):
         }
         db_logger("dbMessageCountToRecipient", "Return: " + str(return_error), 'ERROR')
         return return_error
+    
+def dbGetUpdatedHams(last_ham_update_timestamp, connected_timestamp):
+    try:
+        select_query = f"""
+        SELECT user
+        FROM users
+        WHERE json_extract(user, '$.name_last_updated') = {sourceValueToJsonValue(last_ham_update_timestamp)}
+        """
+        db_logger("dbGetUpdatedHams", "Query: " + ' '.join(select_query.split()))
+
+        cursor.execute(select_query)
+        result = [i[0] for i in cursor]
+
+        return_success = {
+            "result": "success",
+            "data": json.loads(result[0]) if len(result) == 1 else None,
+        }
+
+        db_logger("dbGetUpdatedHams", "Return: " + str(return_success))
+        return return_success
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbGetUpdatedHams",
+            "params": [ last_ham_update_timestamp, connected_timestamp ]
+        }
+        db_logger("dbGetUpdatedHams", "Return: " + str(return_error), 'ERROR')
+        return return_error   
