@@ -193,7 +193,7 @@ def dbGetMessages(callsign, last_message):
         db_logger("dbGetMessages", "Query: " + ' '.join(select_query.split()))
 
         cursor.execute(select_query)
-        result = [json.loads(i) for i in cursor]
+        result = [json.loads(i[0]) for i in cursor]
 
         for message in result:
             message['m'] = message['m'].replace("''", "'")
@@ -296,7 +296,7 @@ def dbGetPosts(channel_id, last_post):
         db_logger("dbGetPosts", "Query: " + ' '.join(select_query.split()))
 
         cursor.execute(select_query)
-        result = [json.loads(i) for i in result]
+        result = [json.loads(i[0]) for i in cursor]
 
         for post in result:
             post['p'] = post['p'].replace("''", "'")
