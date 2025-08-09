@@ -45,10 +45,10 @@ CONNECTIONS = []
 
 # String to return when someone manually connects and sends unknown text
 invalid_connect_reponse = """Welcome to WhatsPac Server\r
-                            I didn't recognise that command and guess you have connected manually.\r
-                            To use this service you need to connect using the WhatsPac Client - head to http://whatspac.m0ahn.co.uk:88 and follow the instructions there.\r
-                            You'll now be disconnected, thanks!\r
-                            """
+I didn't recognise that command and guess you have connected manually.\r
+To use this service you need to connect using the WhatsPac Client - head to http://whatspac.m0ahn.co.uk:88 and follow the instructions there.\r
+You'll now be disconnected, thanks!\r
+"""
 
 # Channel names for push notifcations
 channel_names = env['channels']
@@ -997,7 +997,7 @@ def post_handler(post, callsign, CONN):
             return
         else:
             wps_logger("CHANNELS POST HANDLER", callsign, "No existing post found, inserting")
-            wps_logger("CHANNELS POST HANDLER", callsign, "Post to insert: {post}")
+            wps_logger("CHANNELS POST HANDLER", callsign, f"Post to insert: {post}")
             post_insert_response = dbInsertPost(post)
             close_connection(callsign, CONN) if post_insert_response['result'] == 'failure' else None
             wps_logger("CHANNELS POST HANDLER", callsign, f"Client acknowledgment is {post_insert_response}")
