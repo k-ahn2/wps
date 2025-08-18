@@ -175,7 +175,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
 
     callsign_search = dbUserSearch(CONN_DB_CURSOR, callsign)
     wps_logger("CONNECT HANDLER", callsign, f"User search result: {callsign_search}")
-    close_connection(CONN_DB_CURSOR, CONN_DB_CURSOR, callsign, CONN) if callsign_search['result'] == 'failure' else None
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if callsign_search['result'] == 'failure' else None
 
     # Create user if not seen already
     if callsign_search['data'] == None:
@@ -194,7 +194,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
         wps_logger("CONNECT HANDLER", callsign, f"New user to create: {new_user_object}")
         create_user_response = dbCreateNewUser(CONN_DB_CURSOR, new_user_object)
         wps_logger("CONNECT HANDLER", callsign, f"Create user response: {create_user_response}")
-        close_connection(CONN_DB_CURSOR, CONN_DB_CURSOR, callsign, CONN) if create_user_response['result'] == 'failure' else None
+        close_connection(CONN_DB_CURSOR, callsign, CONN) if create_user_response['result'] == 'failure' else None
 
         user_database_record = new_user_object
     else:
@@ -1593,7 +1593,7 @@ def socket_send_handler(conn, payload):
         conn['socket'].send((json.dumps(payload, separators=(',', ':'))+'\r').encode())
     except Exception as e:
         wps_logger("SOCKET SEND HANDLER", conn['callsign'], f"Error {e} when sending to {conn}", "ERROR")
-        close_connection(CONN_DB_CURSOR, CONN_DB_CURSOR, conn['callsign'], conn)
+        close_connection(CONN_DB_CURSOR, conn['callsign'], conn)
 
 def check_auto_subscriptions(cursor):
     try:
@@ -1674,7 +1674,7 @@ def startup_and_listen():
         for C in CONNECTIONS:
             wps_logger("CONNECTION HANDLER", "-----", f"Closing connection for {C['callsign']}")
             print("Closing connection for " + C['callsign'])
-            close_connection(CONN_DB_CURSOR, CONN_DB_CURSOR, C['callsign'], C['socket'])
+            close_connection(CONN_DB_CURSOR, C['callsign'], C['socket'])
             time.sleep(2)
 
         for t in ALL_THREADS:
