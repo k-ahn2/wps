@@ -23,21 +23,15 @@ def db_logger(function_name, log, log_entry_level = 'INFO'):
 # https://docs.python.org/3/library/sqlite3.html#sqlite3.threadsafety
 sqlite3.threadsafety = 3 
 db = sqlite3.connect(DB_FILENAME, check_same_thread=False)
-cursor = db.cursor()
 
-# Output the SQLite version to the console
-cursor.execute('''select sqlite_version()''')
-version = [i[0] for i in cursor]
-print("SQLite Version " + version[0])
-
-def dbInit():
+def dbInit(CONN_DB_CURSOR):
     create_users_table = '''
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user TEXT
     );
     '''
-    cursor.execute(create_users_table)
+    CONN_DB_CURSOR.execute(create_users_table)
 
     create_messages_table = '''
     CREATE TABLE IF NOT EXISTS messages (
@@ -45,7 +39,7 @@ def dbInit():
         message TEXT
     );
     '''
-    cursor.execute(create_messages_table)
+    CONN_DB_CURSOR.execute(create_messages_table)
 
     create_posts_table = '''
     CREATE TABLE IF NOT EXISTS posts (
@@ -53,7 +47,7 @@ def dbInit():
         post TEXT
     );
     '''
-    cursor.execute(create_posts_table)
+    CONN_DB_CURSOR.execute(create_posts_table)
 
     db.commit()
 
@@ -70,7 +64,7 @@ def sourceValueToJsonValue(value):
         # Else retrurn the value as a string with quotes
         return f"'{value}'"
     
-def dbUserSearch(callsign):
+def dbUserSearch(CONN_DB_CURSOR, callsign):
     try:
         select_query = f"""
         SELECT user
@@ -79,8 +73,8 @@ def dbUserSearch(callsign):
         """
         db_logger("dbUserSearch", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [i[0] for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [i[0] for i in CONN_DB_CURSOR]
 
         if len(result) > 1:
             raise Exception(f"Multiple users found when searching for {callsign}")
@@ -103,7 +97,7 @@ def dbUserSearch(callsign):
         db_logger("dbUserSearch", "Return: " + str(return_error), 'ERROR')
         return return_error        
 
-def dbUserUpdate(callsign, update_object):
+def dbUserUpdate(CONN_DB_CURSOR, callsign, update_object):
     fieldsToUpdate = "user = json_set(user, "
     for index, key in enumerate(update_object.keys()):
         fieldsToUpdate += ", " if index != 0 else ''
@@ -118,10 +112,10 @@ def dbUserUpdate(callsign, update_object):
         """
         db_logger("dbUserUpdate", "Query: " + ' '.join(update_query.split()))
 
-        cursor.execute(update_query)
+        CONN_DB_CURSOR.execute(update_query)
         db.commit()
         
-        user_search = dbUserSearch(callsign)
+        user_search = dbUserSearch(CONN_DB_CURSOR, callsign)
         if user_search['result'] == 'failure' or user_search['data'] == None:
             raise Exception(f"Failed to retrieve user {callsign} after update.")
         
@@ -143,14 +137,14 @@ def dbUserUpdate(callsign, update_object):
         db_logger("dbUserUpdate", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbCreateNewUser(user_object):
+def dbCreateNewUser(CONN_DB_CURSOR, user_object):
     try:
         # Check if the user object contains a callsign
         if 'callsign' not in user_object:  
             raise Exception("New user object does not contain callsign")
 
         # Confirm user doesn't already exist
-        user_search = dbUserSearch(user_object['callsign'])
+        user_search = dbUserSearch(CONN_DB_CURSOR, user_object['callsign'])
         if (user_search['result'] == 'success' and user_search['data'] != None) or user_search['result'] == 'failure':
             raise Exception(f"User {user_object['callsign']} already exists in the database or other error")
 
@@ -160,7 +154,7 @@ def dbCreateNewUser(user_object):
         """
         db_logger("dbCreateNewUser", "Query: " + ' '.join(insert_query.split()))
 
-        cursor.execute(insert_query)
+        CONN_DB_CURSOR.execute(insert_query)
         db.commit()
 
         return_success = {
@@ -180,7 +174,7 @@ def dbCreateNewUser(user_object):
         db_logger("dbCreateNewUser", "Return: " + str(return_error), 'ERROR')
         return return_error
     
-def dbGetMessages(callsign, last_message):
+def dbGetMessages(CONN_DB_CURSOR, callsign, last_message):
     try:
         select_query = f"""
         SELECT message
@@ -192,8 +186,8 @@ def dbGetMessages(callsign, last_message):
         """
         db_logger("dbGetMessages", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [json.loads(i[0]) for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [json.loads(i[0]) for i in CONN_DB_CURSOR]
 
         for message in result:
             message['m'] = message['m'].replace("''", "'")
@@ -215,7 +209,7 @@ def dbGetMessages(callsign, last_message):
         db_logger("dbGetMessages", "Return: " + str(return_error), 'ERROR')
         return return_error
     
-def dbGetMessageEdits(callsign, last_message, last_message_edit):
+def dbGetMessageEdits(CONN_DB_CURSOR, callsign, last_message, last_message_edit):
     # New messages retutned by getMessages already include edits and emojis, so we only need to return edits that were made before
     try:
         select_query = f"""
@@ -229,8 +223,8 @@ def dbGetMessageEdits(callsign, last_message, last_message_edit):
         """
         db_logger("dbGetMessageEdits", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [i[0] for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
             "result": "success",
@@ -249,7 +243,7 @@ def dbGetMessageEdits(callsign, last_message, last_message_edit):
         db_logger("dbGetMessageEdits", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbGetMessageEmojis(callsign, last_message, last_message_emoji):
+def dbGetMessageEmojis(CONN_DB_CURSOR, callsign, last_message, last_message_emoji):
     # New messages retutned by getMessages already include edits and emojis, so we only need to return edits that were made before
     try:
         select_query = f"""
@@ -263,8 +257,8 @@ def dbGetMessageEmojis(callsign, last_message, last_message_emoji):
         """
         db_logger("dbGetMessageEmojis", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [i[0] for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
             "result": "success",
@@ -283,7 +277,7 @@ def dbGetMessageEmojis(callsign, last_message, last_message_emoji):
         db_logger("dbGetMessageEmojis", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbGetPosts(channel_id, last_post):
+def dbGetPosts(CONN_DB_CURSOR, channel_id, last_post):
     try:
         select_query = f"""
         SELECT post
@@ -295,8 +289,8 @@ def dbGetPosts(channel_id, last_post):
         """
         db_logger("dbGetPosts", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [json.loads(i[0]) for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [json.loads(i[0]) for i in CONN_DB_CURSOR]
 
         for post in result:
             post['p'] = post['p'].replace("''", "'")
@@ -318,7 +312,7 @@ def dbGetPosts(channel_id, last_post):
         db_logger("dbGetPosts", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbGetPostEdits(channel_id, last_post_edit, last_post):
+def dbGetPostEdits(CONN_DB_CURSOR, channel_id, last_post_edit, last_post):
     try:
         select_query = f"""
         SELECT post
@@ -332,8 +326,8 @@ def dbGetPostEdits(channel_id, last_post_edit, last_post):
         """
         db_logger("dbGetPostEdits", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [i[0] for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
             "result": "success",
@@ -352,7 +346,7 @@ def dbGetPostEdits(channel_id, last_post_edit, last_post):
         db_logger("dbGetPostEdits", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbGetPostEmojis(channel_id, last_post_emoji, last_post):
+def dbGetPostEmojis(CONN_DB_CURSOR, channel_id, last_post_emoji, last_post):
     try:
         select_query = f"""
         SELECT post
@@ -366,8 +360,8 @@ def dbGetPostEmojis(channel_id, last_post_emoji, last_post):
         """
         db_logger("dbGetPostEmojis", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [i[0] for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
             "result": "success",
@@ -386,7 +380,7 @@ def dbGetPostEmojis(channel_id, last_post_emoji, last_post):
         db_logger("dbGetPostEmojis", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbGetOnlineUsers():
+def dbGetOnlineUsers(CONN_DB_CURSOR):
     try:
         select_query = """
         SELECT user
@@ -395,8 +389,8 @@ def dbGetOnlineUsers():
         """
         db_logger("dbGetOnlineUsers", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [i[0] for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
             "result": "success",
@@ -415,7 +409,7 @@ def dbGetOnlineUsers():
         db_logger("dbGetOnlineUsers", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbGetMessagedUsers(callsign):
+def dbGetMessagedUsers(CONN_DB_CURSOR, callsign):
 
     try:
         select_query = f"""
@@ -441,9 +435,9 @@ def dbGetMessagedUsers(callsign):
         """
         db_logger("dbGetMessagedUsers", "Query: " + ' '.join(select_query.split()))
         
-        cursor.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query)
         result = []
-        for row in cursor:
+        for row in CONN_DB_CURSOR:
             result.append({
                 "callsign": row[0],
                 "name": row[1],
@@ -470,7 +464,7 @@ def dbGetMessagedUsers(callsign):
         db_logger("dbGetMessagedUsers", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbCleanupDepracatedLastSeenKey(callsign):
+def dbCleanupDepracatedLastSeenKey(CONN_DB_CURSOR, callsign):
     try:
         delete_query = f"""
         UPDATE users
@@ -480,7 +474,7 @@ def dbCleanupDepracatedLastSeenKey(callsign):
         """
         db_logger("dbCleanupDepracatedLastSeenKey", "Query: " + ' '.join(delete_query.split()))
 
-        cursor.execute(delete_query)
+        CONN_DB_CURSOR.execute(delete_query)
         db.commit()
 
         return_success = {
@@ -500,7 +494,7 @@ def dbCleanupDepracatedLastSeenKey(callsign):
         db_logger("dbCleanupDepracatedLastSeenKey", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbInsertMessage(message):
+def dbInsertMessage(CONN_DB_CURSOR, message):
     try:
         message['m'] = message['m'].replace("'", "''")
         
@@ -510,7 +504,7 @@ def dbInsertMessage(message):
         """
         db_logger("dbInsertMessage", "Query: " + ' '.join(insert_query.split()))
 
-        cursor.execute(insert_query)
+        CONN_DB_CURSOR.execute(insert_query)
         db.commit()
 
         return_success = {
@@ -530,7 +524,7 @@ def dbInsertMessage(message):
         db_logger("dbInsertMessage", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbMessageSearch(message_id):
+def dbMessageSearch(CONN_DB_CURSOR, message_id):
     try:
         select_query = f"""
         SELECT message
@@ -539,8 +533,8 @@ def dbMessageSearch(message_id):
         """
         db_logger("dbMessageSearch", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [i[0] for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [i[0] for i in CONN_DB_CURSOR]
 
         if len(result) > 1:
             raise Exception(f"Multiple messages found when searching for {message_id}")
@@ -562,7 +556,7 @@ def dbMessageSearch(message_id):
         db_logger("dbMessageSearch", "Return: " + str(return_error), 'ERROR')
         return return_error
     
-def dbUpdateMessage(message_id, update):
+def dbUpdateMessage(CONN_DB_CURSOR, message_id, update):
 
     if 'm' in update:
         update['m'] = update['m'].replace("'", "''")
@@ -581,10 +575,10 @@ def dbUpdateMessage(message_id, update):
         """
         db_logger("dbUpdateMessage", "Query: " + ' '.join(update_query.split()))
 
-        cursor.execute(update_query)
+        CONN_DB_CURSOR.execute(update_query)
         db.commit()
         
-        message_search = dbMessageSearch(message_id)
+        message_search = dbMessageSearch(CONN_DB_CURSOR, message_id)
         if message_search['result'] == 'failure' or message_search['data'] == None:
             raise Exception(f"Failed to retrieve user {message_id} after update.")
 
@@ -605,7 +599,7 @@ def dbUpdateMessage(message_id, update):
         db_logger("dbUpdateMessage", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbInsertPost(post):
+def dbInsertPost(CONN_DB_CURSOR, post):
     
     try:
         post['p'] = post['p'].replace("'", "''")
@@ -616,7 +610,7 @@ def dbInsertPost(post):
         """
         db_logger("dbInsertPost", "Query: " + ' '.join(insert_query.split()))
 
-        cursor.execute(insert_query)
+        CONN_DB_CURSOR.execute(insert_query)
         db.commit()
 
         return_success = {
@@ -636,7 +630,7 @@ def dbInsertPost(post):
         db_logger("dbInsertPost", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbPostSearch(channel_id, post_timestamp):
+def dbPostSearch(CONN_DB_CURSOR, channel_id, post_timestamp):
     try:
         select_query = f"""
         SELECT post
@@ -647,8 +641,8 @@ def dbPostSearch(channel_id, post_timestamp):
         """
         db_logger("dbPostSearch", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [i[0] for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [i[0] for i in CONN_DB_CURSOR]
         
         if len(result) > 1:
             raise Exception(f"Multiple posts found when searching for {post_timestamp} in channel {channel_id}")
@@ -670,7 +664,7 @@ def dbPostSearch(channel_id, post_timestamp):
         db_logger("dbPostSearch", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbUpdatePost(channel_id, post_timestamp, update):
+def dbUpdatePost(CONN_DB_CURSOR, channel_id, post_timestamp, update):
     
     if 'p' in update:
         update['p'] = update['p'].replace("'", "''")
@@ -691,10 +685,10 @@ def dbUpdatePost(channel_id, post_timestamp, update):
         """
         db_logger("dbUpdatePost", "Query: " + ' '.join(update_query.split()))
 
-        cursor.execute(update_query)
+        CONN_DB_CURSOR.execute(update_query)
         db.commit()
         
-        post_search = dbPostSearch(channel_id, post_timestamp)
+        post_search = dbPostSearch(CONN_DB_CURSOR, channel_id, post_timestamp)
         if post_search['result'] == 'failure' or post_search['data'] == None:
             raise Exception(f"Failed to retrieve post {post_timestamp} after update.")
 
@@ -715,7 +709,7 @@ def dbUpdatePost(channel_id, post_timestamp, update):
         db_logger("dbUpdatePost", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbChannelSubscribers(sending_callsign, channel_id):
+def dbChannelSubscribers(CONN_DB_CURSOR, sending_callsign, channel_id):
     try:
         select_query = f"""
         SELECT 
@@ -730,9 +724,9 @@ def dbChannelSubscribers(sending_callsign, channel_id):
         """
         db_logger("dbChannelSubscribers", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query)
         result = []
-        for row in cursor:
+        for row in CONN_DB_CURSOR:
             callsign = row[0]
             channel_subscriptions = json.loads(row[1]) if row[1] else []
             channel_notifications_since_last_logout = json.loads(row[2]) if row[2] else []
@@ -769,7 +763,7 @@ def dbChannelSubscribers(sending_callsign, channel_id):
         db_logger("dbChannelSubscribers", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbUpdateUserPushNotifications(callsign, channel_id):
+def dbUpdateUserPushNotifications(CONN_DB_CURSOR, callsign, channel_id):
     # Update the user with the new push devices
     try:
         update_query = f"""
@@ -779,7 +773,7 @@ def dbUpdateUserPushNotifications(callsign, channel_id):
         """
         db_logger("dbUpdateUserPushNotifications", "Query: " + ' '.join(update_query.split()))
 
-        cursor.execute(update_query)
+        CONN_DB_CURSOR.execute(update_query)
         db.commit()
 
         return_success = {
@@ -799,7 +793,7 @@ def dbUpdateUserPushNotifications(callsign, channel_id):
         db_logger("dbUpdateUserPushNotifications", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbGetPostsBatch(channel_id, bach_size):
+def dbGetPostsBatch(CONN_DB_CURSOR, channel_id, bach_size):
     try:
         select_query = f"""
         SELECT 
@@ -813,8 +807,8 @@ def dbGetPostsBatch(channel_id, bach_size):
         db_logger("dbGetPostsBatch", "Query: " + ' '.join(select_query.split()))
 
         result = []
-        cursor.execute(select_query)
-        for row in cursor:
+        CONN_DB_CURSOR.execute(select_query)
+        for row in CONN_DB_CURSOR:
             result.append(json.loads(row[1]))
 
         # Remove the Logged Timestamp field, not used by the client
@@ -843,7 +837,7 @@ def dbGetPostsBatch(channel_id, bach_size):
         db_logger("dbGetPostsBatch", "Return: " + str(return_error), 'ERROR')
         return return_error
 
-def dbGetLastMessages(callsign, recipient_callsign, message_limit):
+def dbGetLastMessages(CONN_DB_CURSOR, callsign, recipient_callsign, message_limit):
 
     try:
         select_query = f"""
@@ -859,8 +853,8 @@ def dbGetLastMessages(callsign, recipient_callsign, message_limit):
         """
         db_logger("dbGetLastMessages", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [i[0] for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
             "result": "success",
@@ -879,7 +873,7 @@ def dbGetLastMessages(callsign, recipient_callsign, message_limit):
         db_logger("dbGetLastMessages", "Return: " + str(return_error), 'ERROR')
         return return_error
     
-def dbMessageCountToRecipient(callsign, recipient_callsign):
+def dbMessageCountToRecipient(CONN_DB_CURSOR, callsign, recipient_callsign):
 
     try:
         select_query = f"""
@@ -891,8 +885,8 @@ def dbMessageCountToRecipient(callsign, recipient_callsign):
         """
         db_logger("dbMessageCountToRecipient", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
-        result = [i[0] for i in cursor]
+        CONN_DB_CURSOR.execute(select_query)
+        result = [i[0] for i in CONN_DB_CURSOR]
         return_success = {
             "result": "success",
             "data": result[0] if len(result) == 1 else 0,
@@ -910,7 +904,7 @@ def dbMessageCountToRecipient(callsign, recipient_callsign):
         db_logger("dbMessageCountToRecipient", "Return: " + str(return_error), 'ERROR')
         return return_error
     
-def dbGetUpdatedHams(last_ham_update_timestamp):
+def dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_update_timestamp):
     try:
         select_query = f"""
         SELECT user
@@ -919,11 +913,11 @@ def dbGetUpdatedHams(last_ham_update_timestamp):
         """
         db_logger("dbGetUpdatedHams", "Query: " + ' '.join(select_query.split()))
 
-        cursor.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query)
 
         return_success = {
             "result": "success",
-            "data": [json.loads(i[0]) for i in cursor]
+            "data": [json.loads(i[0]) for i in CONN_DB_CURSOR]
         }
 
         db_logger("dbGetUpdatedHams", "Return: " + str(return_success))
