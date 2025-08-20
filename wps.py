@@ -1307,7 +1307,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
             "c": callsign
         }
         wps_logger('ONLINE STATUS', callsign, f"Disconnect sent to {C['callsign']}")
-        socket_send_handler(C, disconnected_response)
+        socket_send_handler(CONN_DB_CURSOR, C, disconnected_response)
         
     # Output purely for the console
     rc = []
@@ -1387,7 +1387,7 @@ def connected_session_handler(CONN, ADDR):
 
         wps_logger('ONLINE STATUS', callsign, f"Connect sent to {c['callsign']}")
         connected_response = { "t": "uc", "c": callsign }
-        socket_send_handler(c, connected_response)
+        socket_send_handler(CONN_DB_CURSOR, c, connected_response)
 
     # Create an empty buffer and start listening for the first data
     CONNECTION_RX_BUFFER = ''
@@ -1586,7 +1586,7 @@ def connected_session_handler(CONN, ADDR):
             wps_logger("CONNECTION SESSION HANDLER", callsign, "Thread ending")
             break
 
-def socket_send_handler(conn, payload):
+def socket_send_handler(CONN_DB_CURSOR, conn, payload):
     wps_logger("SOCKET SEND HANDLER", conn['callsign'], f"Sending {payload}")
     wps_logger("SOCKET SEND HANDLER", conn['callsign'], f"to {conn}")
     try:
@@ -1674,7 +1674,7 @@ def startup_and_listen():
         for C in CONNECTIONS:
             wps_logger("CONNECTION HANDLER", "-----", f"Closing connection for {C['callsign']}")
             print("Closing connection for " + C['callsign'])
-            close_connection(CONN_DB_CURSOR, C['callsign'], C['socket'])
+            close_connection(global_cursor, C['callsign'], C['socket'])
             time.sleep(2)
 
         for t in ALL_THREADS:
