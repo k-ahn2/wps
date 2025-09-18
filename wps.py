@@ -1,10 +1,11 @@
 from env import *
-import uuid, time, datetime
+from db import *
+from handlers import *
+import uuid, time
 import threading
 import socket
 import json
 import zlib, base64
-from db import *
 import struct
 
 # Environment Variables
@@ -21,16 +22,6 @@ if env['notificationsEnabled']:
     ONESIGNAL_PROD_REST_KEY = env['notificationsProdRestKey']
 else:
     print('Push Notifications: Disabled')
-
-# Logging
-MIN_LOG_LEVEL = env['minWpsLogLevel']
-WPS_LOGFILE = open("wps.log", "a")
-
-def wps_logger(function_name, callsign, log, log_entry_level = 'INFO'):
-    if MIN_LOG_LEVEL == 'ERROR' and log_entry_level == 'INFO':
-        return
-    WPS_LOGFILE.write(f"{datetime.datetime.now().isoformat()} {log_entry_level} {callsign} {function_name} {str(log)}\n") 
-    WPS_LOGFILE.flush()
 
 # TCP Socket Setup
 HOST = '0.0.0.0'
@@ -737,7 +728,7 @@ def pairing_handler(CONN_DB_CURSOR, callsign, CONN):
         "e": True,
         "st": pair_start_time
     }
-    CONN.send((json.dumps(response, separators=(',', ':'))+'\r').encode())
+    CONN.send(frame_and_compress_json_object(response).encode()) 
     return 
 
 def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
@@ -774,14 +765,14 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
 
         if message_search_result != None and "_id" in message_search_result.get("_id", {}):
             wps_logger("MESSAGE HANDLER", callsign, "Message already exists, sending client ack and finishing processing")
-            CONN.send((json.dumps(client_response, separators=(',', ':'))+'\r').encode())
+            CONN.send(frame_and_compress_json_object(client_response).encode()) 
             return
         else:
             message_insert_response = dbInsertMessage(CONN_DB_CURSOR, message_to_write_to_wps_database)
             close_connection(CONN_DB_CURSOR, callsign, CONN) if message_insert_response['result'] == 'failure' else None
             wps_logger("MESSAGE HANDLER", callsign, f"Client acknowledgment is {client_response}")
-            CONN.send((json.dumps(client_response, separators=(',', ':'))+'\r').encode())
-            
+            CONN.send(frame_and_compress_json_object(client_response).encode()) 
+
         sent_in_real_time = False
         # If the recipient is connected, send the message in real-time
         for C in CONNECTIONS:
@@ -799,7 +790,7 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
                     wps_logger("MESSAGE HANDLER", callsign, f"First message, sending user enquiry response")
                     user_enquiry_handler(CONN_DB_CURSOR, { "c": message['fc'] }, callsign, C['socket'])
                 
-                C['socket'].sendall((json.dumps(message, separators=(',', ':'))+'\r').encode())
+                C['socket'].sendall(frame_and_compress_json_object(message).encode())
                 sent_in_real_time = True
 
         if sent_in_real_time:
@@ -865,7 +856,7 @@ def message_edit_handler(CONN_DB_CURSOR, msg_update, callsign, CONN):
     resp['t'] = "mr"
     resp['_id'] = msg_update['_id']
     wps_logger("MESSAGE EDIT HANDLER", callsign, f"Edit message response is {resp}")
-    CONN.send((json.dumps(resp, separators=(',', ':'))+'\r').encode())
+    CONN.send(frame_and_compress_json_object(resp).encode()) 
 
     send = {
         "t": "med",
@@ -877,7 +868,7 @@ def message_edit_handler(CONN_DB_CURSOR, msg_update, callsign, CONN):
         if C['callsign'] == edited_message['tc']:
             wps_logger("MESSAGE HANDLER", callsign, f"{edited_message['tc']} is logged in, sending in real-time")
             wps_logger("MESSAGE HANDLER", callsign, f"Sending to: {C['socket']}")
-            C['socket'].sendall((json.dumps(send, separators=(',', ':'))+'\r').encode())
+            C['socket'].sendall(frame_and_compress_json_object(send).encode())
 
 def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign):
     '''
@@ -911,7 +902,7 @@ def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign):
     for C in CONNECTIONS:
         if C['callsign'] == message_to_update['fc']:
             wps_logger("MESSAGE EMOJI HANDLER", callsign, f"{message_to_update['fc']} is logged in, sending emoji update in real-time")
-            C['socket'].sendall((json.dumps(real_time_resp, separators=(',', ':'))+'\r').encode())
+            C['socket'].sendall(frame_and_compress_json_object(real_time_resp).encode())
 
 def user_enquiry_handler(CONN_DB_CURSOR, user_enquiry, callsign, CONN):
     '''
@@ -941,7 +932,7 @@ def user_enquiry_handler(CONN_DB_CURSOR, user_enquiry, callsign, CONN):
             "tc": user_enquiry['c']
         }        
 
-    CONN.send((json.dumps(response, separators=(',', ':'))+'\r').encode())
+    CONN.send(frame_and_compress_json_object(response).encode()) 
     return    
 
 def ham_enquiry_handler(CONN_DB_CURSOR, ham_enquiry, callsign, CONN):
@@ -1008,7 +999,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
 
         if post_search != None and post_search['p'] == post['p']:
             wps_logger("CHANNELS POST HANDLER", callsign, "Existing post found and posted text the same, not inserting again")
-            CONN.send((json.dumps(client_response, separators=(',', ':'))+'\r').encode())
+            CONN.send(frame_and_compress_json_object(client_response).encode()) 
             return
         else:
             wps_logger("CHANNELS POST HANDLER", callsign, "No existing post found, inserting")
@@ -1016,7 +1007,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
             post_insert_response = dbInsertPost(CONN_DB_CURSOR, json.loads(json.dumps(post)))
             close_connection(CONN_DB_CURSOR, callsign, CONN) if post_insert_response['result'] == 'failure' else None
             wps_logger("CHANNELS POST HANDLER", callsign, f"Client acknowledgment is {post_insert_response}")
-            CONN.send((json.dumps(client_response, separators=(',', ':'))+'\r').encode())
+            CONN.send(frame_and_compress_json_object(client_response).encode()) 
         
         subscribers_to_receive_push_notification_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
         close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_to_receive_push_notification_response['result'] == 'failure' else None
@@ -1033,7 +1024,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
         for C in CONNECTIONS:
             if C['callsign'] != post['fc'] and C['callsign'] in callsigns_to_process:
                 wps_logger("CHANNELS POST HANDLER", callsign, f"Sending real-time to: {C['callsign']}")
-                C['socket'].sendall((json.dumps(post, separators=(',', ':'))+'\r').encode())
+                C['socket'].sendall(frame_and_compress_json_object(post).encode())
                 sent_post_in_real_time.append(C['callsign'])
 
         # Send to remaining subscribers not online and with push enabled      
@@ -1082,7 +1073,7 @@ def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
         "t": "cpr",
         "ts": post_update['ts']
     }
-    CONN.send((json.dumps(client_acknowledgement, separators=(',', ':'))+'\r').encode())
+    CONN.send(frame_and_compress_json_object(client_acknowledgement).encode()) 
 
     update_to_connected_clients = {
         "t": "cped",
@@ -1100,7 +1091,7 @@ def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
     for C in CONNECTIONS:
         if C['callsign'] != callsign and C['callsign'] in subscribing_callsigns:
             wps_logger("MESSAGE HANDLER", callsign, f"Sending to: {C['socket']}")
-            C['socket'].sendall((json.dumps(update_to_connected_clients, separators=(',', ':'))+'\r').encode())
+            C['socket'].sendall(frame_and_compress_json_object(update_to_connected_clients).encode())
 
 def post_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
     '''
@@ -1167,7 +1158,7 @@ def post_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
     for C in CONNECTIONS:
         if C['callsign'] != callsign and C['callsign'] in subscribing_callsigns:
             wps_logger("CHANNELS EMOJI HANDLER", callsign, f"Sending to: {C['callsign']}")
-            C['socket'].sendall((json.dumps(emoji_object, separators=(',', ':'))+'\r').encode())
+            C['socket'].sendall(frame_and_compress_json_object(emoji_object).encode())
 
 def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN):
     '''
@@ -1206,7 +1197,8 @@ def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN)
             "pc": new_post_count
         }
         wps_logger("CHANNELS SEND HANDLER", callsign, f"Subscribe response is {client_acknowledgement}")
-        CONN.send((json.dumps(client_acknowledgement, separators=(',', ':'))+'\r').encode())
+        CONN.send(frame_and_compress_json_object(client_acknowledgement).encode()) 
+
 
     elif subscribe_request['s'] == 0:
         if subscribe_request['cid'] in channel_subscriptions:
@@ -1223,7 +1215,7 @@ def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN)
             "s": 0
         }
         wps_logger("CHANNELS SEND HANDLER", callsign, f"Unsubscribe response is {client_acknowledgement}")
-        CONN.send((json.dumps(client_acknowledgement, separators=(',', ':'))+'\r').encode())
+        CONN.send(frame_and_compress_json_object(client_acknowledgement).encode()) 
 
     wps_logger("CHANNELS SUBSCRIBE HANDLER", callsign, f"Subscriptions now: {channel_subscriptions}")
     
@@ -1590,7 +1582,7 @@ def socket_send_handler(CONN_DB_CURSOR, conn, payload):
     wps_logger("SOCKET SEND HANDLER", conn['callsign'], f"Sending {payload}")
     wps_logger("SOCKET SEND HANDLER", conn['callsign'], f"to {conn}")
     try:
-        conn['socket'].send((json.dumps(payload, separators=(',', ':'))+'\r').encode())
+        conn['socket'].send(frame_and_compress_json_object(payload).encode())
     except Exception as e:
         wps_logger("SOCKET SEND HANDLER", conn['callsign'], f"Error {e} when sending to {conn}", "ERROR")
         close_connection(CONN_DB_CURSOR, conn['callsign'], conn)
