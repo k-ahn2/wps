@@ -1,6 +1,8 @@
 from env import *
 import datetime
 
+# Plan to incrementally migrate functions from wps.py to handlers.py, to enable warm re-loading of code without disconnecting TCP connections
+
 # Logging
 MIN_LOG_LEVEL = env['minWpsLogLevel']
 WPS_LOGFILE = open("wps.log", "a")
