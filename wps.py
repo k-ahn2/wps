@@ -1283,16 +1283,25 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     wps_logger("DISCONNECT HANDLER", callsign, "All connections BEFORE disconnect: ")
     for c in CONNECTIONS:
         wps_logger("DISCONNECT HANDLER", callsign, f"Connection: {c}")        
-
+    
+    try:
+        CONN.shutdown(socket.SHUT_RDWR)
+    except Exception as e:
+        wps_logger("DISCONNECT HANDLER", callsign, f"Socket shutdown exception {e} happened")
+    
     for key, C in enumerate(CONNECTIONS):
         if C['callsign'] == callsign:
             # C['socket'].close()
             del CONNECTIONS[key]
     
     wps_logger("DISCONNECT HANDLER", callsign, "All connections AFTER disconnect: ")
-    wps_logger('ONLINE STATUS', callsign, f"Disconnected, connection length is {len(CONNECTIONS)}. Updates sent to:")
+    for c in CONNECTIONS:
+        wps_logger("DISCONNECT HANDLER", callsign, f"Connection: {c}")      
+    
+    wps_logger('ONLINE STATUS', callsign, f"Disconnected, connection length is {len(CONNECTIONS)}")
+    
     for C in CONNECTIONS:
-        wps_logger("ONLINE STATUS", callsign, f"Connection: {C}")       
+        wps_logger("ONLINE STATUS", callsign, f"Disconnect sent to: {C['callsign']}")       
         
         disconnected_response = {
             "t": "ud",
@@ -1305,13 +1314,9 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     rc = []
     for c in CONNECTIONS:
         rc.append(c['callsign'])
-    print('Connections:', str(rc))
-    
-    try:
-        CONN.close()
-    except Exception as e:
-        wps_logger("DSCONNECT HANDLER", callsign, f"Socket close exception {e} happened")
 
+    print('Connections After Disconnect:', str(rc))
+    
 def service_monitor_handler():
     ###
     # Future service monitoring function, currently unused
@@ -1354,18 +1359,28 @@ def connected_session_handler(CONN, ADDR):
     # Basic callsign check - does it contain a number?
     if not any(char.isdigit() for char in callsign):
         wps_logger("CONNECTION SESSION HANDLER", callsign, "Callsign seems INVALID, DISCONNECTING")
-        CONN.close()
+        CONN.shutdown(socket.SHUT_RDWR)
         return
 
     wps_logger("CONNECTION_SESSION HANDLER", callsign, "Callsign seems valid, continuing")
-    CONNECTIONS.append({ "callsign": callsign, "socket": CONN })
+
     CONN_DB_CURSOR = db.cursor()
+    
+    # Check if the callsign is already connected, if so disconnect the existing connection
+    for C in CONNECTIONS:
+        if C['callsign'] == callsign:
+            wps_logger("CONNECTION SESSION HANDLER", callsign, "Callsign already connected, disconnecting existing connection")
+            print(f'{callsign} reconnected, disconnecting existing connection', datetime.datetime.now().isoformat())
+            C['socket'].shutdown(socket.SHUT_RDWR) # Closes the connection, which will trigger the close_connection function
+
+    # Now continue and add the new connection
+    CONNECTIONS.append({ "callsign": callsign, "socket": CONN })
     
     # Print the updated connected callsigns to the console
     rc = []
     for c in CONNECTIONS:
         rc.append(c['callsign'])
-    print(f"Connections: {str(rc)}")
+    print(f"Connections After Connect: {str(rc)}")
 
     # Log all active connections
     for c in CONNECTIONS:
@@ -1658,19 +1673,17 @@ def startup_and_listen():
             
     except KeyboardInterrupt:
         wps_logger("CONNECTION HANDLER", "-----", "Stopped by Ctrl+C")
-        print("\nStopped by Ctrl+C")
+        print("\nStopped by Ctrl+C, closing down WPS")
+
         if S:
             wps_logger("CONNECTION HANDLER", "-----", "Closing TCP socket listener")
             print("Closing TCP socket listener")
             S.close()
-        for C in CONNECTIONS:
-            wps_logger("CONNECTION HANDLER", "-----", f"Closing connection for {C['callsign']}")
-            print("Closing connection for " + C['callsign'])
-            close_connection(global_cursor, C['callsign'], C['socket'])
-            time.sleep(2)
 
-        for t in ALL_THREADS:
-            t.join()
+        while (len(CONNECTIONS) > 0):
+            wps_logger("CONNECTION HANDLER", "-----", f"Closing connection for {CONNECTIONS[0]['callsign']}")
+            CONNECTIONS[0]['socket'].shutdown(socket.SHUT_RDWR)
+            time.sleep(2)
 
         wps_logger("CONNECTION HANDLER", "-----", "WPS Exited")
         print("WPS Exited")
