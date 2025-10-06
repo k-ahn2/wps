@@ -49,6 +49,7 @@ Links to documentation in the `/docs` directory
 - **Last Seen Times:** See when users you have messaged were last connected
 - **Delivery Receipts:** WPS responds to new and edited messages and posts with a delivery receipt, guaranteeing server delivery
 - **Version Control:** Advise the client a new software version is available, configurable within WPS in real-time
+- **UserAvatars:** Attach custom avatars / images
 
 ## Server Capabilities
 - **Compression:** WPS compresses every packet before sending, then sends whichever of the compressed or uncompressed version is shorter

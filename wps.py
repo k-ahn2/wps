@@ -36,7 +36,7 @@ ALL_THREADS = []
 CONNECTIONS = []
 
 # String to return when someone manually connects and sends unknown text
-invalid_connect_reponse = """Welcome to WhatsPac Server\r
+invalid_connect_reponse = """Welcome to WPS\r
 I didn't recognise that command and guess you have connected manually.\r
 To use this service you need to connect using the WhatsPac Client - head to http://whatspac.m0ahn.co.uk:88 and follow the instructions there.\r
 You'll now be disconnected, thanks!\r
@@ -98,6 +98,7 @@ def frame_and_compress_json_object(json_obj):
     compressed = chr(192) + compress(json.dumps(json_obj, separators=(',', ':'))) + chr(192) + '\r'
 
     if len(compressed) < len(uncompressed):
+        wps_logger("COMPRESSION", "----", f"Returned {len(compressed)} compressed vs. {len(uncompressed)} uncompressed")
         return compressed
     else:
         return uncompressed
@@ -731,6 +732,62 @@ def pairing_handler(CONN_DB_CURSOR, callsign, CONN):
     CONN.send(frame_and_compress_json_object(response).encode()) 
     return 
 
+def avatar_handler(CONN_DB_CURSOR, callsign, CONN, avatar_object):
+    '''
+    Adds or Replaces a Avatar to the user record
+    '''
+
+    wps_logger("AVATAR HANDLER", callsign, "Starting")
+    
+    avatar_last_updated = round(time.time())
+
+    avatar_update = { 
+        "avatar_last_updated": avatar_last_updated,
+        "avatar": avatar_object['a']
+    }
+
+    avatar_update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, avatar_update)
+    wps_logger("AVATAR HANDLER", callsign, f"Avatar update response: {avatar_update_response}")
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if avatar_update_response['result'] == 'failure' else None
+
+    response = {
+        "t": "ar",
+        "ts": avatar_last_updated
+    }
+
+    CONN.send(frame_and_compress_json_object(response).encode()) 
+    return 
+
+def avatar_enquiry_handler(CONN_DB_CURSOR, callsign, enquiry_object, CONN):
+    '''
+    Returns Avatar updates since last avatar timestamp
+    '''
+
+    wps_logger("AVATAR ENQUIRY HANDLER", callsign, "Starting")
+
+    avatar_enquiry_response = dbGetUpdatedAvatars(CONN_DB_CURSOR, callsign, enquiry_object["lats"])
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if avatar_enquiry_response['result'] == 'failure' else None
+    
+    # If co (count only) is set to 1, only return the count of avatars
+    if enquiry_object.get('co', None) == 1:
+        response = {
+            "t": "a",
+            "ac": len(avatar_enquiry_response['data'])
+        }
+        CONN.send(frame_and_compress_json_object(response).encode()) 
+    else:
+        for avatar in avatar_enquiry_response['data']:
+            response = {
+                "t": "a",
+                "ts": avatar['avatar_last_updated'],
+                "c": avatar['callsign'],
+                "a": avatar['avatar'],
+            }
+            wps_logger("AVATAR ENQUIRY HANDLER", callsign, f"Avatar enquiry response: {response}")
+            CONN.send(frame_and_compress_json_object(response).encode()) 
+    
+    return  
+
 def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
     '''
     Handles when the user sends a new message
@@ -1090,7 +1147,7 @@ def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
 
     for C in CONNECTIONS:
         if C['callsign'] != callsign and C['callsign'] in subscribing_callsigns:
-            wps_logger("MESSAGE HANDLER", callsign, f"Sending to: {C['socket']}")
+            wps_logger("MESSAGE HANDLER", callsign, f"Sending to: {C['callsign']}")
             C['socket'].sendall(frame_and_compress_json_object(update_to_connected_clients).encode())
 
 def post_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
@@ -1586,6 +1643,16 @@ def connected_session_handler(CONN, ADDR):
                 if message_json["t"] == "he":
                     wps_logger("CONNECTION SESSION HANDLER", callsign, "Invoking ham enquiry handler")
                     ham_enquiry_handler(CONN_DB_CURSOR, message_json, callsign, CONN)
+
+                # Update or Add Avatar
+                if message_json["t"] == "a":
+                    wps_logger("CONNECTION SESSION HANDLER", callsign, "Invoking Avatar handler")
+                    avatar_handler(CONN_DB_CURSOR, callsign, CONN, message_json)
+
+                # Avatar Enquiry
+                if message_json["t"] == "ae":
+                    wps_logger("CONNECTION SESSION HANDLER", callsign, "Invoking Avatar Enquiry handler")
+                    avatar_enquiry_handler(CONN_DB_CURSOR, callsign, message_json, CONN)
 
         except Exception as e:
             wps_logger("CONNECTION SESSION HANDLER", callsign, f"Exception {e} happened. Disconnecting", "ERROR")

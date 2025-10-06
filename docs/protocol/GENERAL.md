@@ -8,7 +8,9 @@
 5. [Type uc and ud - User Connect and User Disconnect](#type-uc-and-ud---user-connect-and-user-disconnect)
 6. [Type o - Online Users](#type-o---online-users)
 7. [Type u - User Updates](#type-u---user-updates)
-8. [The Connect Sequence Explained](#the-connect-sequence-explained)
+8. [Type a and ar - Add or Update Avatar](#type-a-and-ar---add-or-update-avatar)
+9. [Type ae - Avatar Enquiry](#type-wpe---avatar-enquiry)
+10. [The Connect Sequence Explained](#the-connect-sequence-explained)
 
 [Return to README](/README.md)
 
@@ -307,6 +309,107 @@ Sent by the server as part of the connect sequence - contains updated name and l
          "ls": 1740252223
       }
    ]
+}
+```
+
+## Type a and ar - Add or Update Avatar
+
+Adds or Updates an Avatar
+
+### Client to Server
+<hr>
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`a`|String|Always type ‘a’ for type Avatar
+|Avatar|`a`|`base64 Image`|String|A base64 encoded image
+
+### JSON Example
+
+```json
+{
+   "t": "a",
+   "a": "data:image/jpeg;base64,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"
+}
+```
+
+### Server to Client
+<hr>
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`ar`|String|Always type ‘ar’ for Avatar Response
+|Timestamp|`ts`|`1750799200`|Number|The timestamp the server logged the Avatar update
+
+### JSON Example
+
+```json
+{
+   "t": "ar", 
+   "ts": 1750799200
+}
+```
+
+## Type ae - Avatar Enquiry
+
+Fetch new Avatars, or a count of new Avatars available
+
+### Client to Server
+<hr>
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`ae`|String|Always type ‘ae’ for type Avatar enquiry
+|Timestamp|`lats`|`1750799200`|Number|The timestamp of the last Avatar on the client
+|Count Only|`co`|`1`|Boolean|OPTIONAL - if present then return the count only, not the updated avatars
+
+### JSON Example
+
+Fetch new Avatars
+```json
+{
+   "t": "ae", 
+   "lats": 1750799200
+}
+```
+
+Fetch a count of new Avatars
+```json
+{
+   "t": "ae", 
+   "lats": 1750799200,
+   "co": 1
+}
+```
+
+### Server to Client
+<hr>
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`a`|String|Always type ‘a’ for Avatar
+|Timestamp|`a`|`{}`|Object|An individual Avatar object
+
+
+
+
+### JSON Example
+
+Return Avatar
+```json
+{
+   "t": "a",
+   "c": "G5ALF",
+   "ts": 1750799200,
+   "a": "data:image/jpeg;base64,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"
+}
+```
+
+Return Avatar Count
+```json
+{
+   "t": "a",
+   "ac": 3
 }
 ```
 

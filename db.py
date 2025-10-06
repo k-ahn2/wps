@@ -931,4 +931,45 @@ def dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_update_timestamp):
             "params": [ last_ham_update_timestamp ]
         }
         db_logger("dbGetUpdatedHams", "Return: " + str(return_error), 'ERROR')
+        return return_error
+    
+def dbGetUpdatedAvatars(CONN_DB_CURSOR, callsign, last_avatar_timestamp):
+    try:
+        select_query = f"""
+        SELECT
+            json_extract(user, '$.callsign') as callsign,
+            json_extract(user, '$.avatar') as avatar,
+            json_extract(user, '$.avatar_last_updated') as avatar_last_updated
+        FROM users
+        WHERE json_extract(user, '$.avatar_last_updated') > {sourceValueToJsonValue(last_avatar_timestamp)}
+        AND json_extract(user, '$.callsign') != {sourceValueToJsonValue(callsign)}
+        """
+
+        db_logger("dbGetUpdatedAvatars", "Query: " + ' '.join(select_query.split()))
+
+        CONN_DB_CURSOR.execute(select_query)
+
+        return_success = {
+            "result": "success",
+            "data": []
+        }
+        
+        for row in CONN_DB_CURSOR:
+            return_success['data'].append({
+                "callsign": row[0],
+                "avatar": row[1],
+                "avatar_last_updated": row[2]
+            })
+
+        db_logger("dbGetUpdatedAvatars", "Return: " + str(return_success))
+        return return_success
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbGetUpdatedAvatars",
+            "params": [ callsign, last_avatar_timestamp ]
+        }
+        db_logger("dbGetUpdatedAvatars", "Return: " + str(return_error), 'ERROR')
         return return_error   
