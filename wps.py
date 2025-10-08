@@ -7,6 +7,7 @@ import socket
 import json
 import zlib, base64
 import struct
+from events import *
 
 # Environment Variables
 env_source = open("env.json", "r")
@@ -22,6 +23,9 @@ if env['notificationsEnabled']:
     ONESIGNAL_PROD_REST_KEY = env['notificationsProdRestKey']
 else:
     print('Push Notifications: Disabled')
+
+print(f'WPS Event Logging: {"Enabled" if env["events"]["enableWpsEvents"] else "Disabled"}')
+print(f'BPQ Queue Monitoring: {"Enabled" if env["events"]["enableBpqEvents"] else "Disabled"}')
 
 # TCP Socket Setup
 HOST = '0.0.0.0'
@@ -52,7 +56,10 @@ compression_delimiter_base64 = chr(195) + chr(128)
 # Batch Sizes
 MB_BATCH_SIZE = 4 # Number of messages to send in batch type 'mb'
 CPB_BATCH_SIZE = 4 # Number of posts to send in batch type 'pb'
-    
+
+def timestamp_milliseconds():
+    return round(time.time() * 1000)
+
 def send_push_notification(heading, message, player_id):
     '''
     Send a OneSignal push notification
@@ -160,6 +167,9 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     Runs all code required to update the client
     '''
 
+    event_logger(timestamp_milliseconds(), 'USER_CONNECT', callsign, None, None)
+    event_logger(timestamp_milliseconds(), 'CONNECTIONS', callsign, { "total": len(CONNECTIONS) }, None)
+
     client_channel_subscriptions = connect_object.get('cc', [])
     name_from_client = connect_object.get('n', '-')
     client_version = connect_object.get('v', 0)
@@ -256,7 +266,7 @@ def first_time_connect_handler(CONN_DB_CURSOR, callsign, CONN, is_new_user):
         "pc": 0,
         "w": 1 if is_new_user else 0
     }
-    CONN.send(frame_and_compress_json_object(response).encode())
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
     
     ###
     # Return the user records
@@ -283,7 +293,7 @@ def first_time_connect_handler(CONN_DB_CURSOR, callsign, CONN, is_new_user):
     
     if len(user_response['u']) > 0:
         wps_logger("FIRST TIME CONNECT HANDLER", callsign, "Sending user first time connect batch")
-        CONN.send(frame_and_compress_json_object(user_response).encode())
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, user_response)
 
     ###
     # First time connect handler
@@ -310,7 +320,7 @@ def first_time_connect_handler(CONN_DB_CURSOR, callsign, CONN, is_new_user):
             connect_batch_array['m'].append(message)
         
         wps_logger("FIRST TIME CONNECT HANDLER", callsign, f"Sending first connect batch for callsign {recipient['callsign']}")
-        CONN.send(frame_and_compress_json_object(connect_batch_array).encode())
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, connect_batch_array)
     
     ###
     # Return users currently online
@@ -371,7 +381,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
         
         connect_response['pc'] += new_posts_len
 
-    CONN.send(frame_and_compress_json_object(connect_response).encode())
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, connect_response)
     #CONN.send(struct.pack('>H', 3800))
     #CONN.send(frame_and_compress_json_object_bytes(connect_response))
     wps_logger('CONNECT HANDLER', callsign, f"Connect response to client {connect_response}")
@@ -426,8 +436,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
             message_batch['m'] = messages_batch
             message_batch['md']['mc'] = running_message_count
             wps_logger('CONNECT HANDLER', callsign, f"New messages response batch - up to message {running_message_count} of total {new_messages_count}")
-            CONN.send(frame_and_compress_json_object(message_batch).encode()) 
-            #CONN.send(frame_and_compress_json_object_bytes(message_batch))
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, message_batch)
 
     ###
     # Return new message edits
@@ -458,8 +467,8 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
             message_edits_batch['med'].append(edited_message)
 
         wps_logger('CONNECT HANDLER', callsign, f"New edits to return: {message_edits_batch}")
-        CONN.send(frame_and_compress_json_object(message_edits_batch).encode())  
-    
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, message_edits_batch)
+        
     ###
     # Return new emojis
     ###
@@ -489,8 +498,8 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
             message_emojis_batch['mem'].append(latest_emojis)
 
         wps_logger('CONNECT HANDLER', callsign, f"Emoji batch to return: {message_emojis_batch}")
-        CONN.send(frame_and_compress_json_object(message_emojis_batch).encode()) 
-
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, message_emojis_batch)
+        
     ###
     # Return the user records, so the user has last seen times and name update
     ###
@@ -520,8 +529,8 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     wps_logger('CONNECT HANDLER', callsign, f"User updates response: {user_response}")
 
     if len(user_response['u']) > 0:
-        CONN.send(frame_and_compress_json_object(user_response).encode())
-
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, user_response)
+        
     ###
     # Process channels
     ### 
@@ -559,8 +568,8 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
 
     if len(response["h"]) > 0:
         wps_logger("CONNECT HANDLER", callsign, f"User name change response {response}")
-        CONN.send(frame_and_compress_json_object(response).encode()) 
-
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
+        
 def online_users_connect_handler(CONN_DB_CURSOR, callsign, CONN):
     ###
     # Returns all online users to the client, called only at the point of connect
@@ -584,7 +593,7 @@ def online_users_connect_handler(CONN_DB_CURSOR, callsign, CONN):
 
     if len(online_response["o"]) > 0:
         wps_logger('ONLINE STATUS', callsign, f"Online users response: {online_response}")
-        CONN.send(frame_and_compress_json_object(online_response).encode())
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, online_response)
 
 def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
     '''
@@ -635,8 +644,8 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
             channel_posts_batch_array['p'] = post_batch
             channel_posts_batch_array['m']['pc'] = post_count
             wps_logger('CONNECT HANDLER', callsign, f"Channel connect response batch: {channel_posts_batch_array}")
-            CONN.send(frame_and_compress_json_object(channel_posts_batch_array).encode()) 
-
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, channel_posts_batch_array)
+            
     ###
     # Channels Emojis Batch Array
     ###
@@ -667,8 +676,8 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
     
     if len(channel_emojis_batch_array['e']) > 0:
         wps_logger('CONNECT HANDLER', callsign, f"Channel emoji update batch: {channel_emojis_batch_array}")
-        CONN.send(frame_and_compress_json_object(channel_emojis_batch_array).encode())
-
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, channel_emojis_batch_array)
+        
     ###
     # Return post edits
     ###    
@@ -706,8 +715,8 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
 
     if len(edited_posts_resp['ed']) > 0:
         wps_logger('CONNECT HANDLER', callsign, f"New edits to return: {edited_posts_resp}")
-        CONN.send(frame_and_compress_json_object(edited_posts_resp).encode())  
-
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, edited_posts_resp)
+        
 def pairing_handler(CONN_DB_CURSOR, callsign, CONN):
     '''
     Sets a flag and timestamp on the user record to enable pairing of Packet Alerts
@@ -729,7 +738,8 @@ def pairing_handler(CONN_DB_CURSOR, callsign, CONN):
         "e": True,
         "st": pair_start_time
     }
-    CONN.send(frame_and_compress_json_object(response).encode()) 
+    
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
     return 
 
 def avatar_handler(CONN_DB_CURSOR, callsign, CONN, avatar_object):
@@ -755,7 +765,7 @@ def avatar_handler(CONN_DB_CURSOR, callsign, CONN, avatar_object):
         "ts": avatar_last_updated
     }
 
-    CONN.send(frame_and_compress_json_object(response).encode()) 
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
     return 
 
 def avatar_enquiry_handler(CONN_DB_CURSOR, callsign, enquiry_object, CONN):
@@ -774,7 +784,7 @@ def avatar_enquiry_handler(CONN_DB_CURSOR, callsign, enquiry_object, CONN):
             "t": "a",
             "ac": len(avatar_enquiry_response['data'])
         }
-        CONN.send(frame_and_compress_json_object(response).encode()) 
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
     else:
         for avatar in avatar_enquiry_response['data']:
             response = {
@@ -784,7 +794,7 @@ def avatar_enquiry_handler(CONN_DB_CURSOR, callsign, enquiry_object, CONN):
                 "a": avatar['avatar'],
             }
             wps_logger("AVATAR ENQUIRY HANDLER", callsign, f"Avatar enquiry response: {response}")
-            CONN.send(frame_and_compress_json_object(response).encode()) 
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
     
     return  
 
@@ -822,14 +832,14 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
 
         if message_search_result != None and "_id" in message_search_result.get("_id", {}):
             wps_logger("MESSAGE HANDLER", callsign, "Message already exists, sending client ack and finishing processing")
-            CONN.send(frame_and_compress_json_object(client_response).encode()) 
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
             return
         else:
             message_insert_response = dbInsertMessage(CONN_DB_CURSOR, message_to_write_to_wps_database)
             close_connection(CONN_DB_CURSOR, callsign, CONN) if message_insert_response['result'] == 'failure' else None
             wps_logger("MESSAGE HANDLER", callsign, f"Client acknowledgment is {client_response}")
-            CONN.send(frame_and_compress_json_object(client_response).encode()) 
-
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
+            
         sent_in_real_time = False
         # If the recipient is connected, send the message in real-time
         for C in CONNECTIONS:
@@ -847,7 +857,7 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
                     wps_logger("MESSAGE HANDLER", callsign, f"First message, sending user enquiry response")
                     user_enquiry_handler(CONN_DB_CURSOR, { "c": message['fc'] }, callsign, C['socket'])
                 
-                C['socket'].sendall(frame_and_compress_json_object(message).encode())
+                socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, message)
                 sent_in_real_time = True
 
         if sent_in_real_time:
@@ -913,7 +923,7 @@ def message_edit_handler(CONN_DB_CURSOR, msg_update, callsign, CONN):
     resp['t'] = "mr"
     resp['_id'] = msg_update['_id']
     wps_logger("MESSAGE EDIT HANDLER", callsign, f"Edit message response is {resp}")
-    CONN.send(frame_and_compress_json_object(resp).encode()) 
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, resp)
 
     send = {
         "t": "med",
@@ -925,7 +935,7 @@ def message_edit_handler(CONN_DB_CURSOR, msg_update, callsign, CONN):
         if C['callsign'] == edited_message['tc']:
             wps_logger("MESSAGE HANDLER", callsign, f"{edited_message['tc']} is logged in, sending in real-time")
             wps_logger("MESSAGE HANDLER", callsign, f"Sending to: {C['socket']}")
-            C['socket'].sendall(frame_and_compress_json_object(send).encode())
+            socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, send)
 
 def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign):
     '''
@@ -959,7 +969,7 @@ def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign):
     for C in CONNECTIONS:
         if C['callsign'] == message_to_update['fc']:
             wps_logger("MESSAGE EMOJI HANDLER", callsign, f"{message_to_update['fc']} is logged in, sending emoji update in real-time")
-            C['socket'].sendall(frame_and_compress_json_object(real_time_resp).encode())
+            socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, real_time_resp)
 
 def user_enquiry_handler(CONN_DB_CURSOR, user_enquiry, callsign, CONN):
     '''
@@ -989,7 +999,7 @@ def user_enquiry_handler(CONN_DB_CURSOR, user_enquiry, callsign, CONN):
             "tc": user_enquiry['c']
         }        
 
-    CONN.send(frame_and_compress_json_object(response).encode()) 
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
     return    
 
 def ham_enquiry_handler(CONN_DB_CURSOR, ham_enquiry, callsign, CONN):
@@ -1023,7 +1033,7 @@ def ham_enquiry_handler(CONN_DB_CURSOR, ham_enquiry, callsign, CONN):
             })
 
     wps_logger("HAM ENQUIRY HANDLER", callsign, f"Response: {response}")
-    CONN.send(frame_and_compress_json_object(response).encode()) 
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
     return  
 
 def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
@@ -1056,7 +1066,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
 
         if post_search != None and post_search['p'] == post['p']:
             wps_logger("CHANNELS POST HANDLER", callsign, "Existing post found and posted text the same, not inserting again")
-            CONN.send(frame_and_compress_json_object(client_response).encode()) 
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
             return
         else:
             wps_logger("CHANNELS POST HANDLER", callsign, "No existing post found, inserting")
@@ -1064,7 +1074,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
             post_insert_response = dbInsertPost(CONN_DB_CURSOR, json.loads(json.dumps(post)))
             close_connection(CONN_DB_CURSOR, callsign, CONN) if post_insert_response['result'] == 'failure' else None
             wps_logger("CHANNELS POST HANDLER", callsign, f"Client acknowledgment is {post_insert_response}")
-            CONN.send(frame_and_compress_json_object(client_response).encode()) 
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
         
         subscribers_to_receive_push_notification_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
         close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_to_receive_push_notification_response['result'] == 'failure' else None
@@ -1081,7 +1091,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
         for C in CONNECTIONS:
             if C['callsign'] != post['fc'] and C['callsign'] in callsigns_to_process:
                 wps_logger("CHANNELS POST HANDLER", callsign, f"Sending real-time to: {C['callsign']}")
-                C['socket'].sendall(frame_and_compress_json_object(post).encode())
+                socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, post)
                 sent_post_in_real_time.append(C['callsign'])
 
         # Send to remaining subscribers not online and with push enabled      
@@ -1130,7 +1140,7 @@ def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
         "t": "cpr",
         "ts": post_update['ts']
     }
-    CONN.send(frame_and_compress_json_object(client_acknowledgement).encode()) 
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_acknowledgement)
 
     update_to_connected_clients = {
         "t": "cped",
@@ -1148,7 +1158,7 @@ def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
     for C in CONNECTIONS:
         if C['callsign'] != callsign and C['callsign'] in subscribing_callsigns:
             wps_logger("MESSAGE HANDLER", callsign, f"Sending to: {C['callsign']}")
-            C['socket'].sendall(frame_and_compress_json_object(update_to_connected_clients).encode())
+            socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, update_to_connected_clients)
 
 def post_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
     '''
@@ -1215,7 +1225,7 @@ def post_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
     for C in CONNECTIONS:
         if C['callsign'] != callsign and C['callsign'] in subscribing_callsigns:
             wps_logger("CHANNELS EMOJI HANDLER", callsign, f"Sending to: {C['callsign']}")
-            C['socket'].sendall(frame_and_compress_json_object(emoji_object).encode())
+            socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, emoji_object)
 
 def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN):
     '''
@@ -1254,7 +1264,7 @@ def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN)
             "pc": new_post_count
         }
         wps_logger("CHANNELS SEND HANDLER", callsign, f"Subscribe response is {client_acknowledgement}")
-        CONN.send(frame_and_compress_json_object(client_acknowledgement).encode()) 
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_acknowledgement)
 
 
     elif subscribe_request['s'] == 0:
@@ -1272,7 +1282,7 @@ def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN)
             "s": 0
         }
         wps_logger("CHANNELS SEND HANDLER", callsign, f"Unsubscribe response is {client_acknowledgement}")
-        CONN.send(frame_and_compress_json_object(client_acknowledgement).encode()) 
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_acknowledgement)
 
     wps_logger("CHANNELS SUBSCRIBE HANDLER", callsign, f"Subscriptions now: {channel_subscriptions}")
     
@@ -1318,7 +1328,7 @@ def post_batch_handler(CONN_DB_CURSOR, post_batch_request, callsign, CONN):
         channel_posts_batch_array['p'] = post_batch
         channel_posts_batch_array['m']['pc'] = post_count
         wps_logger('POST BATCH HANDLER', callsign, f"Channel connect response batch: {channel_posts_batch_array}")
-        CONN.send(frame_and_compress_json_object(channel_posts_batch_array).encode()) 
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, channel_posts_batch_array)
 
 def close_connection(CONN_DB_CURSOR, callsign, CONN):
     ###
@@ -1329,6 +1339,9 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     ###
 
     wps_logger("DISCONNECT HANDLER", callsign, "Starting")
+    event_logger(timestamp_milliseconds(), 'USER_DISCONNECT', callsign, None, None)
+    event_logger(timestamp_milliseconds(), 'CONNECTIONS', callsign, { "total": len(CONNECTIONS) }, None)
+    
     print(callsign, 'disconnected', datetime.datetime.now().isoformat())
     disconnect_timestamp = round(time.time())
 
@@ -1365,7 +1378,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
             "c": callsign
         }
         wps_logger('ONLINE STATUS', callsign, f"Disconnect sent to {C['callsign']}")
-        socket_send_handler(CONN_DB_CURSOR, C, disconnected_response)
+        socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, disconnected_response)
         
     # Output purely for the console
     rc = []
@@ -1439,19 +1452,15 @@ def connected_session_handler(CONN, ADDR):
         rc.append(c['callsign'])
     print(f"Connections After Connect: {str(rc)}")
 
-    # Log all active connections
-    for c in CONNECTIONS:
-        wps_logger("CONNECTION SESSION HANDLER", callsign, f"ACTIVE CONNECTION {c}")
-
     # Tell all the other connected users about the new connection
-    for c in CONNECTIONS:
-        wps_logger("CONNECTION SESSION HANDLER", callsign, f"PROCESSING CONNECTION {c['callsign']}")
-        if c['callsign'] == callsign:
+    for C in CONNECTIONS:
+        wps_logger("CONNECTION SESSION HANDLER", callsign, f"PROCESSING CONNECTION {C['callsign']}")
+        if C['callsign'] == callsign:
             continue
 
-        wps_logger('ONLINE STATUS', callsign, f"Connect sent to {c['callsign']}")
+        wps_logger('ONLINE STATUS', callsign, f"Connect sent to {C['callsign']}")
         connected_response = { "t": "uc", "c": callsign }
-        socket_send_handler(CONN_DB_CURSOR, c, connected_response)
+        socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, connected_response)
 
     # Create an empty buffer and start listening for the first data
     CONNECTION_RX_BUFFER = ''
@@ -1660,14 +1669,16 @@ def connected_session_handler(CONN, ADDR):
             wps_logger("CONNECTION SESSION HANDLER", callsign, "Thread ending")
             break
 
-def socket_send_handler(CONN_DB_CURSOR, conn, payload):
-    wps_logger("SOCKET SEND HANDLER", conn['callsign'], f"Sending {payload}")
-    wps_logger("SOCKET SEND HANDLER", conn['callsign'], f"to {conn}")
+def socket_send_handler(CONN_DB_CURSOR, CONN, callsign, payload):
+    
+    send = frame_and_compress_json_object(payload)
+    event_logger(timestamp_milliseconds(), 'WPS_SEND', callsign, { "type": payload["t"], "bytes": len(send) }, None)
+    
     try:
-        conn['socket'].send(frame_and_compress_json_object(payload).encode())
+        CONN.send(send.encode())
     except Exception as e:
-        wps_logger("SOCKET SEND HANDLER", conn['callsign'], f"Error {e} when sending to {conn}", "ERROR")
-        close_connection(CONN_DB_CURSOR, conn['callsign'], conn)
+        wps_logger("SOCKET SEND HANDLER", callsign, f"Error {e}", "ERROR")
+        close_connection(CONN_DB_CURSOR, callsign, CONN)
 
 def check_auto_subscriptions(cursor):
     try:

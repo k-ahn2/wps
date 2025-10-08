@@ -11,6 +11,13 @@ env_template = {
     "recommendedClientVersion": 0.1,
     "socketTcpPort": 63001,
     "dbFilename": "wps.db",
+    "events": {
+        "enableWpsEvents": False,
+        "enableBpqEvents": False,
+        "eventsDbFilename": "events.db",
+        "bpqApplName": "WPS",
+        "bpqQueueApiUrl": "http://127.0.0.1:8008/api/tcpqueues?8"
+    },
     "minWpsLogLevel": "ERROR",
     "minDbLogLevel": "ERROR",
     "notificationsEnabled": False,
