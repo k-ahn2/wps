@@ -24,7 +24,7 @@ def events_db_init():
 
 def event_logger(timestamp, event_type, callsign, event=None, meta=None):
     
-    if not env['events']['enableEvents']:
+    if not env['events']['enableWpsEvents']:
         return None
 
     event_to_insert = {
