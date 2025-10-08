@@ -624,7 +624,7 @@ def dbInsertPost(CONN_DB_CURSOR, post):
         return_error = {
             "result": "failure",
             "error": str(e),
-            "function": "dbMessageSend",
+            "function": "dbInsertPost",
             "params": post
         }
         db_logger("dbInsertPost", "Return: " + str(return_error), 'ERROR')
