@@ -6,6 +6,10 @@ APPL_NAME = env['events']['bpqApplName']
 CALLSIGNS_WITH_ACTIVE_QUEUES = []
 POLLING_INTERVAL_SECONDS = 5
 
+print(f"Starting BPQ queue monitor for application '{APPL_NAME}' with polling interval of {POLLING_INTERVAL_SECONDS} seconds.")
+print(f"BPQ Queue API URL: {env['events']['bpqQueueApiUrl']}")
+print(f"Using database file: {EVENTS_DB_FILENAME}")
+
 def bpq_queue_monitor():
         
     try:
