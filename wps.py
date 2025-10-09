@@ -1338,7 +1338,6 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     ###
 
     wps_logger("DISCONNECT HANDLER", callsign, "Starting")
-    event_logger(timestamp_milliseconds(), 'USER_DISCONNECT', callsign, { "total": len(CONNECTIONS) }, None)
     
     print(callsign, 'disconnected', datetime.datetime.now().isoformat())
     disconnect_timestamp = round(time.time())
@@ -1361,7 +1360,8 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
         if C['callsign'] == callsign:
             # C['socket'].close()
             del CONNECTIONS[key]
-    
+            event_logger(timestamp_milliseconds(), 'USER_DISCONNECT', callsign, { "total": len(CONNECTIONS) }, None)
+
     wps_logger("DISCONNECT HANDLER", callsign, "All connections AFTER disconnect: ")
     for c in CONNECTIONS:
         wps_logger("DISCONNECT HANDLER", callsign, f"Connection: {c}")      
