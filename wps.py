@@ -167,8 +167,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     Runs all code required to update the client
     '''
 
-    event_logger(timestamp_milliseconds(), 'USER_CONNECT', callsign, None, None)
-    event_logger(timestamp_milliseconds(), 'CONNECTIONS', callsign, { "total": len(CONNECTIONS) }, None)
+    event_logger(timestamp_milliseconds(), 'USER_CONNECT', callsign, { "total": len(CONNECTIONS) }, None)
 
     client_channel_subscriptions = connect_object.get('cc', [])
     name_from_client = connect_object.get('n', '-')
@@ -1339,8 +1338,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     ###
 
     wps_logger("DISCONNECT HANDLER", callsign, "Starting")
-    event_logger(timestamp_milliseconds(), 'USER_DISCONNECT', callsign, None, None)
-    event_logger(timestamp_milliseconds(), 'CONNECTIONS', callsign, { "total": len(CONNECTIONS) }, None)
+    event_logger(timestamp_milliseconds(), 'USER_DISCONNECT', callsign, { "total": len(CONNECTIONS) }, None)
     
     print(callsign, 'disconnected', datetime.datetime.now().isoformat())
     disconnect_timestamp = round(time.time())
