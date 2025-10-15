@@ -1055,8 +1055,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
 
     try:
         delivery_timestamp = round(time.time()*1000)
-        post['dts'] = delivery_timestamp
-
+        
         client_response = {
             "t": "cpr",
             "ts": post['ts'],
@@ -1069,8 +1068,10 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
             return
         else:
             wps_logger("CHANNELS POST HANDLER", callsign, "No existing post found, inserting")
-            wps_logger("CHANNELS POST HANDLER", callsign, f"Post to insert: {post}")
-            post_insert_response = dbInsertPost(CONN_DB_CURSOR, json.loads(json.dumps(post)))
+            post_to_insert = json.loads(json.dumps(post))
+            post_to_insert['dts'] = delivery_timestamp
+            wps_logger("CHANNELS POST HANDLER", callsign, f"Post to insert: {post_to_insert}")
+            post_insert_response = dbInsertPost(CONN_DB_CURSOR, post_to_insert)
             close_connection(CONN_DB_CURSOR, callsign, CONN) if post_insert_response['result'] == 'failure' else None
             wps_logger("CHANNELS POST HANDLER", callsign, f"Client acknowledgment is {post_insert_response}")
             socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
@@ -1375,7 +1376,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
             "t": "ud",
             "c": callsign
         }
-        wps_logger('ONLINE STATUS', callsign, f"Disconnect sent to {C['callsign']}")
+        
         socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, disconnected_response)
         
     # Output purely for the console
