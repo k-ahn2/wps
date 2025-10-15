@@ -561,7 +561,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
         
         response["h"].append({
             "c": ham['callsign'],
-            "n": ham['name'],
+            "n": ham.get('name', '-'),
             "ts": ham.get('name_last_updated', 0)
         })
 
@@ -1027,7 +1027,7 @@ def ham_enquiry_handler(CONN_DB_CURSOR, ham_enquiry, callsign, CONN):
             response["h"].append({
 
                 "c": ham_enquiry_response['callsign'],
-                "n": ham_enquiry_response.get('name', ''),
+                "n": ham_enquiry_response.get('name', '-'),
                 "ts": ham_enquiry_response.get('name_last_updated', 0),
             })
 
