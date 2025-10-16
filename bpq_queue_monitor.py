@@ -36,7 +36,7 @@ def bpq_queue_monitor():
 
             # Log event if there is activity in the queue
             if (queue['tcpqueue'] > 0 or queue['packets'] > 0):
-                print(f"{datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')} Queue detected for {queue['callSign']} on port {queue['port']}: TCP Queue={queue['tcpqueue']}, Packets={queue['packets']}")
+                print(f"{datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')} Queue detected for {queue['callSign']} on port {queue['port']} via {queue['type']}: TCP Queue={queue['tcpqueue']}, Packets={queue['packets']}")
                 CALLSIGNS_WITH_ACTIVE_QUEUES.append(queue['callSign']) if queue['callSign'] not in CALLSIGNS_WITH_ACTIVE_QUEUES else None
                 event_logger(timestamp=round(time.time()*1000), event_type="BPQ_QUEUE", callsign=queue['callSign'], event=event_to_log)
             # Log final event for a previously active queue that is now cleared
