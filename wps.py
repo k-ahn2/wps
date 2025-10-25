@@ -246,16 +246,18 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     # Different handling if this is a connect from a new user or a new browser
     if connect_object["lm"] == 0 and len(client_channel_subscriptions) == 0:
         print(f"{callsign}, {client_version} Connect New {'User' if is_new_user == 1 else 'Browser'}, {datetime.datetime.now().isoformat()}")
-        first_time_connect_handler(CONN_DB_CURSOR, callsign, CONN, is_new_user)
+        first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, is_new_user)
     else:
         print(f"{callsign} {client_version} Existing Connect, {datetime.datetime.now().isoformat()}")
         existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, user_db_record, previous_connect_timestamp)
 
-def first_time_connect_handler(CONN_DB_CURSOR, callsign, CONN, is_new_user):
+def first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, is_new_user):
     '''
     Handles a connect from a new browser, either because the user is new or an existing user has connected from a new browser
     If an existing user from a new browser, returns the last 10 messages per person messaged
     '''
+
+    last_ham_timestamp = connect_object.get('lhts', 0)
 
     wps_logger("FIRST TIME CONNECT HANDLER", callsign, "Running first time connect handler")
 
@@ -325,7 +327,28 @@ def first_time_connect_handler(CONN_DB_CURSOR, callsign, CONN, is_new_user):
     # Return users currently online
     ###
 
-    online_users_connect_handler(CONN_DB_CURSOR, callsign, CONN)
+    # Now handled in the main connect handler
+    # online_users_connect_handler(CONN_DB_CURSOR, callsign, CONN)
+
+    ###
+    # Return ham updates
+    ###
+
+    response = { "t": "he", "h": [] }
+
+    updated_hams_result = dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_timestamp)
+
+    for ham in updated_hams_result['data']:
+        
+        response["h"].append({
+            "c": ham['callsign'],
+            "n": ham.get('name', '-'),
+            "ts": ham.get('name_last_updated', 0)
+        })
+
+    if len(response["h"]) > 0:
+        wps_logger("CONNECT HANDLER", callsign, f"User name change response {response}")
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
 
 def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, user_db_record, previous_connect_timestamp):
     '''
@@ -400,7 +423,8 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     # Return users currently online
     ###
 
-    online_users_connect_handler(CONN_DB_CURSOR, callsign, CONN)
+    # Now handled in the main connect handler
+    # online_users_connect_handler(CONN_DB_CURSOR, callsign, CONN)
 
     ###
     # Return new messages
@@ -550,7 +574,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
         channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN)
 
     ###
-    # Return name changes
+    # Return ham updates
     ###
 
     response = { "t": "he", "h": [] }
@@ -1452,15 +1476,26 @@ def connected_session_handler(CONN, ADDR):
     print(f"Connections After Connect: {str(rc)}")
 
     # Tell all the other connected users about the new connection
+    # This is only announced after recieving the connect object from the client
+    wps_logger("CONNECT HANDLER", callsign, f"Telling connected users about new connection from {callsign}")
     for C in CONNECTIONS:
-        wps_logger("CONNECTION SESSION HANDLER", callsign, f"PROCESSING CONNECTION {C['callsign']}")
         if C['callsign'] == callsign:
             continue
-
-        wps_logger('ONLINE STATUS', callsign, f"Connect sent to {C['callsign']}")
+        wps_logger("CONNECT HANDLER", callsign, f"Informing {C['callsign']} that {callsign} has connected")
         connected_response = { "t": "uc", "c": callsign }
         socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, connected_response)
 
+    # And tell the new connection about all currently connected users
+    wps_logger("CONNECT HANDLER", callsign, f"Telling {callsign} about existing connections")
+    online_response = { "t": "o", "o": [] }
+
+    for C in CONNECTIONS:
+        online_response["o"].append(C['callsign'])
+
+    if len(online_response["o"]) > 0:
+        wps_logger('ONLINE STATUS', callsign, f"Online users response: {online_response}")
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, online_response)
+    
     # Create an empty buffer and start listening for the first data
     CONNECTION_RX_BUFFER = ''
     first_rx = True
