@@ -55,7 +55,8 @@ END PORT
 There is no requirement to edit `env.json`to get started - the default configuration created by `env.py` will enable WPS to run and function. Edit `env.json` if you need to:
 - Change the TCP Port
 - Increase WPS Application or Database logging
-- Configure notifications 
+- Configure notifications
+- Configure WPS or BPQ event monitoring
 
 Any new keys should first be added to `env.py`, which will automatically add them to `env.json` on startup. 
 
