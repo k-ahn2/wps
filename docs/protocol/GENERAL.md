@@ -36,7 +36,7 @@ ___
 |Last Emoji|`le`|`1740266497`|Number|Timestamp of last message emoji - seconds since epoch|
 |Last Edit|`led`|`1739318078`|Number|Timestamp of last message edit - seconds since epoch|
 |Last Ham Timestamp|`lhts`|`1739318078`|Number|Timestamp of last Ham (i.e. User) update. Currently only changes on Name change|
-|Version|`v`|`0.44`|Number|Version of client, used for logging only|
+|Version|`v`|`0.44`|Number|Version of client|
 |Channel Connect|`cc`|`[]`|Array of Objects|Contains one JSON object per channel subscribed|
 |**Channel Connect Objects**|
 |Channel Id|`cid`|`2`|Number|The Channel Id|
