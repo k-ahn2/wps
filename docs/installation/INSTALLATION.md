@@ -123,3 +123,5 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`backup.py`|Run to create a JSON file containing every user, message and post object in the database. Reads `env.json` to determine the database filename from `dbFilename`. Any Sqlite supported backup method would also be valid|
 |`env.py`|Used to create env.json with a default configuration if it doesn't exist, or, check all required keys are present and add any new or that are missing|
 |`env.json`|Environment configuration variables|
+|`bpq_queue_monitor.py`|Run this file separately to query the BPQ API for AX.25 queue information. Requires setup and enabling in `env.json`|
+
