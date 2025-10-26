@@ -79,7 +79,7 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`enableWpsEvents`|Boolean|`False`|Enable the WPS event logging capability, used for capturing select activities such as user connnect, user disconnect and bytes sent
 |`eventsDbFilename`|String|`events.db`|The Sqlite database to use
 |`enableBpqEvents`|Boolean|`False`|If True, the BPQ Queue Monitor will run and query BPQ for queue statistics
-|`bpqApplName`|String|`events.db`|The name of BPQ application to monitor
+|`bpqApplName`|String|`WPS`|The name of BPQ application to monitor
 |`bpqQueueApiUrl`|String|`"http://127.0.0.1:8008/api/tcpqueues?8"`|The BPQ Queue Monitoring API endpoint
 
 ### Sample `env.json`
