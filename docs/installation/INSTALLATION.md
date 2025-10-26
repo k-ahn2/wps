@@ -74,6 +74,12 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`autoSubscribeToChannelIds`|Array|`[]`|Add any channel ids required for auto subscription. WPS will check all users are subscribed to these channels on startup|
 |`channels`|Object|`{}`|Add a key / value pair corresponding to the channel id (`cid`) and channel name. Used by notifications to include the Channel Name in the notification description - e.g. when a new post arrives in `cid` = 1, send "New Post from #packet-general"|
 |`events`|Object|`{}`|Contains the configuration settings for WPS event logging|
+|**Events Fields**|
+|`enableWpsEvents`|Boolean|`False`|Enable the WPS event logging capability, used for capturing select activities such as user connnect, user disconnect and bytes sent
+|`eventsDbFilename`|String|`events.db`|The Sqlite database to use
+|`enableBpqEvents`|Boolean|`False`|If True, the BPQ Queue Monitor will run and query BPQ for queue statistics
+|`bpqApplName`|String|`events.db`|The name of BPQ application to monitor
+|`bpqQueueApiUrl`|String|`"http://127.0.0.1:8008/api/tcpqueues?8"`|The BPQ Queue Monitoring API endpoint
 
 ### Sample `env.json`
 
