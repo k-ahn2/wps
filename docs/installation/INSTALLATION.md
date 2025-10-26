@@ -54,7 +54,7 @@ END PORT
 
 There is no requirement to edit `env.json`to get started - the default configuration created by `env.py` will enable WPS to run and function. Edit `env.json` if you need to:
 - Change the TCP Port
-- Increase WPS Applciation or Database logging
+- Increase WPS Application or Database logging
 - Configure notifications 
 
 Any new keys should first be added to `env.py`, which will automatically add them to `env.json` on startup. 
@@ -71,7 +71,9 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`notificationsEnabled`|Boolean|`false`|Set to `true` if `notificationsProdId` and `notificationsProdRestKey` are configured and you want to enable notifications|
 |`notificationsProdId`|String|`""`|Add the Id of your OneSignal Service|
 |`notificationsProdRestKey`|String|`""`|Add the REST API key of your OneSignal Service|
+|`autoSubscribeToChannelIds`|Array|`[]`|Add any channel ids required for auto subscription. WPS will check all users are subscribed to these channels on startup|
 |`channels`|Object|`{}`|Add a key / value pair corresponding to the channel id (`cid`) and channel name. Used by notifications to include the Channel Name in the notification description - e.g. when a new post arrives in `cid` = 1, send "New Post from #packet-general"|
+|`events`|Object|`{}`|Contains the configuration settings for WPS event logging|
 
 ### Sample `env.json`
 
@@ -82,14 +84,23 @@ Any new keys should first be added to `env.py`, which will automatically add the
     "recommendedClientVersion": 0.1,
     "socketTcpPort": 63001,
     "dbFilename": "wps.db",
+    "events": {
+        "enableWpsEvents": False,
+        "enableBpqEvents": False,
+        "eventsDbFilename": "events.db",
+        "bpqApplName": "WPS",
+        "bpqQueueApiUrl": "http://127.0.0.1:8008/api/tcpqueues?8"
+    },
     "minWpsLogLevel": "ERROR",
     "minDbLogLevel": "ERROR",
     "notificationsEnabled": false,
     "notificationsProdId": "",
     "notificationsProdRestKey": "",
+    "autoSubscribeToChannelIds": [100, 1],
     "channels": {
         "0": "packet-tech",
-        "1": "packet-general"
+        "1": "packet-general",
+        "100": "announcements"
     }
 }
 ```
