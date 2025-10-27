@@ -33,7 +33,7 @@ Links to documentation in the `/docs` directory
 
 
 ## WPS Schematic
-<img src="docs/wps.jpg" alt="blah" width="500px"/>
+<img src="docs/wps.png" alt="blah" width="500px"/>
 
 ## Key Functions
 - **Direct Messaging:** Message send and receive (similar to SMS, WhatsApp, Signal or iMessage)
@@ -47,9 +47,10 @@ Links to documentation in the `/docs` directory
 - **Callsign Lookup:** Enquire if a callsign is registered
 - **Name Change:** WPS distrbutes display name updates, if changed
 - **Last Seen Times:** See when users you have messaged were last connected
+- **Events:** Capture events in a separate database for monitoring and analytics - e.g. user connected, user disconnected, bytes sent
 - **Delivery Receipts:** WPS responds to new and edited messages and posts with a delivery receipt, guaranteeing server delivery
 - **Version Control:** Advise the client a new software version is available, configurable within WPS in real-time
-- **UserAvatars:** Attach custom avatars / images
+- **User Avatars:** Attach custom avatars / images
 
 ## Server Capabilities
 - **Compression:** WPS compresses every packet before sending, then sends whichever of the compressed or uncompressed version is shorter
