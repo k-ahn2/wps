@@ -388,10 +388,9 @@ Fetch a count of new Avatars
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`a`|String|Always type ‘a’ for Avatar
-|Timestamp|`a`|`{}`|Object|An individual Avatar object
-
-
-
+|Timestamp|`ts`|`1750799200`|Number|The timestamp the Avatar was created
+|Avatar|`a`|`{}`|Object|An individual Avatar object
+|Avatar Count|`ac`|`3`|Number|If `co` is set the request, return the count only and suppress the `a` field
 
 ### JSON Example
 
