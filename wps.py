@@ -1,3 +1,5 @@
+print(f"### WPS Starting ###")
+
 from env import *
 from db import *
 from handlers import *
@@ -168,6 +170,27 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     '''
 
     event_logger(timestamp_milliseconds(), 'USER_CONNECT', callsign, { "total": len(CONNECTIONS) }, None)
+
+    # Tell all the other connected users about the new connection
+    # This is only announced after recieving the connect object from the client
+    wps_logger("CONNECT HANDLER", callsign, f"Telling connected users about new connection from {callsign}")
+    for C in CONNECTIONS:
+        if C['callsign'] == callsign:
+            continue
+        wps_logger("CONNECT HANDLER", callsign, f"Informing {C['callsign']} that {callsign} has connected")
+        connected_response = { "t": "uc", "c": callsign }
+        socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, connected_response)
+
+    # And tell the new connection about all currently connected users
+    wps_logger("CONNECT HANDLER", callsign, f"Telling {callsign} about existing connections")
+    online_response = { "t": "o", "o": [] }
+
+    for C in CONNECTIONS:
+        online_response["o"].append(C['callsign'])
+
+    if len(online_response["o"]) > 0:
+        wps_logger('ONLINE STATUS', callsign, f"Online users response: {online_response}")
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, online_response)
 
     client_channel_subscriptions = connect_object.get('cc', [])
     name_from_client = connect_object.get('n', '-')
@@ -394,19 +417,49 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
 
     wps_logger('CONNECT HANDLER', callsign, f"Channel subscriptions {channel_subscriptions}")
 
+    # Array to of channels where the post count is less than maxNewPostsToReturnPerChannelOnConnect
+    channels_to_return_posts = []
+    
+    # Array of channel headers where the post count is greater than maxNewPostsToReturnPerChannelOnConnect
+    # WPS marks the channels as paused until the client request is received, also blocking any new posts being sent to the user
+    paused_channels_headers = {
+        "t": "pch",
+        "ch": []
+    }
+
     for channel in channel_subscriptions:
         
         new_posts = dbGetPosts(CONN_DB_CURSOR, channel['cid'], channel['lp'])
         new_posts_len = len(new_posts['data'])
 
-        wps_logger('CONNECT HANDLER', callsign, f"Channel {channel} count {new_posts_len}")
-        
+        if new_posts_len <= env['maxNewPostsToReturnPerChannelOnConnect']:
+            wps_logger('CONNECT HANDLER', callsign, f"Channel {channel} has {new_posts_len} new posts, returning posts")
+            channels_to_return_posts.append(channel)
+        elif new_posts_len > env['maxNewPostsToReturnPerChannelOnConnect']:
+            wps_logger('CONNECT HANDLER', callsign, f"Channel {channel} has {new_posts_len} new posts, adding to channel headers")
+            paused_channels_headers["ch"].append({
+                "cid": channel['cid'],
+                "pt": new_posts_len
+            })
+                
         connect_response['pc'] += new_posts_len
+    
+    # Update the user record to include the paused channels
+    if len(paused_channels_headers["ch"]) > 0:
+        paused_channels = [item['cid'] for item in paused_channels_headers['ch']]
+        paused_channels_update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, { "paused_channels": paused_channels })
+        wps_logger('CONNECT HANDLER', callsign, f"Updated user record with paused channel headers {paused_channels}")
+        close_connection(CONN_DB_CURSOR, callsign, CONN) if paused_channels_update_response['result'] == 'failure' else None
 
+    # Send the connect responses
+    wps_logger('CONNECT HANDLER', callsign, f"Connect response to client {connect_response}")
     socket_send_handler(CONN_DB_CURSOR, CONN, callsign, connect_response)
+    wps_logger('CONNECT HANDLER', callsign, f"Paused channel headers response to client {paused_channels_headers}")
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, paused_channels_headers)
+    
+    # Testing Native Bytes Compression (no base64)
     #CONN.send(struct.pack('>H', 3800))
     #CONN.send(frame_and_compress_json_object_bytes(connect_response))
-    wps_logger('CONNECT HANDLER', callsign, f"Connect response to client {connect_response}")
 
     ###
     # Terminate any client version < min_version
@@ -570,7 +623,8 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     if len(connect_object['cc']) != len(user_server_channel_subscriptions):
         wps_logger('CONNECT HANDLER', callsign, "Warn, mismatch in client and server channel subscriptions")
 
-    for channel_object in connect_object['cc']:
+    wps_logger('CONNECT HANDLER', callsign, f"Starting channel posts return for channels: {channels_to_return_posts}")
+    for channel_object in channels_to_return_posts:
         channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN)
 
     ###
@@ -1097,30 +1151,45 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
             wps_logger("CHANNELS POST HANDLER", callsign, f"Post to insert: {post_to_insert}")
             post_insert_response = dbInsertPost(CONN_DB_CURSOR, post_to_insert)
             close_connection(CONN_DB_CURSOR, callsign, CONN) if post_insert_response['result'] == 'failure' else None
-            wps_logger("CHANNELS POST HANDLER", callsign, f"Client acknowledgment is {post_insert_response}")
+            wps_logger("CHANNELS POST HANDLER", callsign, f"Post insert acknowledgment is {post_insert_response}")
             socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
         
-        subscribers_to_receive_push_notification_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
-        close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_to_receive_push_notification_response['result'] == 'failure' else None
-        subscribers_to_receive_push_notification = subscribers_to_receive_push_notification_response['data']
-        wps_logger("CHANNELS POST HANDLER", callsign, f"Subscribers to receive push notification: {subscribers_to_receive_push_notification_response}")
+        # Get the channel subscribers
+        # Gets an array of subscriber objects with callsign and push settings
+        subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
+        close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_response['result'] == 'failure' else None
+        subscribers = subscribers_response['data']
 
-        callsigns_to_process = [s['callsign'] for s in subscribers_to_receive_push_notification]
+        # Creates an array of subscriber callsigns only
+        subscribers_callsigns = [s['callsign'] for s in subscribers]
+        wps_logger("CHANNELS POST HANDLER", callsign, f"Channel Subscribers: {subscribers_callsigns}")
+
+        # Get the list of callsigns who have this channel paused
+        # Creates an array of callsigns who have paused the channel
+        paused_callsigns_response = dbPausedCallsignsForChannel(CONN_DB_CURSOR, post['cid'])
+        close_connection(CONN_DB_CURSOR, callsign, CONN) if paused_callsigns_response['result'] == 'failure' else None
+        paused_callsigns = paused_callsigns_response['data']
+        wps_logger("CHANNELS POST HANDLER", callsign, f"Channel Paused Subscribers: {paused_callsigns}")
 
         sent_post_in_real_time = []
 
         # Send to connected subscribers in real time
-        wps_logger("CHANNELS POST HANDLER", callsign, f"Connections {CONNECTIONS}")
+        wps_logger("CHANNELS POST HANDLER", callsign, f"Connections {[[item['callsign'] for item in CONNECTIONS]]}")
 
+        # Process active connections
+        # If a connected callsign is a subscriber to the channel and doesn't have the channel paused, send the post in real-time
         for C in CONNECTIONS:
-            if C['callsign'] != post['fc'] and C['callsign'] in callsigns_to_process:
+            if C['callsign'] != post['fc'] and C['callsign'] in subscribers_callsigns:
+                if C['callsign'] in paused_callsigns:
+                    wps_logger("CHANNELS POST HANDLER", callsign, f"{C['callsign']} has channel paused, skipping real-time send")
+                    continue
                 wps_logger("CHANNELS POST HANDLER", callsign, f"Sending real-time to: {C['callsign']}")
                 socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, post)
                 sent_post_in_real_time.append(C['callsign'])
 
         # Send to remaining subscribers not online and with push enabled      
-        for subscriber in subscribers_to_receive_push_notification:
-            wps_logger("CHANNELS POST HANDLER", callsign, f"Processing {subscriber['callsign']}")
+        for subscriber in subscribers:
+            wps_logger("CHANNELS POST HANDLER", callsign, f"Processing {subscriber['callsign']} for push notification")
 
             if subscriber['callsign'] in sent_post_in_real_time:
                 wps_logger("CHANNELS POST HANDLER", callsign, "Already sent in real-time")
@@ -1354,6 +1423,63 @@ def post_batch_handler(CONN_DB_CURSOR, post_batch_request, callsign, CONN):
         wps_logger('POST BATCH HANDLER', callsign, f"Channel connect response batch: {channel_posts_batch_array}")
         socket_send_handler(CONN_DB_CURSOR, CONN, callsign, channel_posts_batch_array)
 
+def unpause_channel_handler(CONN_DB_CURSOR, callsign, unpause_channel_request, CONN):
+    '''
+    Specific handler to unblock a channel and return requested posts
+    Returns a channel post batch object in batches of 4 posts
+    '''
+
+    wps_logger('UNPAUSE CHANNEL HANDLER', callsign, f"Unpause channel request: {unpause_channel_request}")
+
+    CPB_BATCH_SIZE = 4
+
+    channel_posts_batch_array = {
+        "t": "cpb",
+        "cid": unpause_channel_request['cid'],
+        "m": {
+            "pt": 0,
+            "pc": 0
+        },
+        "p": []
+    }
+
+    if "lts" in unpause_channel_request:
+        # If lts (last timestamp) is provided, get posts since that timestamp
+        posts_response = dbGetPosts(CONN_DB_CURSOR, unpause_channel_request['cid'], unpause_channel_request['lts'])
+    elif "pc" in unpause_channel_request:
+        # If pc (post count) is provided, get the last pc posts
+        posts_response = dbGetPostsBatch(CONN_DB_CURSOR, unpause_channel_request['cid'], unpause_channel_request['pc'])
+
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if posts_response['result'] == 'failure' else None
+    posts = posts_response['data']
+    wps_logger('UNPAUSE CHANNEL HANDLER', callsign, f"Post count to return: {len(posts)}")
+
+    channel_posts_batch_array['m']['pt'] = len(posts)
+    new_posts_batched = list(divide_into_batches(posts, CPB_BATCH_SIZE))
+    
+    post_count = 0
+    for post_batch in new_posts_batched:
+        if (post_count + CPB_BATCH_SIZE) < channel_posts_batch_array['m']['pt']:
+            post_count += CPB_BATCH_SIZE
+        else:
+            post_count = channel_posts_batch_array['m']['pt']
+
+        channel_posts_batch_array['p'] = post_batch
+        channel_posts_batch_array['m']['pc'] = post_count
+        wps_logger('UNPAUSE CHANNEL HANDLER', callsign, f"Unpause Channel response batch count: {channel_posts_batch_array['m']['pc']}")
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, channel_posts_batch_array)
+
+    callsign_search = dbUserSearch(CONN_DB_CURSOR, callsign)
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if callsign_search['result'] == 'failure' else None
+    user_record = callsign_search['data']
+
+    wps_logger('UNPAUSE CHANNEL HANDLER', callsign, f"Blocked channels before: {user_record.get('paused_channels', [])}")    
+
+    update_object = { "paused_channels": [id for id in user_record.get('paused_channels', []) if id != unpause_channel_request['cid']] }
+    user_update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, update_object)
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if user_update_response['result'] == 'failure' else None
+    wps_logger('UNPAUSE CHANNEL HANDLER', callsign, f"Blocked channels after: {user_update_response['data'].get('paused_channels', [])}")
+
 def close_connection(CONN_DB_CURSOR, callsign, CONN):
     ###
     # Called when a user disconnects or when the server disconnects a user, if an error is encountered
@@ -1367,7 +1493,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     print(callsign, 'disconnected', datetime.datetime.now().isoformat())
     disconnect_timestamp = round(time.time())
 
-    user_updated_fields = { "last_disconnected": disconnect_timestamp, "is_online": 0 }
+    user_updated_fields = { "last_disconnected": disconnect_timestamp, "is_online": 0, "paused_channels": [] }
 
     user_db_record = dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
     wps_logger("DISCONNECT HANDLER", callsign, f"User update response: {user_db_record}")
@@ -1474,27 +1600,6 @@ def connected_session_handler(CONN, ADDR):
     for c in CONNECTIONS:
         rc.append(c['callsign'])
     print(f"Connections After Connect: {str(rc)}")
-
-    # Tell all the other connected users about the new connection
-    # This is only announced after recieving the connect object from the client
-    wps_logger("CONNECT HANDLER", callsign, f"Telling connected users about new connection from {callsign}")
-    for C in CONNECTIONS:
-        if C['callsign'] == callsign:
-            continue
-        wps_logger("CONNECT HANDLER", callsign, f"Informing {C['callsign']} that {callsign} has connected")
-        connected_response = { "t": "uc", "c": callsign }
-        socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, connected_response)
-
-    # And tell the new connection about all currently connected users
-    wps_logger("CONNECT HANDLER", callsign, f"Telling {callsign} about existing connections")
-    online_response = { "t": "o", "o": [] }
-
-    for C in CONNECTIONS:
-        online_response["o"].append(C['callsign'])
-
-    if len(online_response["o"]) > 0:
-        wps_logger('ONLINE STATUS', callsign, f"Online users response: {online_response}")
-        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, online_response)
     
     # Create an empty buffer and start listening for the first data
     CONNECTION_RX_BUFFER = ''
@@ -1697,6 +1802,11 @@ def connected_session_handler(CONN, ADDR):
                     wps_logger("CONNECTION SESSION HANDLER", callsign, "Invoking Avatar Enquiry handler")
                     avatar_enquiry_handler(CONN_DB_CURSOR, callsign, message_json, CONN)
 
+                # Unpause Channel 
+                if message_json["t"] == "cu":
+                    wps_logger("CONNECTION SESSION HANDLER", callsign, "Unpause Channel handler")
+                    unpause_channel_handler(CONN_DB_CURSOR, callsign, message_json, CONN)
+
         except Exception as e:
             wps_logger("CONNECTION SESSION HANDLER", callsign, f"Exception {e} happened. Disconnecting", "ERROR")
             close_connection(CONN_DB_CURSOR, callsign, CONN)
@@ -1743,7 +1853,6 @@ def check_auto_subscriptions(cursor):
         return
 
 def startup_and_listen():
-    print('WPS Started')
     print(f"Using database {env['dbFilename']}")
     print(f"Listening on TCP Port {env['socketTcpPort']}")
 
@@ -1753,7 +1862,8 @@ def startup_and_listen():
     global_cursor.execute('''select sqlite_version()''')
     version = [i[0] for i in global_cursor]
     print("SQLite Version " + version[0])
-
+    print("### WPS Started ###")
+    
     # Create the database tables, if they don't exist
     dbInit(global_cursor)
 
