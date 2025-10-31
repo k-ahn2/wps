@@ -73,7 +73,7 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`notificationsProdId`|String|`""`|Add the Id of your OneSignal Service|
 |`notificationsProdRestKey`|String|`""`|Add the REST API key of your OneSignal Service|
 |`autoSubscribeToChannelIds`|Array|`[]`|Add any channel ids required for auto subscription. WPS will check all users are subscribed to these channels on startup|
-|`maxNewPostsToReturnPerChannelOnConnect`|Number|`100`|If total number of posts to return to the client is more than this number, return paused channel headers only via `pch`
+|`maxNewPostsToReturnPerChannelOnConnect`|Number|`100`|During connect, if total number of posts to return to the client for a given channel is more than this number, return paused channel headers only via `pch`
 |`channels`|Object|`{}`|Add a key / value pair corresponding to the channel id (`cid`) and channel name. Used by notifications to include the Channel Name in the notification description - e.g. when a new post arrives in `cid` = 1, send "New Post from #packet-general"|
 |`events`|Object|`{}`|Contains the configuration settings for WPS event logging|
 |**Events Fields**|
