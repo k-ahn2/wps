@@ -763,6 +763,45 @@ def dbChannelSubscribers(CONN_DB_CURSOR, sending_callsign, channel_id):
         db_logger("dbChannelSubscribers", "Return: " + str(return_error), 'ERROR')
         return return_error
 
+def dbPausedCallsignsForChannel(CONN_DB_CURSOR, channel_id):
+    try:
+        select_query = f"""
+        SELECT 
+            json_extract(user, '$.callsign'),
+            IFNULL(json_extract(user, '$.paused_channels'), '[]')
+        FROM 
+            users
+        """
+        db_logger("dbPausedCallsignsForChannel", "Query: " + ' '.join(select_query.split()))
+
+        CONN_DB_CURSOR.execute(select_query)
+        result = []
+        for row in CONN_DB_CURSOR:
+            callsign = row[0]
+            paused_channels = json.loads(row[1]) if row[1] else []
+            
+            if channel_id not in paused_channels:
+                continue
+            
+            result.append(callsign)
+        
+        return_success = {
+            "result": "success",
+            "data": result
+        }
+        db_logger("dbPausedCallsignsForChannel", "Return: " + str(return_success))
+        return return_success
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbPausedCallsignsForChannel",
+            "params": [channel_id]
+        }
+        db_logger("dbPausedCallsignsForChannel", "Return: " + str(return_error), 'ERROR')
+        return return_error
+
 def dbUpdateUserPushNotifications(CONN_DB_CURSOR, callsign, channel_id):
     # Update the user with the new push devices
     try:
