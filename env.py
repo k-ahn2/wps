@@ -24,6 +24,7 @@ env_template = {
     "notificationsProdId": "",
     "notificationsProdRestKey": "",
     "autoSubscribeToChannelIds": [],
+    "maxNewPostsToReturnPerChannelOnConnect": 100,
     "channels": {}
 }
 
