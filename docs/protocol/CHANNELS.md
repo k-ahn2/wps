@@ -416,7 +416,7 @@ Returned when the number of pending posts in a given channel is greater than the
 
 ## Type uc - Unpause Channel
 
-Instruction from the client to WPS to unpause a channel, including details on the posts to return
+Instruction from the client to WPS to unpause a channel, including details on the posts to return. WPS removes the `cid` from `paused_channels` on the user record, then returns a `cpb` containing the requested posts.
 
 ### Client to Server
 
