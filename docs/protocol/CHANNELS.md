@@ -9,6 +9,8 @@ Singular Types
 3. [Type cpr - Channel Post Response](#type-cpr---channel-post-response)
 4. [Type cpem - Channel Post Emoji](#type-cpem---channel-post-emoji)
 5. [Type cs - Channel Subscribe](#type-cs---channel-subscribe)
+6. [Type pch - Paused Channel Headers](#type-pch---paused-channel-headers)
+7. [Type uc - Unpause Channel](#type-uc---unpause-channel)
 
 Batch Variants
 
@@ -377,5 +379,71 @@ Send a batch of emoji updates. Always sends the latest complete view of emojis f
          ]
       }
    ]
+}
+```
+
+## Type pch - Paused Channel Headers
+
+Returned when the number of pending posts in a given channel is greater than the `maxNewPostsToReturnPerChannelOnConnect` env variable. Returns a count of posts per channel, allowing the client application to give the user options - e.g. download everything, or download the last x posts
+
+### Server to Client
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`pch`|String|`pch` for Paused Channel Headers
+|Channel Headers|`ch`|`[]`|Array of Objects|Array of channels and post counts
+|**Channel Headers**|
+|Channel Id|`cid`|`0`|Number|id of the channel|
+|Posts Total|`pt`|`712`|Number|Number of pending posts|
+
+### JSON Example
+
+``` json
+{
+   "t": "pch",
+   "ch": [
+      {
+         "cid": 0,
+         "pt":  712
+      },
+      {
+         "cid": 6,
+         "pt":  152
+      },
+   ]
+}
+```
+
+## Type uc - Unpause Channel
+
+Instruction from the client to WPS to unpause a channel, including details on the posts to return
+
+### Client to Server
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`uc`|String|`uc` for Unpause Channel
+|Channel Id|`cid`|`0`|Number|id of the channel|
+|**Then one of either**|
+|Last Timestamp|`lts`|`1753180608945`|Number|Returns all posts since timestamp
+|Post Count|`pc`|`50`|Number|Returns the last `pc` posts in the channel
+
+### JSON Example
+
+Return all posts since last timestamp
+``` json
+{
+   "t": "uc",
+   "cid": 0,
+   "lts": 1753180608945
+}
+```
+
+Return the latest 50 posts
+``` json
+{
+   "t": "uc",
+   "cid": 0,
+   "pc": 50
 }
 ```
