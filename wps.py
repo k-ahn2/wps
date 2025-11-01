@@ -433,7 +433,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
         new_posts_len = len(new_posts['data'])
 
         if new_posts_len <= env['maxNewPostsToReturnPerChannelOnConnect']:
-            wps_logger('CONNECT HANDLER', callsign, f"Channel {channel} has {new_posts_len} new posts, returning posts")
+            wps_logger('CONNECT HANDLER', callsign, f"Channel {channel} has {new_posts_len} new posts")
             channels_to_return_posts.append(channel)
         elif new_posts_len > env['maxNewPostsToReturnPerChannelOnConnect']:
             wps_logger('CONNECT HANDLER', callsign, f"Channel {channel} has {new_posts_len} new posts, adding to channel headers")
@@ -1497,10 +1497,8 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
 
     user_db_record = dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
     wps_logger("DISCONNECT HANDLER", callsign, f"User update response: {user_db_record}")
-    
-    wps_logger("DISCONNECT HANDLER", callsign, "All connections BEFORE disconnect: ")
-    for c in CONNECTIONS:
-        wps_logger("DISCONNECT HANDLER", callsign, f"Connection: {c}")        
+
+    wps_logger("DISCONNECT HANDLER", callsign, f"All connections BEFORE disconnect: {[c['callsign'] for c in CONNECTIONS]}")
     
     try:
         CONN.shutdown(socket.SHUT_RDWR)
@@ -1513,12 +1511,8 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
             del CONNECTIONS[key]
             event_logger(timestamp_milliseconds(), 'USER_DISCONNECT', callsign, { "total": len(CONNECTIONS) }, None)
 
-    wps_logger("DISCONNECT HANDLER", callsign, "All connections AFTER disconnect: ")
-    for c in CONNECTIONS:
-        wps_logger("DISCONNECT HANDLER", callsign, f"Connection: {c}")      
-    
-    wps_logger('ONLINE STATUS', callsign, f"Disconnected, connection length is {len(CONNECTIONS)}")
-    
+    wps_logger("DISCONNECT HANDLER", callsign, f"All connections AFTER disconnect: {[c['callsign'] for c in CONNECTIONS]}")
+
     for C in CONNECTIONS:
         wps_logger("ONLINE STATUS", callsign, f"Disconnect sent to: {C['callsign']}")       
         
