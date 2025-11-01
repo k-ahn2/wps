@@ -431,7 +431,9 @@ Upon receipt, WPS returns:
    - new messages, sent in batches of 4 as type `mb`
    - new message emojis, sent in one batch as type `memb`
    - new message edits, sent in one batch as type `medb`
-   - new posts, sent in batches of 4 as type `cpb`
+   - new posts or paused channel headers, depending on:
+      - if <= `maxNewPostsToReturnPerChannelOnConnect`, send backlog of posts in batches of 4 as type `cpb`
+      - if > `maxNewPostsToReturnPerChannelOnConnect`, return channel headers as type `pch`
    - new post emojis, sent in one batch as type `cpemb`
    - new post edits, sent in one batch as type `cpedb`
    - updated last seen times and name changes as type `u`, for Messaged users
