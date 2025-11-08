@@ -8,9 +8,10 @@
 5. [Type uc and ud - User Connect and User Disconnect](#type-uc-and-ud---user-connect-and-user-disconnect)
 6. [Type o - Online Users](#type-o---online-users)
 7. [Type u - User Updates](#type-u---user-updates)
-8. [Type a and ar - Add or Update Avatar](#type-a-and-ar---add-or-update-avatar)
-9. [Type ae - Avatar Enquiry](#type-wpe---avatar-enquiry)
-10. [The Connect Sequence Explained](#the-connect-sequence-explained)
+8. [Type k - Keep Alive](#type-k---keep-alive)
+9. [Type a and ar - Add or Update Avatar](#type-a-and-ar---add-or-update-avatar)
+10. [Type ae - Avatar Enquiry](#type-wpe---avatar-enquiry)
+11. [The Connect Sequence Explained](#the-connect-sequence-explained)
 
 [Return to README](/README.md)
 
