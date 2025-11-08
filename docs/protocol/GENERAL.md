@@ -312,6 +312,24 @@ Sent by the server as part of the connect sequence - contains updated name and l
 }
 ```
 
+## Type k - Keep Alive
+
+Recognised by WPS as a Keep Alive, but simply logs receipt and then ceases processing - no further action taken
+
+### Client to Server
+<hr>
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`k`|String|Always `k` for Keep Alive
+
+### JSON Example
+
+```json
+{
+   "t": "k"
+```
+
 ## Type a and ar - Add or Update Avatar
 
 Adds or Updates an Avatar
