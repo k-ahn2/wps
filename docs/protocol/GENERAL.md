@@ -329,6 +329,7 @@ Recognised by WPS as a Keep Alive, but simply logs receipt and then ceases proce
 ```json
 {
    "t": "k"
+}
 ```
 
 ## Type a and ar - Add or Update Avatar
