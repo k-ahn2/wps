@@ -198,7 +198,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     connect_timestamp = round(time.time())
 
     callsign_search = dbUserSearch(CONN_DB_CURSOR, callsign)
-    wps_logger("CONNECT HANDLER", callsign, f"User search result: {callsign_search}")
+    wps_logger("CONNECT HANDLER", callsign, f"User search result: {callsign_search.get('result', None)}")
     close_connection(CONN_DB_CURSOR, callsign, CONN) if callsign_search['result'] == 'failure' else None
 
     # Create user if not seen already
@@ -262,7 +262,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
         user_updated_fields['name_last_updated'] = connect_timestamp
 
     user_db_update = dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
-    wps_logger("CONNECT HANDLER", callsign, f"User update response: {user_db_update}")
+    wps_logger("CONNECT HANDLER", callsign, f"User update response: {user_db_update.get('result', None)}")
     close_connection(CONN_DB_CURSOR, callsign, CONN) if user_db_update['result'] == 'failure' else None
     user_db_record = user_db_update['data']
 
@@ -602,7 +602,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
             }
             user_response['u'].append(resp)
 
-    wps_logger('CONNECT HANDLER', callsign, f"User updates response: {user_response}")
+    wps_logger('CONNECT HANDLER', callsign, f"User updates response: {user_response.get('success', None)}")
 
     if len(user_response['u']) > 0:
         socket_send_handler(CONN_DB_CURSOR, CONN, callsign, user_response)
@@ -1205,7 +1205,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
                 wps_logger("CHANNELS POST HANDLER", callsign, f"Push response: {push_resp}")
                 post_update_response = dbUpdateUserPushNotifications(CONN_DB_CURSOR, subscriber['callsign'], post['cid'])
                 close_connection(CONN_DB_CURSOR, callsign, CONN) if post_update_response['result'] == 'failure' else None
-                wps_logger("CHANNELS POST HANDLER", callsign, f"User update response is {post_update_response}")
+                wps_logger("CHANNELS POST HANDLER", callsign, f"User update response is {post_update_response.get('result', None)}")
 
         return None
 
@@ -1343,7 +1343,7 @@ def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN)
         update_object = { "channel_subscriptions": channel_subscriptions }
         user_update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, update_object)
         close_connection(CONN_DB_CURSOR, callsign, CONN) if user_update_response['result'] == 'failure' else None
-        wps_logger("CHANNELS SUBSCRIBE HANDLER", callsign, f"User update response: {user_update_response}")
+        wps_logger("CHANNELS SUBSCRIBE HANDLER", callsign, f"User update response: {user_update_response.get('result', None)}")
 
         new_post_count_reponse = dbGetPosts(CONN_DB_CURSOR, subscribe_request['cid'], subscribe_request['lcp'])
         close_connection(CONN_DB_CURSOR, callsign, CONN) if new_post_count_reponse['result'] == 'failure' else None
@@ -1367,7 +1367,7 @@ def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN)
         update_object = { "channel_subscriptions": channel_subscriptions }
         user_update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, update_object)
         close_connection(CONN_DB_CURSOR, callsign, CONN) if user_update_response['result'] == 'failure' else None
-        wps_logger("CHANNELS SUBSCRIBE HANDLER", callsign, f"User update response: {user_update_response}")
+        wps_logger("CHANNELS SUBSCRIBE HANDLER", callsign, f"User update response: {user_update_response.get('result', None)}")
 
         client_acknowledgement = {
             "t": "cs",
@@ -1496,12 +1496,13 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     user_updated_fields = { "last_disconnected": disconnect_timestamp, "is_online": 0, "paused_channels": [] }
 
     user_db_record = dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
-    wps_logger("DISCONNECT HANDLER", callsign, f"User update response: {user_db_record}")
+    wps_logger("DISCONNECT HANDLER", callsign, f"User update response: {user_db_record.get('result', None)}")
 
     wps_logger("DISCONNECT HANDLER", callsign, f"All connections BEFORE disconnect: {[c['callsign'] for c in CONNECTIONS]}")
     
     try:
         CONN.shutdown(socket.SHUT_RDWR)
+        CONN.close()
     except Exception as e:
         wps_logger("DISCONNECT HANDLER", callsign, f"Socket shutdown exception {e} happened")
     
@@ -1628,7 +1629,7 @@ def connected_session_handler(CONN, ADDR):
                     close_connection(CONN_DB_CURSOR, callsign, CONN)
                     break
             
-            wps_logger("CONNECTION SESSION HANDLER", callsign, f"RX Buffer is: {repr(CONNECTION_RX_BUFFER)}") 
+            wps_logger("CONNECTION SESSION HANDLER", callsign, f"CONNECTION_RX_BUFFER is: {repr(CONNECTION_RX_BUFFER)}") 
 
             if len(socket_rx) == 0:
                 wps_logger("CONNECTION SESSION HANDLER", callsign, "Received empty string, assumed lost connection. Disconnecting")
@@ -1636,15 +1637,35 @@ def connected_session_handler(CONN, ADDR):
                 break
             
             CONNECTION_RX_BUFFER = CONNECTION_RX_BUFFER + socket_rx
-            wps_logger("CONNECTION SESSION HANDLER", callsign, f"After appending new RX to RX Buffer, it is now {repr(CONNECTION_RX_BUFFER)}")
+            wps_logger("CONNECTION SESSION HANDLER", callsign, f"After appending new RX to CONNECTION_RX_BUFFER, it is now {repr(CONNECTION_RX_BUFFER)}")
 
-            contains_eol = CONNECTION_RX_BUFFER.find('\r\n')
-            wps_logger("CONNECTION SESSION HANDLER", callsign, f"Contains EOL: {contains_eol}")
-
+            # Check if the last characters in the buffer are \r\n, if not, wait for more data
+            buffer_has_complete_data = False
+            if CONNECTION_RX_BUFFER[-2:] == '\r\n':
+                buffer_has_complete_data = True
+                wps_logger("CONNECTION SESSION HANDLER", callsign, "CONNECTION_RX_BUFFER ends with \\r\\n, has complete data to process")
+            
             # Split on the /r/n and process
             messages_to_process = CONNECTION_RX_BUFFER.split('\r\n')
-            wps_logger("CONNECTION SESSION HANDLER", callsign, f"Buffer after splitting is: {messages_to_process}")
+            wps_logger("CONNECTION SESSION HANDLER", callsign, f"CONNECTION_RX_BUFFER after splitting is: {messages_to_process}")
 
+            # Check if the last element is empty string, meaning the buffer ended with \r\n and there is no partial data left
+            # If so, clear the RX Buffer as all data has been processed
+            if messages_to_process[-1] == '' and buffer_has_complete_data:
+                wps_logger("CONNECTION SESSION HANDLER", callsign, "Removing last element from array as it is empty string and buffer has complete data, clearing CONNECTION_RX_BUFFER")
+                del messages_to_process[-1]
+                CONNECTION_RX_BUFFER = ''
+            else:
+                # Last element is not empty string and buffer does not have complete data, meaning there is partial data left
+                # Keep this in the RX Buffer after processing all other data
+                wps_logger("CONNECTION SESSION HANDLER", callsign, "Last element is NOT empty string, must be part of the next packet. Removing from array and updating CONNECTION_RX_BUFFER")
+                CONNECTION_RX_BUFFER = messages_to_process.pop(-1)
+                wps_logger("CONNECTION SESSION HANDLER", callsign, f"CONNECTION_RX_BUFFER is now: '{CONNECTION_RX_BUFFER}'")
+
+            if len(messages_to_process) > 0:
+                wps_logger("CONNECTION SESSION HANDLER", callsign, f"Now, array should have {len(messages_to_process)} complete packets to process")
+            
+            # Process each element in the array - which must be complete packets, either compressed or plain text JSON
             while len(messages_to_process) > 0:
                 
                 wps_logger("CONNECTION SESSION HANDLER", callsign, f"Array to process is: {messages_to_process}")
@@ -1668,13 +1689,6 @@ def connected_session_handler(CONN, ADDR):
                     close_connection(CONN_DB_CURSOR, callsign, CONN)
                     break
 
-                # Check for compression delimiters at the start of the message but not at the end, or, compression delimiters at the end of the message but not at the start
-                # If true, this is a part of a compressed message that hasn't yet been fully received
-                if (message[:2] == compression_delimiter_base64 and message[-2:] != compression_delimiter_base64) or (message[:2] != compression_delimiter_base64 and message[-2:] == compression_delimiter_base64):
-                    wps_logger("CONNECTION SESSION HANDLER", callsign, "Not complete compressed packet so must be waiting on more data, add to RX Buffer and return")
-                    CONNECTION_RX_BUFFER = message
-                    wps_logger("CONNECTION SESSION HANDLER", callsign, f"RX Buffer is {CONNECTION_RX_BUFFER}")
-                    break
 
                 # If compression delimiters start and finish, decompress before continuing
                 if (message[:2] == compression_delimiter_base64 and message[-2:] == compression_delimiter_base64):
@@ -1685,39 +1699,23 @@ def connected_session_handler(CONN, ADDR):
                     wps_logger("CONNECTION SESSION HANDLER", callsign, f"Decompressed message: {message}")
                     wps_logger("CONNECTION SESSION HANDLER", callsign, f"Message length was {message_length_before} and now is {len(message)}")
 
-                # Check for curly braces at the start and end of the message. If not, must be part of an object. Add to buffer and return
-                # Only applies to plain text messages part received. If compressed the preceding step would have decompressed a full JSON object
-                if (message[:1] == '{' and message[-1:] != '}') or (message[:1] != '{' and message[-1:] == '}'):
-                    wps_logger("CONNECTION SESSION HANDLER", callsign, "Not complete JSON so must be waiting on more data, add to RX Buffer and return")
-                    CONNECTION_RX_BUFFER = message
-                    wps_logger("CONNECTION SESSION HANDLER", callsign, f"RX Buffer is {CONNECTION_RX_BUFFER}")
-                    break
-                
-                # TODO: Fix nested JSON edge case failure scenario, affecting non-critical packets (does not affect Messages or Posts)
-                # There is only one known scenario where this code could fail::
-                # a) The message is in the last element of the array
-                # b) It is incomplete, i.e. is pending more data to be received
-                # c) The JSON object has nested JSON
-                # d) The leftmost character is { as expected
-                # e) The rightmost character is } as expected, but this isn't the end of the main JSON object, it's a } in the nested JSON
-                # This scenario would only occur if the Packet network split the data exactly on the nested JSON object with the last character being }
-
-                # Convert to JSON. If fails, this is FATAL. Raise an ERROR and disconnect. 
+                # Convert to JSON
+                # Processing assumes valid JSON. If this fails, it means a corrupt message and is FATAL. Raise an ERROR and disconnect. 
                 if is_json(message):
                     message_json = json.loads(message)
                     wps_logger("CONNECTION SESSION HANDLER", callsign, "Valid json, continuing")
                 else:
                     wps_logger("CONNECTION SESSION HANDLER", callsign, "Received string is not valid JSON", "ERROR")
-                    wps_logger("CONNECTION SESSION HANDLER", callsign, f"String attempting to convert {message}", "ERROR")
-                    wps_logger("CONNECTION SESSION HANDLER", callsign, f"Full buffer {CONNECTION_RX_BUFFER}", "ERROR")
+                    wps_logger("CONNECTION SESSION HANDLER", callsign, f"String attempting to convert '{message}'", "ERROR")
+                    wps_logger("CONNECTION SESSION HANDLER", callsign, f"Full buffer '{CONNECTION_RX_BUFFER}'", "ERROR")
                     close_connection(CONN_DB_CURSOR, callsign, CONN)
                     break
                 
                 # Now there's a JSON object, pass to the correct handler
                 
-                message_json["t"] == message_json["t"].lower()
-
                 ### Message Types
+
+                message_json["t"] == message_json["t"].lower()
 
                 # Message
                 if message_json["t"] == "m":
