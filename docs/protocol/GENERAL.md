@@ -8,9 +8,10 @@
 5. [Type uc and ud - User Connect and User Disconnect](#type-uc-and-ud---user-connect-and-user-disconnect)
 6. [Type o - Online Users](#type-o---online-users)
 7. [Type u - User Updates](#type-u---user-updates)
-8. [Type a and ar - Add or Update Avatar](#type-a-and-ar---add-or-update-avatar)
-9. [Type ae - Avatar Enquiry](#type-wpe---avatar-enquiry)
-10. [The Connect Sequence Explained](#the-connect-sequence-explained)
+8. [Type k - Keep Alive](#type-k---keep-alive)
+9. [Type a and ar - Add or Update Avatar](#type-a-and-ar---add-or-update-avatar)
+10. [Type ae - Avatar Enquiry](#type-wpe---avatar-enquiry)
+11. [The Connect Sequence Explained](#the-connect-sequence-explained)
 
 [Return to README](/README.md)
 
@@ -312,6 +313,25 @@ Sent by the server as part of the connect sequence - contains updated name and l
 }
 ```
 
+## Type k - Keep Alive
+
+Recognised by WPS as a Keep Alive, but simply logs receipt and then ceases processing - no further action taken
+
+### Client to Server
+<hr>
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`k`|String|Always `k` for Keep Alive
+
+### JSON Example
+
+```json
+{
+   "t": "k"
+}
+```
+
 ## Type a and ar - Add or Update Avatar
 
 Adds or Updates an Avatar
@@ -431,7 +451,9 @@ Upon receipt, WPS returns:
    - new messages, sent in batches of 4 as type `mb`
    - new message emojis, sent in one batch as type `memb`
    - new message edits, sent in one batch as type `medb`
-   - new posts, sent in batches of 4 as type `cpb`
+   - new posts or paused channel headers, depending on:
+      - if <= `maxNewPostsToReturnPerChannelOnConnect`, send backlog of posts in batches of 4 as type `cpb`
+      - if > `maxNewPostsToReturnPerChannelOnConnect`, return channel headers as type `pch`
    - new post emojis, sent in one batch as type `cpemb`
    - new post edits, sent in one batch as type `cpedb`
    - updated last seen times and name changes as type `u`, for Messaged users
