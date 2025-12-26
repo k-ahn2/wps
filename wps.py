@@ -862,6 +862,8 @@ def avatar_enquiry_handler(CONN_DB_CURSOR, callsign, enquiry_object, CONN):
             "ac": len(avatar_enquiry_response['data'])
         }
         socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
+        del response['a']  # Remove avatar data for logging
+        wps_logger("AVATAR ENQUIRY HANDLER", callsign, f"Avatar enquiry response - count only: {response}")
     else:
         for avatar in avatar_enquiry_response['data']:
             response = {
@@ -870,9 +872,10 @@ def avatar_enquiry_handler(CONN_DB_CURSOR, callsign, enquiry_object, CONN):
                 "c": avatar['callsign'],
                 "a": avatar['avatar'],
             }
-            wps_logger("AVATAR ENQUIRY HANDLER", callsign, f"Avatar enquiry response: {response}")
             socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
-    
+            del response['a']  # Remove avatar data for logging
+            wps_logger("AVATAR ENQUIRY HANDLER", callsign, f"Avatar enquiry response: {response}")
+
     return  
 
 def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
