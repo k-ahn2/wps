@@ -443,7 +443,11 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
             })
                 
         connect_response['pc'] += new_posts_len
-    
+
+    # Send the connect responses
+    wps_logger('CONNECT HANDLER', callsign, f"Connect response to client {connect_response}")
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, connect_response)
+
     # Update the user record to include the paused channels
     if len(paused_channels_headers["ch"]) > 0:
         paused_channels = [item['cid'] for item in paused_channels_headers['ch']]
@@ -451,11 +455,8 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
         wps_logger('CONNECT HANDLER', callsign, f"Updated user record with paused channel headers {paused_channels}")
         close_connection(CONN_DB_CURSOR, callsign, CONN) if paused_channels_update_response['result'] == 'failure' else None
 
-    # Send the connect responses
-    wps_logger('CONNECT HANDLER', callsign, f"Connect response to client {connect_response}")
-    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, connect_response)
-    wps_logger('CONNECT HANDLER', callsign, f"Paused channel headers response to client {paused_channels_headers}")
-    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, paused_channels_headers)
+        wps_logger('CONNECT HANDLER', callsign, f"Paused channel headers response to client {paused_channels_headers}")
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, paused_channels_headers)
     
     # Testing Native Bytes Compression (no base64)
     #CONN.send(struct.pack('>H', 3800))
