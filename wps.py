@@ -1,5 +1,3 @@
-print(f"### WPS Starting ###")
-
 from env import *
 from db import *
 from handlers import *
@@ -8,8 +6,12 @@ import threading
 import socket
 import json
 import zlib, base64
-import struct
 from events import *
+
+def timestamp():
+    return datetime.datetime.now().isoformat(timespec='seconds')
+
+print(f"{timestamp()} ### WPS Starting ###")
 
 # Environment Variables
 env_source = open("env.json", "r")
@@ -24,10 +26,10 @@ if env['notificationsEnabled']:
     ONESIGNAL_PROD_ID = env['notificationsProdId']
     ONESIGNAL_PROD_REST_KEY = env['notificationsProdRestKey']
 else:
-    print('Push Notifications: Disabled')
+    print(f"{timestamp()} Push Notifications: Disabled")
 
-print(f'WPS Event Logging: {"Enabled" if env["events"]["enableWpsEvents"] else "Disabled"}')
-print(f'BPQ Queue Monitoring: {"Enabled" if env["events"]["enableBpqEvents"] else "Disabled"}')
+print(f"{timestamp()} WPS Event Logging: {'Enabled' if env['events']['enableWpsEvents'] else 'Disabled'}")
+print(f"{timestamp()} BPQ Queue Monitoring: {'Enabled' if env['events']['enableBpqEvents'] else 'Disabled'}")
 
 # TCP Socket Setup
 HOST = '0.0.0.0'
@@ -268,10 +270,10 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
 
     # Different handling if this is a connect from a new user or a new browser
     if connect_object["lm"] == 0 and len(client_channel_subscriptions) == 0:
-        print(f"{callsign}, {client_version} Connect New {'User' if is_new_user == 1 else 'Browser'}, {datetime.datetime.now().isoformat()}")
+        print(f"{time} {callsign} {client_version} Connect New {'User' if is_new_user == 1 else 'Browser'}")
         first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, is_new_user)
     else:
-        print(f"{callsign} {client_version} Existing Connect, {datetime.datetime.now().isoformat()}")
+        print(f"{timestamp()} {callsign} {client_version} Existing Connect")
         existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, user_db_record, previous_connect_timestamp)
 
 def first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, is_new_user):
@@ -1493,7 +1495,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
 
     wps_logger("DISCONNECT HANDLER", callsign, "Starting")
     
-    print(callsign, 'disconnected', datetime.datetime.now().isoformat())
+    print(f"{timestamp()} {callsign} disconnected")
     disconnect_timestamp = round(time.time())
 
     user_updated_fields = { "last_disconnected": disconnect_timestamp, "is_online": 0, "paused_channels": [] }
@@ -1532,7 +1534,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     for c in CONNECTIONS:
         rc.append(c['callsign'])
 
-    print('Connections After Disconnect:', str(rc))
+    print(f"{timestamp()} Connections After Disconnect: {str(rc)}")
     
 def service_monitor_handler():
     ###
@@ -1579,7 +1581,7 @@ def connected_session_handler(CONN, ADDR):
         CONN.shutdown(socket.SHUT_RDWR)
         return
 
-    wps_logger("CONNECTION_SESSION HANDLER", callsign, "Callsign seems valid, continuing")
+    wps_logger("CONNECTION SESSION HANDLER", callsign, "Callsign seems valid, continuing")
 
     CONN_DB_CURSOR = db.cursor()
     
@@ -1587,7 +1589,7 @@ def connected_session_handler(CONN, ADDR):
     for C in CONNECTIONS:
         if C['callsign'] == callsign:
             wps_logger("CONNECTION SESSION HANDLER", callsign, "Callsign already connected, disconnecting existing connection")
-            print(f'{callsign} reconnected, disconnecting existing connection', datetime.datetime.now().isoformat())
+            print(f"{timestamp()} {callsign} reconnected, disconnecting existing connection")
             C['socket'].shutdown(socket.SHUT_RDWR) # Closes the connection, which will trigger the close_connection function
 
     # Now continue and add the new connection
@@ -1597,7 +1599,7 @@ def connected_session_handler(CONN, ADDR):
     rc = []
     for c in CONNECTIONS:
         rc.append(c['callsign'])
-    print(f"Connections After Connect: {str(rc)}")
+    print(f"{timestamp()} Connections After Connect: {str(rc)}")
     
     # Create an empty buffer and start listening for the first data
     CONNECTION_RX_BUFFER = ''
@@ -1848,16 +1850,16 @@ def check_auto_subscriptions(cursor):
         return
 
 def startup_and_listen():
-    print(f"Using database {env['dbFilename']}")
-    print(f"Listening on TCP Port {env['socketTcpPort']}")
+    print(f"{timestamp()} Using database {env['dbFilename']}")
+    print(f"{timestamp()} Listening on TCP Port {env['socketTcpPort']}")
 
     global_cursor = db.cursor()
 
     # Output the SQLite version to the console
     global_cursor.execute('''select sqlite_version()''')
     version = [i[0] for i in global_cursor]
-    print("SQLite Version " + version[0])
-    print("### WPS Started ###")
+    print(f"{timestamp()} SQLite Version " + version[0])
+    print(f"{timestamp()} ### WPS Started ###")
     
     # Create the database tables, if they don't exist
     dbInit(global_cursor)
@@ -1869,7 +1871,7 @@ def startup_and_listen():
     online_users_response = dbGetOnlineUsers(global_cursor)
     if online_users_response['result'] == 'failure':
         wps_logger("HANDLER", "-----", "Failed to get online users, something is wrong, exiting")
-        print("Failed to get online users, something is wrong, exiting")
+        print(f"{timestamp()} Failed to get online users, something is wrong, exiting")
         return
     
     online_users = online_users_response['data']
@@ -1890,11 +1892,11 @@ def startup_and_listen():
             
     except KeyboardInterrupt:
         wps_logger("CONNECTION HANDLER", "-----", "Stopped by Ctrl+C")
-        print("\nStopped by Ctrl+C, closing down WPS")
+        print(f"{timestamp()} Stopped by Ctrl+C, closing down WPS")
 
         if S:
             wps_logger("CONNECTION HANDLER", "-----", "Closing TCP socket listener")
-            print("Closing TCP socket listener")
+            print(f"{timestamp()} Closing TCP socket listener")
             S.close()
 
         while (len(CONNECTIONS) > 0):
@@ -1903,7 +1905,7 @@ def startup_and_listen():
             time.sleep(2)
 
         wps_logger("CONNECTION HANDLER", "-----", "WPS Exited")
-        print("WPS Exited")
+        print(f"{timestamp()} WPS Exited")
         return
 
 if __name__ == "__main__":

@@ -25,7 +25,10 @@ env_template = {
     "notificationsProdRestKey": "",
     "autoSubscribeToChannelIds": [],
     "maxNewPostsToReturnPerChannelOnConnect": 100,
-    "channels": {}
+    "channels": {},
+    "wpsLoggingEnabled": True,
+    "dbLoggingEnabled": True,
+    "daysToRetainLogFiles": 5
 }
 
 if os.path.exists("env.json"):

@@ -6,3 +6,4 @@ env.json
 backup/backups/*
 test.py
 misc/*
+*.log.*

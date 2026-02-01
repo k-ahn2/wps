@@ -1,22 +1,13 @@
 import sqlite3, json
 import datetime
+from handlers import *
 
 # Environment Variables
 env_source = open("env.json")
 env = json.load(env_source)
 env_source.close()
 
-# Set the log level for the database logger
-# Permitted values: 'INFO', 'ERROR'
-MIN_LOG_LEVEL = env['minDbLogLevel']
-DB_LOGFILE = open("db.log", "a")
 DB_FILENAME = env['dbFilename']
-
-def db_logger(function_name, log, log_entry_level = 'INFO'):
-    if MIN_LOG_LEVEL == 'ERROR' and log_entry_level == 'INFO':
-        return
-    DB_LOGFILE.write(datetime.datetime.now().isoformat() + ' ' + log_entry_level + ' ' + function_name + ': ' + str(log) + '\n') 
-    DB_LOGFILE.flush()
 
 # Initialize the SQLite database connection
 # Set threadsafety to 3 to allow multiple threads to share the same connection
@@ -980,8 +971,9 @@ def dbGetUpdatedAvatars(CONN_DB_CURSOR, callsign, last_avatar_timestamp):
             json_extract(user, '$.avatar') as avatar,
             json_extract(user, '$.avatar_last_updated') as avatar_last_updated
         FROM users
-        WHERE json_extract(user, '$.avatar_last_updated') > {sourceValueToJsonValue(last_avatar_timestamp)}
-        AND json_extract(user, '$.callsign') != {sourceValueToJsonValue(callsign)}
+            WHERE json_extract(user, '$.avatar_last_updated') > {sourceValueToJsonValue(last_avatar_timestamp)}
+            AND json_extract(user, '$.callsign') != {sourceValueToJsonValue(callsign)}
+        ORDER BY json_extract(user, '$.avatar_last_updated') ASC
         """
 
         db_logger("dbGetUpdatedAvatars", "Query: " + ' '.join(select_query.split()))
