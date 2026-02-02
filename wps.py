@@ -91,9 +91,58 @@ def send_push_notification(heading, message, player_id):
     
     try:
         notificationResponse = api_instance.create_notification(notification)
-        return {"result": "success", "data": notificationResponse}
+        
+        # Sample error response:
+        # {'errors': {'invalid_player_ids': ['049b035b-c722-4b2b-b89e-f7ae6ee25835']}}
+        if 'errors' in notificationResponse:
+            raise Exception(notificationResponse.get('errors'))
+        else:
+            return {"result": "success", "data": notificationResponse}
+        
     except Exception as e:
-        return {"result": "failure", "error": e}
+        return {"result": "failure", "error": e.args[0] if len(e.args) > 0 else str(e)}
+
+def cleanup_bad_push_player_id(CONN_DB_CURSOR, callsign, bad_player_id):
+    '''
+    Removes a bad OneSignal player ID from a user record
+    '''
+
+    try:
+        wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Updating bad player ID {bad_player_id} for {callsign}")
+
+        callsign_search = dbUserSearch(CONN_DB_CURSOR, callsign)
+        close_connection(CONN_DB_CURSOR, callsign) if callsign_search['result'] == 'failure' else None
+
+        if callsign_search['data'] == None:
+            wps_logger("CLEANUP PUSH NOTIFICATION", callsign, "User not found when cleaning up bad player ID", 'ERROR')
+            return
+
+        user_record = callsign_search['data']
+        user_push_records = user_record.get("push", [])
+
+        def get_player_ids(user):
+            return [p.get("playerId") for p in user.get("push", [])]
+
+        wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Push entries before: {get_player_ids(user_record)}")
+        
+        found_push_record = False
+
+        for p in user_push_records:
+            if p['playerId'] == bad_player_id:
+                p['isBadPlayerId'] = True
+                wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Set isBadPlayerId for {bad_player_id} in user record")
+                found_push_record = True
+                break
+    
+        if found_push_record:
+            update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, { "push": user_push_records })
+            close_connection(CONN_DB_CURSOR, callsign) if update_response['result'] == 'failure' else None
+            wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Push entries after: {get_player_ids(update_response)}")
+        else:
+            wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Bad player ID {bad_player_id} not found in user record")
+    
+    except Exception as e:
+        wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Error cleaning up bad player ID: {e}", 'ERROR')
 
 def frame_and_compress_json_object(json_obj):
     '''
@@ -968,12 +1017,17 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
             notifications_since_last_logout.append(callsign)
             wps_logger("MESSAGE HANDLER", callsign, "Found push entries and no notification since last logout")
             for p in push:
-                if p['isPushEnabled']:
+                if p['isPushEnabled'] and 'badPlayerId' not in p:
                     wps_logger("MESSAGE HANDLER", callsign, f"Sending to push to: {p['playerId']}")
                     pushresp = send_push_notification('Message Alert', 'New message(s) from ' + callsign, p['playerId'])
 
                     wps_logger("MESSAGE HANDLER", callsign, f"Push response: {pushresp}")
-                    push_counter = push_counter = 0 + 1
+
+                    if pushresp['result'] == 'failure' and 'invalid_player_ids' in pushresp['errors']:
+                        wps_logger("MESSAGE HANDLER", callsign, f"Push notification to {p['playerId']} failed")
+                        cleanup_bad_push_player_id(CONN_DB_CURSOR, message['tc'], p['playerId'])
+
+                    push_counter = push_counter + 1
         else:
             wps_logger("MESSAGE HANDLER", callsign, "No push entries or have already messaged")
 
@@ -1195,7 +1249,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
         # Send to remaining subscribers not online and with push enabled      
         for subscriber in subscribers:
             wps_logger("CHANNELS POST HANDLER", callsign, f"Processing {subscriber['callsign']} for push notification")
-
+            
             if subscriber['callsign'] in sent_post_in_real_time:
                 wps_logger("CHANNELS POST HANDLER", callsign, "Already sent in real-time")
                 continue
@@ -1203,11 +1257,18 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
             if post['cid'] in subscriber['channel_notifications_since_last_logout']:
                 wps_logger("CHANNELS POST HANDLER", callsign, "Already received push for this channel since last logout")
                 continue
+            
+            wps_logger("CHANNELS POST HANDLER", callsign, f"Enabled Player Ids: {subscriber['enabled_player_ids']}")
 
             for playerId in subscriber['enabled_player_ids']:
                 wps_logger("CHANNELS POST HANDLER", callsign, f"Sending push to {playerId}")
                 push_resp = send_push_notification('Channel Post Alert', 'New Post(s) in #' + channel_names[str(post['cid'])], playerId)
                 wps_logger("CHANNELS POST HANDLER", callsign, f"Push response: {push_resp}")
+
+                if push_resp['result'] == 'failure':
+                    wps_logger("CHANNELS POST HANDLER", callsign, f"Push notification to {playerId} failed")
+                    cleanup_bad_push_player_id(CONN_DB_CURSOR, subscriber['callsign'], playerId)
+
                 post_update_response = dbUpdateUserPushNotifications(CONN_DB_CURSOR, subscriber['callsign'], post['cid'])
                 close_connection(CONN_DB_CURSOR, callsign, CONN) if post_update_response['result'] == 'failure' else None
                 wps_logger("CHANNELS POST HANDLER", callsign, f"User update response is {post_update_response.get('result', None)}")
