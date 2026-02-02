@@ -722,15 +722,18 @@ def dbChannelSubscribers(CONN_DB_CURSOR, sending_callsign, channel_id):
             channel_subscriptions = json.loads(row[1]) if row[1] else []
             channel_notifications_since_last_logout = json.loads(row[2]) if row[2] else []
             push_devices = json.loads(row[3]) if row[3] else []
-            enabled_push_devices = list(filter(lambda x: x['isPushEnabled'] == True, push_devices))
+            enabled_player_ids = [
+                x['playerId']
+                for x in push_devices
+                if x.get('isPushEnabled') and 'isBadPlayerId' not in x
+            ]
             
             if channel_id not in channel_subscriptions:
                 continue
             
-            enabled_player_ids = []
-            for device in enabled_push_devices:
-                enabled_player_ids.append(device['playerId']) if device['isPushEnabled'] == True else None
-                    
+            if (len(enabled_player_ids) == 0):
+                continue
+
             result.append({
                 "callsign": callsign,
                 "channel_notifications_since_last_logout": channel_notifications_since_last_logout,
