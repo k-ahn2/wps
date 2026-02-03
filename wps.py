@@ -137,7 +137,7 @@ def cleanup_bad_push_player_id(CONN_DB_CURSOR, callsign, bad_player_id):
         if found_push_record:
             update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, { "push": user_push_records })
             close_connection(CONN_DB_CURSOR, callsign) if update_response['result'] == 'failure' else None
-            wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Push entries after: {get_player_ids(update_response)}")
+            wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Push entries after: {get_player_ids(update_response.get('data', {}))}")
         else:
             wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Bad player ID {bad_player_id} not found in user record")
     
