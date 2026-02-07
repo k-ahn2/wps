@@ -181,7 +181,7 @@ def dbGetMessages(CONN_DB_CURSOR, callsign, last_message):
         result = [json.loads(i[0]) for i in CONN_DB_CURSOR]
 
         for message in result:
-            message['m'] = message['m'].replace("''", "'")
+            message['m'] = str(message['m']).replace("''", "'")
 
         return_success = {
             "result": "success",
@@ -284,7 +284,7 @@ def dbGetPosts(CONN_DB_CURSOR, channel_id, last_post):
         result = [json.loads(i[0]) for i in CONN_DB_CURSOR]
 
         for post in result:
-            post['p'] = post['p'].replace("''", "'")
+            post['p'] = str(post['p']).replace("''", "'")
 
         return_success = {
             "result": "success",
@@ -487,7 +487,7 @@ def dbCleanupDepracatedLastSeenKey(CONN_DB_CURSOR, callsign):
 
 def dbInsertMessage(CONN_DB_CURSOR, message):
     try:
-        message['m'] = message['m'].replace("'", "''")
+        message['m'] = str(message['m']).replace("'", "''")
         
         insert_query = f"""
         INSERT INTO messages (message) 
@@ -550,7 +550,7 @@ def dbMessageSearch(CONN_DB_CURSOR, message_id):
 def dbUpdateMessage(CONN_DB_CURSOR, message_id, update):
 
     if 'm' in update:
-        update['m'] = update['m'].replace("'", "''")
+        update['m'] = str(update['m']).replace("'", "''")
 
     fieldsToUpdate = "message = json_set(message, "
     for index, key in enumerate(update.keys()):
@@ -593,7 +593,7 @@ def dbUpdateMessage(CONN_DB_CURSOR, message_id, update):
 def dbInsertPost(CONN_DB_CURSOR, post):
     
     try:
-        post['p'] = post['p'].replace("'", "''")
+        post['p'] = str(post['p']).replace("'", "''")
 
         insert_query = f"""
         INSERT INTO posts (post) 
@@ -658,7 +658,7 @@ def dbPostSearch(CONN_DB_CURSOR, channel_id, post_timestamp):
 def dbUpdatePost(CONN_DB_CURSOR, channel_id, post_timestamp, update):
     
     if 'p' in update:
-        update['p'] = update['p'].replace("'", "''")
+        update['p'] = str(update['p']).replace("'", "''")
     
     fieldsToUpdate = "post = json_set(post, "
     for index, key in enumerate(update.keys()):
