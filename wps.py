@@ -453,6 +453,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     ###
 
     new_messages_response = dbGetMessages(CONN_DB_CURSOR, callsign, last_message)
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if new_messages_response['result'] == 'failure' else None
     new_messages = new_messages_response['data']
     new_messages_count = len(new_messages)
 
