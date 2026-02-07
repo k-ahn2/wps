@@ -730,9 +730,6 @@ def dbChannelSubscribers(CONN_DB_CURSOR, sending_callsign, channel_id):
             
             if channel_id not in channel_subscriptions:
                 continue
-            
-            if (len(enabled_player_ids) == 0):
-                continue
 
             result.append({
                 "callsign": callsign,
