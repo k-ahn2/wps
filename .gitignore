@@ -7,3 +7,4 @@ backup/backups/*
 test.py
 misc/*
 *.log.*
+*.old
