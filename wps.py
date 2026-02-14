@@ -7,6 +7,7 @@ import socket
 import json
 import zlib, base64
 from events import *
+from stats import *
 
 def timestamp():
     return datetime.datetime.now().isoformat(timespec='seconds')
@@ -1547,6 +1548,22 @@ def unpause_channel_handler(CONN_DB_CURSOR, callsign, unpause_channel_request, C
     close_connection(CONN_DB_CURSOR, callsign, CONN) if user_update_response['result'] == 'failure' else None
     wps_logger('UNPAUSE CHANNEL HANDLER', callsign, f"Blocked channels after: {user_update_response['data'].get('paused_channels', [])}")
 
+def stats_handler(CONN_DB_CURSOR, callsign, CONN):
+    '''
+    Fetches server stats
+    '''
+    wps_logger('STATS HANDLER', callsign, f"Stats request received")
+    stats_response = dbGetStats()
+    wps_logger('STATS HANDLER', callsign, f"Stats response: {stats_response}")
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if stats_response['result'] == 'failure' else None
+
+    stats_response = {
+        "t": "s",
+        "s": stats_response['data']
+    }
+
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, stats_response)
+
 def keep_alive_handler(CONN_DB_CURSOR, callsign, CONN):
     '''
     Handles when the user sends a keep alive packet
@@ -1875,6 +1892,11 @@ def connected_session_handler(CONN, ADDR):
                 if message_json["t"] == "cu":
                     wps_logger("CONNECTED SESSION HANDLER", callsign, "Unpause Channel handler")
                     unpause_channel_handler(CONN_DB_CURSOR, callsign, message_json, CONN)
+
+                # Stats
+                if message_json["t"] == "s":
+                    wps_logger("CONNECTED SESSION HANDLER", callsign, "Stats handler")
+                    stats_handler(CONN_DB_CURSOR, callsign, CONN)
 
         except Exception as e:
             wps_logger("CONNECTED SESSION HANDLER", callsign, f"Exception {e} happened. Disconnecting", "ERROR")
