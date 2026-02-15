@@ -6,10 +6,10 @@ DB_FILENAME = env['dbFilename']
 
 def dbGetStats():
     result = {
-        "h": {},
-        "p": [],
-        "m": [],
-        "s": []
+        "h": {}, # individual Header stats
+        "p": [], # array of Post stats
+        "m": [], # array of Message stats
+        "s": []  # array of Server stats
     }
         
     unique_connecting_users_query = """
@@ -18,8 +18,8 @@ def dbGetStats():
     FROM 
         users
     WHERE
-        CAST(json_extract(user, '$.last_connected') AS INTEGER) >= strftime('%s','now','localtime','start of day','-7 days') AND
-        CAST(json_extract(user, '$.last_connected') AS INTEGER) <  strftime('%s','now','localtime','start of day')
+        CAST(json_extract(user, '$.last_connected') AS INTEGER) >= strftime('%s','now','localtime','-7 days')
+        AND CAST(json_extract(user, '$.last_connected') AS INTEGER) < strftime('%s','now','localtime')
     """
     
     posts_select_query = f"""
@@ -46,8 +46,8 @@ def dbGetStats():
         COUNT(json_extract(post, '$.ts')) as count
     FROM posts
     WHERE
-        CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','-7 days') * 1000
-        AND CAST(json_extract(post, '$.ts') AS INTEGER) <= strftime('%s','now') * 1000
+        CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-7 days') * 1000
+        AND CAST(json_extract(post, '$.ts') AS INTEGER) < strftime('%s','now','localtime') * 1000
     UNION
     SELECT 
         8 as "Sort",
@@ -59,8 +59,8 @@ def dbGetStats():
             COUNT(json_extract(post, '$.ts')) as count
         FROM posts
         WHERE
-            CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','-7 days') * 1000 AND
-            CAST(json_extract(post, '$.ts') AS INTEGER) <= strftime('%s','now') * 1000
+            CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-7 days') * 1000 AND
+            CAST(json_extract(post, '$.ts') AS INTEGER) < strftime('%s','now','localtime') * 1000
         GROUP BY 
             callsign
         ORDER BY 
@@ -74,8 +74,8 @@ def dbGetStats():
         COUNT(json_extract(post, '$.ts')) as count
     FROM posts
     WHERE
-        CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','-30 days') * 1000 AND
-        CAST(json_extract(post, '$.ts') AS INTEGER) <= strftime('%s','now') * 1000
+        CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-30 days') * 1000 AND
+        CAST(json_extract(post, '$.ts') AS INTEGER) < strftime('%s','now','localtime') * 1000
     UNION
     SELECT
         10 as "Sort",
@@ -84,7 +84,7 @@ def dbGetStats():
         GROUP_CONCAT(date || ': ' || postcount, ', ' ) as statistic
     FROM
         (SELECT  
-            strftime('%d-%m-%Y', ROUND(json_extract(post, '$.ts') / 1000), 'unixepoch') AS date,
+            strftime('%d-%m-%Y', ROUND(json_extract(post, '$.ts') / 1000), 'unixepoch', 'localtime') AS date,
 			COUNT(json_extract(post, '$.ts')) as postcount
         FROM posts
         GROUP BY date
@@ -98,7 +98,7 @@ def dbGetStats():
         GROUP_CONCAT(callsign || ': ' || postcount, ', ' ) as statistic
     FROM
         (SELECT  
-            strftime('%d-%m-%Y', ROUND(json_extract(post, '$.ts')/1000), 'unixepoch') AS date,
+            strftime('%d-%m-%Y', ROUND(json_extract(post, '$.ts')/1000), 'unixepoch', 'localtime') AS date,
             COUNT(json_extract(post, '$.ts')) as postcount,
             json_extract(post, '$.fc') as callsign
         FROM posts
@@ -135,8 +135,8 @@ def dbGetStats():
         COUNT(json_extract(message, '$.ts')) as count
     FROM messages
     WHERE
-        CAST(json_extract(message, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-7 days')
-        AND CAST(json_extract(message, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day')
+        CAST(json_extract(message, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-7 days')
+        AND CAST(json_extract(message, '$.ts') AS INTEGER) <  strftime('%s','now','localtime')
     UNION
     SELECT  
         7 as "Sort",
@@ -145,8 +145,8 @@ def dbGetStats():
         COUNT(json_extract(message, '$.ts')) as count
     FROM messages
     WHERE
-        CAST(json_extract(message, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-30 days')
-        AND CAST(json_extract(message, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day')
+        CAST(json_extract(message, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-30 days')
+        AND CAST(json_extract(message, '$.ts') AS INTEGER) <  strftime('%s','now','localtime')
     UNION
     SELECT
         9 as "Sort",
@@ -155,7 +155,7 @@ def dbGetStats():
         GROUP_CONCAT(date || ': ' || messagecount, ', ' ) as statistic
     FROM
         (SELECT  
-            strftime('%d-%m-%Y', ROUND(json_extract(message, '$.ts')), 'unixepoch') AS date,
+            strftime('%d-%m-%Y', json_extract(message, '$.ts'), 'unixepoch', 'localtime') AS date,
             COUNT(json_extract(message, '$.ts')) as messagecount
         FROM messages
         GROUP BY date
@@ -169,7 +169,7 @@ def dbGetStats():
         GROUP_CONCAT(callsign || ': ' || messagecount, ', ' ) as statistic
     FROM
         (SELECT  
-            strftime('%d-%m-%Y', ROUND(json_extract(message, '$.ts')), 'unixepoch') AS date,
+            strftime('%d-%m-%Y', json_extract(message, '$.ts'), 'unixepoch', 'localtime') AS date,
             COUNT(json_extract(message, '$.ts')) as messagecount,
             json_extract(message, '$.fc') as callsign
         FROM messages
@@ -189,8 +189,8 @@ def dbGetStats():
     FROM 
         events
     WHERE
-        json_extract(event, '$.et') = "WPS_SEND" AND
-        DATE(ROUND(json_extract(event, '$.ts')/1000), 'unixepoch') >= datetime('now', 'start of day')
+        json_extract(event, '$.et') = 'WPS_SEND' AND
+        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day') * 1000
     UNION
     SELECT 
         2 as "Sort",
@@ -200,9 +200,9 @@ def dbGetStats():
     FROM 
         events
     WHERE
-        json_extract(event, '$.et') = "WPS_SEND" AND
-        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-7 days') * 1000
-        AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day') * 1000
+        json_extract(event, '$.et') = 'WPS_SEND' AND
+        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-7 days') * 1000
+        AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime') * 1000
     UNION
     SELECT 
         3 as "Sort",
@@ -212,9 +212,9 @@ def dbGetStats():
     FROM 
         events
     WHERE
-        json_extract(event, '$.et') = "WPS_SEND" AND
-        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-30 days') * 1000
-        AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day') * 1000
+        json_extract(event, '$.et') = 'WPS_SEND' AND
+        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-30 days') * 1000
+        AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime') * 1000
     UNION
 	SELECT  
 		4 as "Sort",
@@ -223,8 +223,8 @@ def dbGetStats():
 		count(json_extract(event, '$.ts')) AS send_count
 	FROM events
 	WHERE
-		json_extract(event, '$.et') = "WPS_SEND" AND
-		DATE(ROUND(json_extract(event, '$.ts')/1000), 'unixepoch') >= datetime('now', 'start of day')
+		json_extract(event, '$.et') = 'WPS_SEND' AND
+		CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day') * 1000
 	UNION
     SELECT  
         5 as "Sort",
@@ -233,20 +233,20 @@ def dbGetStats():
         count(json_extract(event, '$.ts')) AS count
     FROM events
     WHERE
-        json_extract(event, '$.et') = "WPS_SEND" AND
-        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-7 days') * 1000
-        AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day') * 1000
+        json_extract(event, '$.et') = 'WPS_SEND' AND
+        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-7 days') * 1000
+        AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime') * 1000
     UNION
     SELECT  
         6 as "Sort",
         "Server" as "Category",
-        "WPS responses sent previous 30 days" as "Statistic",
+        "WPS Responses Sent Previous 30 Days" as "Statistic",
         count(json_extract(event, '$.ts')) AS count
     FROM events
     WHERE
-        json_extract(event, '$.et') = "WPS_SEND" AND
-        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-30 days') * 1000
-        AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day') * 1000
+        json_extract(event, '$.et') = 'WPS_SEND' AND
+        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-30 days') * 1000
+        AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime') * 1000
     ORDER BY
         Sort ASC
     """
