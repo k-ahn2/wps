@@ -33,7 +33,7 @@ def dbGetStats():
     SELECT  
         3 as "Sort",
         "Posts" as "Category",
-        "Posts today so far" as "Statistic",
+        "Posts Today So Far" as "Statistic",
         COUNT(json_extract(post, '$.ts')) as count
     FROM posts
     WHERE 
@@ -46,8 +46,8 @@ def dbGetStats():
         COUNT(json_extract(post, '$.ts')) as count
     FROM posts
     WHERE
-        CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-7 days') * 1000 AND
-        CAST(json_extract(post, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day') * 1000
+        CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','-7 days') * 1000
+        AND CAST(json_extract(post, '$.ts') AS INTEGER) <= strftime('%s','now') * 1000
     UNION
     SELECT 
         8 as "Sort",
@@ -59,18 +59,28 @@ def dbGetStats():
             COUNT(json_extract(post, '$.ts')) as count
         FROM posts
         WHERE
-            CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-7 days') * 1000 AND
-            CAST(json_extract(post, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day') * 1000
+            CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','-7 days') * 1000 AND
+            CAST(json_extract(post, '$.ts') AS INTEGER) <= strftime('%s','now') * 1000
         GROUP BY 
             callsign
         ORDER BY 
             count DESC
         LIMIT  5)
     UNION
+    SELECT  
+        9 as "Sort",
+        "Posts" as "Category",
+        "Total Posts Last 30 Days" as "Statistic",
+        COUNT(json_extract(post, '$.ts')) as count
+    FROM posts
+    WHERE
+        CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','-30 days') * 1000 AND
+        CAST(json_extract(post, '$.ts') AS INTEGER) <= strftime('%s','now') * 1000
+    UNION
     SELECT
         10 as "Sort",
         "Posts" as "Category",
-        "Most Posts in a day" as "Statistic",
+        "Most Posts in 1 Day" as "Statistic",
         GROUP_CONCAT(date || ': ' || postcount, ', ' ) as statistic
     FROM
         (SELECT  
@@ -84,7 +94,7 @@ def dbGetStats():
     SELECT
         12 as "Sort",
         "Posts" as "Category",
-        "Most active poster in a day" as "Statistic",
+        "Most Active Poster in 1 Day" as "Statistic",
         GROUP_CONCAT(callsign || ': ' || postcount, ', ' ) as statistic
     FROM
         (SELECT  
@@ -112,7 +122,7 @@ def dbGetStats():
     SELECT  
         3 as "Sort",
         "Messages" as "Category",
-        "Messages today so far" as "Statistic",
+        "Messages Today So Far" as "Statistic",
         COUNT(json_extract(message, '$.ts')) as count
     FROM messages
     WHERE 
@@ -128,10 +138,20 @@ def dbGetStats():
         CAST(json_extract(message, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-7 days')
         AND CAST(json_extract(message, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day')
     UNION
+    SELECT  
+        7 as "Sort",
+        "Messages" as "Category",
+        "Total Messages Last 30 Days" as "Statistic",
+        COUNT(json_extract(message, '$.ts')) as count
+    FROM messages
+    WHERE
+        CAST(json_extract(message, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-30 days')
+        AND CAST(json_extract(message, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day')
+    UNION
     SELECT
         9 as "Sort",
         "Messages" as "Category",
-        "Most Messages in a day" as "Statistic",
+        "Most Messages in 1 Day" as "Statistic",
         GROUP_CONCAT(date || ': ' || messagecount, ', ' ) as statistic
     FROM
         (SELECT  
@@ -145,7 +165,7 @@ def dbGetStats():
     SELECT
         11 as "Sort",
         "Messages" as "Category",
-        "Most active messager in a day" as "Statistic",
+        "Most Active Messager in 1 Day" as "Statistic",
         GROUP_CONCAT(callsign || ': ' || messagecount, ', ' ) as statistic
     FROM
         (SELECT  
@@ -164,7 +184,7 @@ def dbGetStats():
     SELECT 
         1 as "Sort",
         "Server" as "Category",
-        "Bytes sent today so far" as "Statistic",
+        "Bytes Sent Today So Far" as "Statistic",
         IFNULL(sum(json_extract(event, '$.e.bytes')), 0) AS count
     FROM 
         events
@@ -175,7 +195,19 @@ def dbGetStats():
     SELECT 
         2 as "Sort",
         "Server" as "Category",
-        "Bytes sent previous 30 days" as "Statistic",
+        "Bytes Sent Previous 7 Days" as "Statistic",
+        sum(json_extract(event, '$.e.bytes')) AS count
+    FROM 
+        events
+    WHERE
+        json_extract(event, '$.et') = "WPS_SEND" AND
+        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-7 days') * 1000
+        AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day') * 1000
+    UNION
+    SELECT 
+        3 as "Sort",
+        "Server" as "Category",
+        "Bytes Sent Previous 30 Days" as "Statistic",
         sum(json_extract(event, '$.e.bytes')) AS count
     FROM 
         events
@@ -185,9 +217,9 @@ def dbGetStats():
         AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day') * 1000
     UNION
 	SELECT  
-		3 as "Sort",
+		4 as "Sort",
 		"Server" as "Category",
-		"WPS responses sent today so far" as "Statistic",
+		"WPS Responses Sent Today So Far" as "Statistic",
 		count(json_extract(event, '$.ts')) AS send_count
 	FROM events
 	WHERE
@@ -196,6 +228,17 @@ def dbGetStats():
 	UNION
     SELECT  
         5 as "Sort",
+        "Server" as "Category",
+        "WPS Responses Sent Previous 7 Days" as "Statistic",
+        count(json_extract(event, '$.ts')) AS count
+    FROM events
+    WHERE
+        json_extract(event, '$.et') = "WPS_SEND" AND
+        CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day','-7 days') * 1000
+        AND CAST(json_extract(event, '$.ts') AS INTEGER) <  strftime('%s','now','localtime','start of day') * 1000
+    UNION
+    SELECT  
+        6 as "Sort",
         "Server" as "Category",
         "WPS responses sent previous 30 days" as "Statistic",
         count(json_extract(event, '$.ts')) AS count
