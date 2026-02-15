@@ -5,6 +5,5 @@ __pycache__/*
 env.json
 backup/backups/*
 test.py
-misc/*
 *.log.*
 *.old
