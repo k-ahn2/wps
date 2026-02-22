@@ -943,6 +943,11 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
     if len(message['m']) == 0:
         wps_logger("MESSAGE HANDLER", callsign, "Zero length message, ignore")
         return None
+    
+    # Backward compatibility for clients that send a GUID for the _id
+    # Optimum to have the client NOT send an _id over the network but have the client server generate it based on a unique combination of timestamp (ts) and sender callsign (fc)
+    if '_id' not in message:
+        message['_id'] = f"{message['ts']}-{message['fc']}"
 
     # Check if message already in database. Could have been processed but client didn't receive the acknowledgement
     message_search = dbMessageSearch(CONN_DB_CURSOR, message['_id'])
@@ -950,7 +955,7 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
     message_search_result = message_search['data']
 
     try:
-        # copy the message and add fields required for the WPS database, but don't need returning to the client
+        # copy the message and add fields required for the WPS database, but don't need returning to connected clients
         message_to_write_to_wps_database = json.loads(json.dumps(message))
         message_to_write_to_wps_database['lts'] = round(time.time())
         message_to_write_to_wps_database['ms'] = 1
@@ -1052,9 +1057,13 @@ def message_edit_handler(CONN_DB_CURSOR, msg_update, callsign, CONN):
 
     message_edit_response = dbUpdateMessage(CONN_DB_CURSOR, msg_update['_id'], update)
     wps_logger("MESSAGE EDIT HANDLER", callsign, f"Message edit response {message_edit_response}")
+    if message_edit_response['result'] == 'failure':
+        wps_logger("MESSAGE EDIT HANDLER", callsign, f"Failed to update message with ID {msg_update['_id']}", "ERROR")
+        close_connection(CONN_DB_CURSOR, callsign, CONN) 
+        return
+    
     edited_message = message_edit_response['data']
-    close_connection(CONN_DB_CURSOR, callsign, CONN) if message_edit_response['result'] == 'failure' else None
-
+    
     wps_logger("MESSAGE EDIT HANDLER", callsign, f"Message after updating {edited_message}")
 
     resp = {}
@@ -1083,6 +1092,10 @@ def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign):
 
     message_to_update_response = dbMessageSearch(CONN_DB_CURSOR, emoji_object['_id'])
     message_to_update = message_to_update_response['data']
+
+    if message_to_update is None:
+        wps_logger("MESSAGE EMOJI HANDLER", callsign, f"Message with ID {emoji_object['_id']} not found, unable to update emoji", "ERROR")
+        return
 
     wps_logger("MESSAGE EMOJI HANDLER", callsign, f"Message To Update: {message_to_update}")
     wps_logger("MESSAGE EMOJI HANDLER", callsign, f"Emoji Update: {emoji_object}")
@@ -1586,7 +1599,14 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     print(f"{timestamp()} {callsign} disconnected")
     disconnect_timestamp = round(time.time())
 
-    user_updated_fields = { "last_disconnected": disconnect_timestamp, "is_online": 0, "paused_channels": [] }
+    user_updated_fields = { "last_disconnected": disconnect_timestamp, "paused_channels": [] }
+
+    # The is_online database field is only updated to 0 (offline) if this is the only connection for this callsign, otherwise it is left as 1 (online) as they still have an active connection
+    if sum(1 for conn in CONNECTIONS if conn.get('callsign') == callsign) == 1:
+        wps_logger("DISCONNECT HANDLER", callsign, "Only one connection by this user, so marking them offline as part of the disconnect process")
+        user_updated_fields["is_online"] = 0
+    else:
+        wps_logger("DISCONNECT HANDLER", callsign, "Multiple connections, so only disconnecting this connection and keeping the user marked as online")
 
     user_db_record = dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
     wps_logger("DISCONNECT HANDLER", callsign, f"User update response: {user_db_record.get('result', None)}")
