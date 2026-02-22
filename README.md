@@ -138,7 +138,7 @@ Javascript Example:
 const samplePost = {
    "t": "cp",
    "cid": 1,
-   "fc": "G5ALF",
+   "fc": "T3EST",
    "ts": 1771755000289,
    "p": "1"
 }
