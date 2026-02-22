@@ -31,8 +31,8 @@ ___
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`c`|String|Always type c|
-|Name|`n`|`Kevin`|String|User's Name|
-|Callsign|`c`|`M0AHN`|String|User's Callsign, minus the SSID if added|
+|Name|`n`|`Tester`|String|User's Name|
+|Callsign|`c`|`T3EST`|String|User's Callsign, minus the SSID if added|
 |Last Message|`lm`|`1740299150`|Number|Timestamp of last message - seconds since epoch|
 |Last Emoji|`le`|`1740266497`|Number|Timestamp of last message emoji - seconds since epoch|
 |Last Edit|`led`|`1739318078`|Number|Timestamp of last message edit - seconds since epoch|
@@ -50,8 +50,8 @@ ___
 ```json
 {
    "t": "c",
-   "n": "Kevin",
-   "c": "M0AHN",
+   "n": "Tester",
+   "c": "T3EST",
    "lm": 1740299150,
    "le": 1740266497,
    "led": 1739318078,
@@ -105,14 +105,14 @@ ___
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`p`|String|Always type `p` for Pairing
-|Callsign|`fc`|`M0AHN`|String|The callsign of the user entering pairing mode
+|Callsign|`fc`|`T3EST`|String|The callsign of the user entering pairing mode
 
 ### JSON Example
 
 ```json
 {
    "t": "p",
-   "fc": "M0AHN"
+   "fc": "T3EST"
 }
 ```
 
@@ -145,14 +145,14 @@ Used to determine if a user is registered with WPS
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`ue`|String|Always type ‘ue’ for User Enquiry
-|Callsign|`c`|`M0AHN`|String|The callsign of the user you're enquiring about
+|Callsign|`c`|`T3EST`|String|The callsign of the user you're enquiring about
 
 ### JSON Example
 
 ```json
 {
    "t" : "ue",
-   "c": "G5ALF"
+   "c": "M8ABC"
 }
 ```
 
@@ -163,7 +163,7 @@ Used to determine if a user is registered with WPS
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`ue`|String|Always type `ue` for User Enquiry response
 |Registered|`r`|`true` or `false`|Boolean|True if registered
-|Callsign|`c`|`G5ALF`|String|Callsign of the user enquired about
+|Callsign|`c`|`M8ABC`|String|Callsign of the user enquired about
 
 
 ### JSON Example
@@ -172,7 +172,7 @@ Used to determine if a user is registered with WPS
 {
    "t": "ue",
    "r": false,
-   "c": "G5ALF"
+   "c": "M8ABC"
 }
 ```
 
@@ -194,7 +194,7 @@ Used by Channels to fetch a user's name.
 {
    "t": "he",
    "h": [
-      "M0AHN"
+      "T3EST"
    ]
 }
 ```
@@ -207,8 +207,8 @@ Used by Channels to fetch a user's name.
 |Type|`t`|`he`|String|Always type ‘he’ for Ham Enquiry
 |Callsigns as Objects|`h`|`[]`|Array|An array of callsign objects
 |**Callsign Objects**|
-|Callsign|`c`|`M0AHN`|String|User's callsign, from the user record in the WPS database
-|Name|`n`|`Kevin`|String|User's name, from the user record in the WPS database
+|Callsign|`c`|`T3EST`|String|User's callsign, from the user record in the WPS database
+|Name|`n`|`Tester`|String|User's name, from the user record in the WPS database
 |Timestamp|`ts`|`1738869165936`|String|The timestamp the user's name was updated, from the user record in the WPS database
 
 ### JSON Example
@@ -218,8 +218,8 @@ Used by Channels to fetch a user's name.
    "t": "he", 
    "h": [
       {
-         "c": "M0AHN", 
-         "n": "Kevin", 
+         "c": "T3EST", 
+         "n": "Tester", 
          "ts": 1738869165936
       }
    ]
@@ -236,7 +236,7 @@ Sent by the server to all connected users when there is a new connect or disconn
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`uc` or `ud`|String|User Connect or User Disconnect
-|Callsign|`c`|`M0AHN`|String|Callsign of user connecting or disconnecting
+|Callsign|`c`|`T3EST`|String|Callsign of user connecting or disconnecting
 
 ### JSON Example
 
@@ -244,7 +244,7 @@ Connect
 ```json
 {
    "t": "uc",
-   "c": "M0AHN"
+   "c": "T3EST"
 }
 ```
 
@@ -252,7 +252,7 @@ Disconenct
 ```json
 {
    "t": "ud",
-   "c": "M0AHN"
+   "c": "T3EST"
 }
 ```
 ## Type o - Online Users
@@ -265,7 +265,7 @@ Sent by the server as part of the connect sequence - contains an array of users 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`o`|String|User Connect or User Disconnect
-|Callsign Array|`o`|`"G5ALF","M0AHN"`|Array|Array of users currently online (i.e. connected)
+|Callsign Array|`o`|`"M8ABC","T3EST"`|Array|Array of users currently online (i.e. connected)
 
 ### JSON Example
 
@@ -273,8 +273,8 @@ Sent by the server as part of the connect sequence - contains an array of users 
 {
    "t": "o",
    "o": [
-      "G5ALF",
-      "M0AHN"
+      "M8ABC",
+      "T3EST"
    ]
 }
 ```
@@ -294,7 +294,7 @@ Sent by the server as part of the connect sequence - contains updated name and l
 |Type|`t`|`u`|String|User Connect or User Disconnect
 |User Array|`u`|`[]`|Array|Array of user objects
 |**User Array Objects**|
-|Callsign|`tc`|`G5ALF`|String|The recipient callsign|
+|Callsign|`tc`|`M8ABC`|String|The recipient callsign|
 |Name|`n`|`Alfred`|Number|Reciient name|
 |Last Seen|`ls`|`1740252223`|Number|Timestamp last connected - seconds since epoch|
 
@@ -305,7 +305,7 @@ Sent by the server as part of the connect sequence - contains updated name and l
    "t": "u",
    "u": [
       {
-         "tc": "G5ALF",
+         "tc": "M8ABC",
          "n": "Alfred",
          "ls": 1740252223
       }
@@ -418,7 +418,7 @@ Return Avatar
 ```json
 {
    "t": "a",
-   "c": "G5ALF",
+   "c": "M8ABC",
    "ts": 1750799200,
    "a": "data:image/jpeg;base64,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"
 }
@@ -429,6 +429,115 @@ Return Avatar Count
 {
    "t": "a",
    "ac": 3
+}
+```
+
+## Type s - Stats
+
+Fetch Server Stats, as defined in `stats.py`
+
+### Client to Server
+<hr>
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`s`|String|Always type `s` for type Stats
+
+```json
+{
+   "t": "s"
+}
+```
+
+### Server to Client
+<hr>
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`s`|String|Always type ‘s’ for Stats
+|Type|`s`|`{}`|Object|See below
+
+
+```json
+{
+   "h": { // headers, can include any key / value pair defined
+      "uculsd": 1 // Unique Connecting Users Last Seven Days 
+   }, 
+   "p": [], // post stats
+   "m": [], // message stats
+   "s": [], // server stats
+}
+```
+
+All stats arrays (`p`, `m`, `s`) return objects with two keys:
+
+```json
+{
+      "s": "Total Posts", // Friendly stat description
+      "v": 16144 // Stat value
+}
+```
+
+### JSON Example
+
+```json
+{
+   "t": "s",
+   "s": {
+      "h": {
+         "uculsd": 1
+      },
+      "p": [
+         {
+               "s": "Total Posts",
+               "v": 16144
+         },
+         {
+               "s": "Posts Today So Far",
+               "v": 34
+         },
+         {
+               "s": "Total Posts Last 7 Days",
+               "v": 234
+         },
+         {
+               "s": "Total Posts Last 30 Days",
+               "v": 516
+         },
+      ],
+      "m": [
+         {
+               "s": "Total Messages",
+               "v": 6723
+         },
+         {
+               "s": "Messages Today So Far",
+               "v": 16
+         },
+         {
+               "s": "Total Messages Last 7 Days",
+               "v": 35
+         },
+         {
+               "s": "Total Messages Last 30 Days",
+               "v": 105
+         }
+      ],
+      "s": [
+         {
+               "s": "Bytes Sent Today So Far",
+               "v": 1956
+         },
+         {
+               "s": "Bytes Sent Previous 7 Days",
+               "v": 8045
+         },
+         {
+               "s": "Bytes Sent Previous 30 Days",
+               "v": 4210504
+         }
+      ]
+    }
 }
 ```
 

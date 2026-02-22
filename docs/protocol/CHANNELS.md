@@ -30,12 +30,12 @@ Sends a new Post to a given channel
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`cp`|String|Always type `cp` for Channel Post|
 |Channel Id|`cid`|`1`|Number|id of the channel|
-|From Call|`fc`|`M0AHN`|String|Callsign of the sender|
+|From Call|`fc`|`T3EST`|String|Callsign of the sender|
 |Timestamp|`ts`|`1750804825979`|Number|Milliseconds since epoch|
 |Post|`p`|`Testing 123`|String|The posted message|
 |**Optional Fields**|
 |Reply Timestamp|`rts`|`1750804825979`|Number|The timestamp of the post being replied to
-|Reply From Call|`rfc`|`M0AHN`|String|The sender of the post being replied to
+|Reply From Call|`rfc`|`T3EST`|String|The sender of the post being replied to
 |**Server Only Fields**|
 |Delivery Timestamp|`dts`|`1750804826875`|Number|The timestamp the server received and processed the message. This is returned to the client in the `cpr` response for the client to calculate the delivery time to server
 
@@ -46,7 +46,7 @@ A simple Post
 {
    "t": "cp",
    "cid": 6,
-   "fc": "M0AHN",
+   "fc": "T3EST",
    "ts": 1750804825979,
    "p": "Testing 123"
 }
@@ -57,11 +57,11 @@ A reply to a Post
 {
    "t": "cp",
    "cid": 6,
-   "fc": "M0AHN",
+   "fc": "T3EST",
    "ts": 1750805783394,
    "p": "Blah",
    "rts": 1750804825979,
-   "rfc": "M0AHN"
+   "rfc": "T3EST"
 }
 ```
 
@@ -272,22 +272,22 @@ Request and send a batch of channel Posts
    },
    "p": [
       {
-         "fc": "G5ALF",
+         "fc": "M8ABC",
          "ts": 1750359728258, 
          "p": "Test 1"
       },
       {
-         "fc": "M0AHN",
+         "fc": "T3EST",
          "ts": 1750359773884,
          "p": "Test 2"
       },
       {
-         "fc": "M0AHN",
+         "fc": "T3EST",
          "ts": 1750359775310,
          "p": "Test 3"
       },
       {
-         "fc": "M0AHN",
+         "fc": "T3EST",
          "ts": 1750359846362, 
          "p": "Test 4"
       }
@@ -374,7 +374,7 @@ Send a batch of emoji updates. Always sends the latest complete view of emojis f
          "e": [
             {
                "e": "1f44d", 
-               "c": [ "M1BFP", "2E0HKD", "M0AHN"]
+               "c": [ "M1BFP", "2E0HKD", "T3EST"]
             }
          ]
       }

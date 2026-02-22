@@ -73,7 +73,7 @@ WPS is designed for system access only - it does not provide a human interface f
 > [!TIP]
 > BPQ and Xrouter support publicising an application directly onto the AX.25 network with a callsign and alias. If configured, steps 1 and 2 can be merged. A connecting application can invoke WPS directly upon connecting
 
-WPS is a reactive service - activity is only triggered upon receipt of an instruction from a connected user. It is also connection aware - if it recieves a message from M0AHN addressed to G5ALF and G5ALF is connected, WPS will send the message to G5ALF in real-time
+WPS is a reactive service - activity is only triggered upon receipt of an instruction from a connected user. It is also connection aware - if it recieves a message from T3EST addressed to M8ABC and M8ABC is connected, WPS will send the message to M8ABC in real-time
 
 As an example, the sequence for a new message is:
 1. WPS receives a type `m` JSON object from a connected application, meaning a new message
@@ -112,7 +112,7 @@ WPS preprocesses received strings by:
 If either of the decompression and/or JSON conversion fails, this is considered a FATAL error and WPS disconnects the user and log an `ERROR` in `wps.log`
 
 The only exceptions to the above are the first and second strings received:
-- The first string recieved is always the callsign - e.g. `M0AHN\r\n`. This is sent by the node and happens before any subsequent processing
+- The first string recieved is always the callsign - e.g. `T3EST\r\n`. This is sent by the node and happens before any subsequent processing
 - If the second string fails conversion, this is likely a manual connect by a human. WPS returns a friendly message (configurable in `wps.py`) and then disconnects
 
 > [!IMPORTANT]
@@ -135,15 +135,12 @@ With an open channel to WPS, connected applications should:
 Javascript Example:
 
 ```javascript
-const sendConnectString = {
-   t: "c",
-   n: "Kevin",
-   c: "M0AHN",
-   lm: 123,
-   le: 456,
-   led: 789,
-   lhts: 123,
-   v: 0.44
+const samplePost = {
+   "t": "cp",
+   "cid": 1,
+   "fc": "G5ALF",
+   "ts": 1771755000289,
+   "p": "1"
 }
-send(`${JSON.stringify(sendConnectString)}\r\n`)
+send(`${JSON.stringify(samplePost)}\r\n`)
 ```

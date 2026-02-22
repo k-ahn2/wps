@@ -19,25 +19,21 @@ Batch Variants
 
 ## Type m - Message
 
-> [!WARNING]
-> Type `m` is being updated to align with the improved object used by type `p`.
-> The `_id` field is being depracated, the existing `ts` field will be used instead for message identification.
-
 ### Client to Server
 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`m`|String|Type `m` for Message
-|Message Id|`_id`|`9cb62327-a67d-4a5c-abbe-eb2fd8471fb3`|String|Guid specfic to the message - common between Client and Server
-|From Call|`fc`|`G5ALF`|String|Sending Callsign
-|To Call|`tc`|`M0AHN`|String|Receiving Callsign
+|Message Id|`_id`|`1740312733123-M8ABC`|String|OPTIONAL _id field specific to the message. WPS creates `{ts}-{fc}` if not supplied, which can be mirrored on the client without the need to send this field over the air
+|From Call|`fc`|`M8ABC`|String|Sending Callsign
+|To Call|`tc`|`T3EST`|String|Receiving Callsign
 |Message|`m`|`This is a test`|String|The actual message
-|Timestamp|`ts`|`1740312733`|Number|Timestamp of message - seconds since epoch
+|Timestamp|`ts`|`1740312733123`|Number|Timestamp of message - milliseconds since epoch
 |**Optional Fields**|
-|Reply Id|`r`|`4ef02c95-c448-4dd8-b35f-e7d70f9ea7a0`|String|The id of the message being replied to
+|Reply Id|`r`|`1740312711123-T3EST`|String|The id of the message being replied to
 |**Server Only Fields**|
 |Message Status|`ms`|`1`|Number|0 = Client Sent<BR>1 = Server Received<BR>2 = Recipient Delivered<BR>3 = Recipient Read.<BR>Currently unused - future use case. Server value always currently 1|
-|Logged Timestamp|`lts`|`1740312745`|Number|The timestamp the server received and processed the message
+|Logged Timestamp|`lts`|`1740312745123`|Number|The timestamp the server received and processed the message
 
 > [!NOTE]
 > WPS will store and forward any optional fields sent by the client. 
@@ -47,12 +43,12 @@ Batch Variants
 ```json
 {
    "t": "m",
-   "_id": "9cb62327-a67d-4a5c-abbe-eb2fd8471fb3",
-   "fc": "G5ALF",
-   "tc": "M0AHN",
+   "_id": "1740312733123-M8ABC",
+   "fc": "M8ABC",
+   "tc": "T3EST",
    "m": "This is a test",
    "ms": 1,
-   "ts": 1740312733
+   "ts": 1740312733123
 }
 ```
 
@@ -67,10 +63,10 @@ Returns type `mr`
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`med`|String|Type `med` for Message Edit
-|Id|`_id`|`d25e2702-2023-4906-93f0-5c60a4c18b4d`|String|Guid of the edited message - common between Client and Server
+|Id|`_id`|`1740312733123-M8ABC`|String|_id of the edited message - must be common between Client and Server
 |Edited Message|`m`|`This is a test`|String|The edited message in full
 |Edited Flag|`ed`|`1`|Number|Currently used to determine if a message has been edited
-|Edited Timestamp|`edts`|`1740312733`|Number|Edited timestamp of message - seconds since epoch
+|Edited Timestamp|`edts`|`1740312733123`|Number|Edited timestamp of message - milliseconds since epoch
 
 ### JSON Example
 
@@ -79,7 +75,7 @@ Returns type `mr`
     "t": "med",
     "_id": "d25e2702-2023-4906-93f0-5c60a4c18b4d", 
     "m": "Blah 2", 
-    "edts": 1750713928
+    "edts": 1750713928123
 }
 ```
 
@@ -96,14 +92,14 @@ Returned to the client to confirm receipt of a new message or message edit
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`mr`|String|Always type `mr` for Message Response
-|Id|`_id`|`9cb62327-a67d-4a5c-abbe-eb2fd8471fb3`|String|Guid - common between Client and Server
+|Id|`_id`|`1740312733123-M8ABC`|String|_id - common between Client and Server
 
 ### JSON Example
 
 ```json
 {
    "t": "mr", 
-   "_id": "9cb62327-a67d-4a5c-abbe-eb2fd8471fb3"
+   "_id": "1740312733123-M8ABC"
 }
 ```
 
@@ -123,8 +119,8 @@ Ater every emoji add or remove, both for real-time connections and during the co
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`mem`|String|Type `mem` for Message Emoji
 |Action|`a`|`1`|Number|`1` for Add, `0` for Remove
-|Id|`_id`|`d25e2702-2023-4906-93f0-5c60a4c18b4d`|String|id of the message to apply the emoji
-|Timestamp|`ets`|`1750713928`|Number|Timestamp the emoji is created on the client
+|Id|`_id`|`1740312733123-M8ABC`|String|_id of the message to apply the emoji
+|Timestamp|`ets`|`1750713928123`|Number|Timestamp the emoji is created on the client
 |Emoji|`e`|`1f44d`|String|The unicode value of the emoji to add or remove
 
 ### JSON Example
@@ -134,7 +130,7 @@ Emoji Add
 {
    "t": "mem",
    "a": 1,
-   "_id": "241a9c25-662b-4de4-a2b6-0a5482b65241",
+   "_id": "1740312733123-M8ABC",
    "e": "1f44d",
    "ets": 1750713928
 }
@@ -145,7 +141,7 @@ Emoji Remove
 {
    "t": "mem",
    "a": 0,
-   "_id": "241a9c25-662b-4de4-a2b6-0a5482b65241",
+   "_id": "1740312733123-M8ABC",
    "e": "1f44d",
    "ets": 1750713928
 }
@@ -156,7 +152,7 @@ Emoji Remove
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`mem`|String|Type `mem` for Message Emoji
-|Id|`_id`|`d25e2702-2023-4906-93f0-5c60a4c18b4d`|String|id of the message to apply the emoji
+|Id|`_id`|`1740312733123-M8ABC`|String|_id of the message to apply the emoji
 |Timestamp|`ets`|`1750713928`|Number|Timestamp the emoji is applied at the server, replicated to the client
 |Array of Emojis|`e`|`[ "1f44d", "1f603" ]`|Array|All emojis for the message|
 
@@ -165,7 +161,7 @@ Emoji Remove
 ```json
 { 
    "t": "mem", 
-   "_id": "241a9c25-662b-4de4-a2b6-0a5482b65241", 
+   "_id": "1740312733123-M8ABC", 
    "e": [
       "1f44d",
       "1f603"
@@ -195,22 +191,22 @@ Emoji Remove
    }, 
    "m": [
       {
-         "_id": "9cd7720d-958d-4ebc-b7c1-c53d81fc0182", 
-         "fc": "G5ALF", 
-         "tc": "M0AHN", 
+         "_id": "1750380586123-M8ABC", 
+         "fc": "M8ABC", 
+         "tc": "T3EST", 
          "m": "Test 1", 
-         "ts": 1750380586, 
+         "ts": 1750380586123, 
          "e": ["1f622"], 
          "ets": 1751390750
       }, 
       {
-         "_id": "ad90c85f-0eb0-4803-95ca-f292dbab238e", 
-         "fc": "G5ALF", 
-         "tc": "M0AHN", 
+         "_id": "1740312735123-M8ABC", 
+         "fc": "M8ABC", 
+         "tc": "T3EST", 
          "m": "Test 2", 
-         "ts": 1750380602, 
+         "ts": 1740312735123, 
          "e": ["1f603"], 
-         "ets": 1751389832
+         "ets": 1751389832123
       }
    ]
 }
@@ -232,13 +228,13 @@ Emoji Remove
    "t": "medb", 
    "m": [
       {
-         "_id": "9cd7720d-958d-4ebc-b7c1-c53d81fc0182",
-         "edts": 1751389832,
+         "_id": "1751389832123-M8ABC",
+         "edts": 1751389832123,
          "m": "Edited Message Text"
       },
       {
-         "_id": "ad90c85f-0eb0-4803-95ca-f292dbab238e",
-         "edts": 1751389832,
+         "_id": "1751389832345-M8ABC",
+         "edts": 1751389832345,
          "m": "Another Edited Message Text"
       }      
    ]
@@ -261,9 +257,9 @@ Emoji Remove
    "t": "memb", 
    "m": [
       {
-         "_id": "ad90c85f-0eb0-4803-95ca-f292dbab238e",
+         "_id": "1751389832123-M8ABC",
          "e": ["1f603"],
-         "ets": 1751389832
+         "ets": 1751389832123
       }
    ]
 }
