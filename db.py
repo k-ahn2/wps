@@ -32,6 +32,11 @@ def dbInit(CONN_DB_CURSOR):
     '''
     CONN_DB_CURSOR.execute(create_messages_table)
 
+    create_messages_index = '''
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_message_id ON messages (json_extract(message, '$._id'));
+    '''
+    CONN_DB_CURSOR.execute(create_messages_index)
+
     create_posts_table = '''
     CREATE TABLE IF NOT EXISTS posts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -505,11 +510,21 @@ def dbInsertMessage(CONN_DB_CURSOR, message):
         db_logger("dbInsertMessage", "Return: " + str(return_success))
         return return_success
 
+    except sqlite3.IntegrityError:
+        # Duplicate _id → ignore gracefully
+        db_logger("dbInsertMessage", "Duplicate _id encountered, ignored gracefully but shouldn't have happened", 'ERROR')
+        return_success = {
+            "result": "success",
+            "data": None,
+        }
+        db_logger("dbInsertMessage", "Return: " + str(return_success))
+        return return_success
+
     except Exception as e:
         return_error = {
             "result": "failure",
             "error": str(e),
-            "function": "dbMessageSend",
+            "function": "dbInsertMessage",
             "params": message
         }
         db_logger("dbInsertMessage", "Return: " + str(return_error), 'ERROR')
