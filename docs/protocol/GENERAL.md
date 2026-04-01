@@ -10,8 +10,9 @@
 7. [Type u - User Updates](#type-u---user-updates)
 8. [Type k - Keep Alive](#type-k---keep-alive)
 9. [Type a and ar - Add or Update Avatar](#type-a-and-ar---add-or-update-avatar)
-10. [Type ae - Avatar Enquiry](#type-wpe---avatar-enquiry)
-11. [The Connect Sequence Explained](#the-connect-sequence-explained)
+10. [Type ae - Avatar Enquiry](#type-ae---avatar-enquiry)
+11. [Type s - Stats](#type-s---stats)
+12. [The Connect Sequence Explained](#the-connect-sequence-explained)
 
 [Return to README](/README.md)
 
