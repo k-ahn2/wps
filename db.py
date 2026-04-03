@@ -512,6 +512,7 @@ def dbInsertMessage(CONN_DB_CURSOR, message):
 
     except sqlite3.IntegrityError:
         # Duplicate _id → ignore gracefully
+        # # Could use INSERT OR IGNORE to avoid this, but helpful to know if WPS gets the same message twice. 
         db_logger("dbInsertMessage", "Duplicate _id encountered, ignored gracefully but shouldn't have happened", 'ERROR')
         return_success = {
             "result": "success",
