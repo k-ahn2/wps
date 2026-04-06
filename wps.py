@@ -320,7 +320,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
 
     # Different handling if this is a connect from a new user or a new browser
     if connect_object["lm"] == 0 and len(client_channel_subscriptions) == 0:
-        print(f"{time} {callsign} {client_version} Connect New {'User' if is_new_user == 1 else 'Browser'}")
+        print(f"{timestamp()} {callsign} {client_version} Connect New {'User' if is_new_user == 1 else 'Browser'}")
         first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, is_new_user)
     else:
         print(f"{timestamp()} {callsign} {client_version} Existing Connect")
