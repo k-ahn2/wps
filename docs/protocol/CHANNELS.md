@@ -36,6 +36,7 @@ Sends a new Post to a given channel
 |**Optional Fields**|
 |Reply Timestamp|`rts`|`1750804825979`|Number|The timestamp of the post being replied to
 |Reply From Call|`rfc`|`T3EST`|String|The sender of the post being replied to
+|Gap|`g`|`1`|Boolean|If a user doesn't request all outstanding posts for a channel, this flag signifies the first new post after the posts gap
 |**Server Only Fields**|
 |Delivery Timestamp|`dts`|`1750804826875`|Number|The timestamp the server received and processed the message. This is returned to the client in the `cpr` response for the client to calculate the delivery time to server
 
@@ -48,7 +49,7 @@ A simple Post
    "cid": 6,
    "fc": "T3EST",
    "ts": 1750804825979,
-   "p": "Testing 123"
+   "p": "Testing 123",
 }
 ```
 
@@ -62,6 +63,18 @@ A reply to a Post
    "p": "Blah",
    "rts": 1750804825979,
    "rfc": "T3EST"
+}
+```
+
+The first post after a posts gap, when a user chooses not to donwload all oustanding posts
+```json
+{
+   "t": "cp",
+   "cid": 6,
+   "fc": "T3EST",
+   "ts": 1750804825979,
+   "p": "Testing 123",
+   "g": 1
 }
 ```
 
