@@ -28,7 +28,15 @@ env_template = {
     "channels": {},
     "wpsLoggingEnabled": True,
     "dbLoggingEnabled": True,
-    "daysToRetainLogFiles": 5
+    "daysToRetainLogFiles": 5,
+    "serviceMonitoring": {
+        "enableServiceMonitoring": False,
+        "bpqEndpoint": "127.0.0.1",
+        "bpqPort": 8010,
+        "telnetUsername": "sysop",
+        "telnetPassword": "",
+        "enabledCallsignsToReceiveServiceNotifications": []
+    }
 }
 
 if os.path.exists("env.json"):
