@@ -10,7 +10,7 @@ Singular Types
 4. [Type cpem - Channel Post Emoji](#type-cpem---channel-post-emoji)
 5. [Type cs - Channel Subscribe](#type-cs---channel-subscribe)
 6. [Type pch - Paused Channel Headers](#type-pch---paused-channel-headers)
-7. [Type cu - Unpause Channel](#type-cu---channel-unpause)
+7. [Type cu - Channel Unpause](#type-cu---channel-unpause)
 
 Batch Variants
 
