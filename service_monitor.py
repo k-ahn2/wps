@@ -140,7 +140,7 @@ def send_push_notification(heading, message, player_id):
         }
 
     configuration = onesignal.Configuration(
-        rest_api_key=rest_key
+        app_key=rest_key
     )
 
     notification = Notification()
@@ -314,6 +314,9 @@ async def read_response(reader, writer, command, settle_seconds=0.6, max_wait_se
     if command == "WPS" and saw_output and "*** Connected" not in response:
         notify_error(command, "Unable to connect to WPS")
 
+    if command == "SERVICE_MONITOR" and saw_output and "WPS_IS_ALIVE" not in response:
+        notify_error(command, "WPS_IS_ALIVE response not received from SERVICE_MONITOR command")
+
     if not saw_output:
         print("<no data>")
         notify_error(command, "No response received")
@@ -335,7 +338,7 @@ def notify_error(source, error):
 
 async def main():
     host, port, username, password = load_monitor_config()
-    commands = ["WPS", "monitor"]
+    commands = ["WPS", "SERVICE_MONITOR"]
 
     print(f"Connecting via telnet to {host}:{port}...")
     try:
@@ -361,7 +364,7 @@ async def main():
     finally:
         writer.close()
         await writer.wait_closed()
-        print("\nDisconnected.")
+        print("\nDisconnected")
 
 if __name__ == "__main__":
     try:
