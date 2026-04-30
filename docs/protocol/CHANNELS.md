@@ -10,7 +10,7 @@ Singular Types
 4. [Type cpem - Channel Post Emoji](#type-cpem---channel-post-emoji)
 5. [Type cs - Channel Subscribe](#type-cs---channel-subscribe)
 6. [Type pch - Paused Channel Headers](#type-pch---paused-channel-headers)
-7. [Type uc - Unpause Channel](#type-uc---unpause-channel)
+7. [Type cu - Unpause Channel](#type-cu---channel-unpause)
 
 Batch Variants
 
@@ -427,7 +427,7 @@ Returned when the number of pending posts in a given channel is greater than the
 }
 ```
 
-## Type uc - Unpause Channel
+## Type cu - Channel Unpause
 
 Instruction from the client to WPS to unpause a channel, including details on the posts to return. WPS removes the `cid` from `paused_channels` on the user record, then returns a `cpb` containing the requested posts.
 
@@ -435,7 +435,7 @@ Instruction from the client to WPS to unpause a channel, including details on th
 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
-|Type|`t`|`uc`|String|`uc` for Unpause Channel
+|Type|`t`|`cu`|String|`cu` for Channel Unpause
 |Channel Id|`cid`|`0`|Number|id of the channel|
 |**Then one of either**|
 |Last Timestamp|`lts`|`1753180608945`|Number|Returns all posts since timestamp
@@ -446,7 +446,7 @@ Instruction from the client to WPS to unpause a channel, including details on th
 Return all posts since last timestamp
 ``` json
 {
-   "t": "uc",
+   "t": "cu",
    "cid": 0,
    "lts": 1753180608945
 }
@@ -455,7 +455,7 @@ Return all posts since last timestamp
 Return the latest 50 posts
 ``` json
 {
-   "t": "uc",
+   "t": "cu",
    "cid": 0,
    "pc": 50
 }
