@@ -1655,33 +1655,59 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     print(f"{timestamp()} {callsign} disconnected")
     disconnect_timestamp = round(time.time())
 
-    user_updated_fields = { "last_disconnected": disconnect_timestamp, "paused_channels": [] }
-
-    # The is_online database field is only updated to 0 (offline) if this is the only connection for this callsign, otherwise it is left as 1 (online) as they still have an active connection
-    if sum(1 for conn in CONNECTIONS if conn.get('callsign') == callsign) == 1:
-        wps_logger("DISCONNECT HANDLER", callsign, "Only one connection by this user, so marking them offline as part of the disconnect process")
-        user_updated_fields["is_online"] = 0
-    else:
-        wps_logger("DISCONNECT HANDLER", callsign, "Multiple connections, so only disconnecting this connection and keeping the user marked as online")
-
-    user_db_record = dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
-    wps_logger("DISCONNECT HANDLER", callsign, f"User update response: {user_db_record.get('result', None)}")
-
     wps_logger("DISCONNECT HANDLER", callsign, f"All connections BEFORE disconnect: {[c['callsign'] for c in CONNECTIONS]}")
+
+    # Only disconnect/remove the specific socket that triggered this handler.
+    # This prevents a stale thread (from an old socket) from disconnecting a new active socket
+    # that has the same callsign.
+    matching_connection_indexes = [
+        i for i, c in enumerate(CONNECTIONS)
+        if c.get('callsign') == callsign and c.get('socket') is CONN
+    ]
+    had_matching_connection = len(matching_connection_indexes) > 0
     
     try:
         CONN.shutdown(socket.SHUT_RDWR)
         CONN.close()
     except Exception as e:
         wps_logger("DISCONNECT HANDLER", callsign, f"Socket shutdown exception {e} happened")
-    
-    for key, C in enumerate(CONNECTIONS):
-        if C['callsign'] == callsign:
-            # C['socket'].close()
-            del CONNECTIONS[key]
-            event_logger(timestamp_milliseconds(), 'USER_DISCONNECT', callsign, { "total": len(CONNECTIONS) }, None)
+
+    # Remove only this specific connection from the active connections list.
+    for key in reversed(matching_connection_indexes):
+        del CONNECTIONS[key]
+
+    remaining_connections_for_callsign = sum(1 for conn in CONNECTIONS if conn.get('callsign') == callsign)
+
+    # If this socket was not in CONNECTIONS, it has already been superseded/removed.
+    # Do not update online state or broadcast disconnect in that case.
+    if not had_matching_connection:
+        wps_logger("DISCONNECT HANDLER", callsign, "Socket was already removed from active connections, skipping user offline update and broadcast")
+        return
+
+    user_updated_fields = {
+        "last_disconnected": disconnect_timestamp,
+        "paused_channels": []
+    }
+
+    # Mark user offline only when there are no remaining active sockets for this callsign.
+    should_broadcast_disconnect = False
+    if remaining_connections_for_callsign == 0:
+        wps_logger("DISCONNECT HANDLER", callsign, "Last active connection closed, marking user offline")
+        user_updated_fields["is_online"] = 0
+        should_broadcast_disconnect = True
+    else:
+        wps_logger("DISCONNECT HANDLER", callsign, f"{remaining_connections_for_callsign} active connection(s) remain, keeping user marked online")
+
+    user_db_record = dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
+    wps_logger("DISCONNECT HANDLER", callsign, f"User update response: {user_db_record.get('result', None)}")
+
+    event_logger(timestamp_milliseconds(), 'USER_DISCONNECT', callsign, { "total": len(CONNECTIONS) }, None)
 
     wps_logger("DISCONNECT HANDLER", callsign, f"All connections AFTER disconnect: {[c['callsign'] for c in CONNECTIONS]}")
+
+    if not should_broadcast_disconnect:
+        wps_logger("DISCONNECT HANDLER", callsign, "Skipping disconnect broadcast because user still has active connection(s)")
+        return
 
     for C in CONNECTIONS:
         wps_logger("ONLINE STATUS", callsign, f"Disconnect sent to: {C['callsign']}")       
@@ -1755,12 +1781,20 @@ def connected_session_handler(CONN, ADDR):
 
     CONN_DB_CURSOR = db.cursor()
     
-    # Check if the callsign is already connected, if so disconnect the existing connection
-    for C in CONNECTIONS:
-        if C['callsign'] == callsign:
-            wps_logger("CONNECTED SESSION HANDLER", callsign, "Callsign already connected, disconnecting existing connection")
-            print(f"{timestamp()} {callsign} reconnected, disconnecting existing connection")
-            C['socket'].shutdown(socket.SHUT_RDWR) # Closes the connection, which will trigger the close_connection function
+    # Check if the callsign is already connected, if so silently remove existing connections
+    # without triggering the disconnect handler or broadcasting a disconnect notification
+    existing_connections = [C for C in CONNECTIONS if C['callsign'] == callsign]
+    for C in existing_connections:
+        wps_logger("CONNECTED SESSION HANDLER", callsign, "Callsign already connected, silently removing existing connection")
+        print(f"{timestamp()} {callsign} reconnected, silently removing existing connection")
+        # Remove from CONNECTIONS first so that when the old thread's exception handler fires,
+        # close_connection will not find this callsign and will not send a disconnect notification
+        CONNECTIONS[:] = [conn for conn in CONNECTIONS if conn is not C]
+        try:
+            C['socket'].shutdown(socket.SHUT_RDWR)
+            C['socket'].close()
+        except Exception as e:
+            wps_logger("CONNECTED SESSION HANDLER", callsign, f"Exception closing existing connection socket: {e}")
 
     # Now continue and add the new connection
     CONNECTIONS.append({ "callsign": callsign, "socket": CONN })
@@ -1797,6 +1831,16 @@ def connected_session_handler(CONN, ADDR):
                     close_connection(CONN_DB_CURSOR, callsign, CONN)
                     break
                 
+                if socket_rx[:15] == 'SERVICE_MONITOR':
+                    CONN.send(("WPS_IS_ALIVE"+'\r').encode())
+                    time.sleep(10)
+                    try:
+                        CONN.shutdown(socket.SHUT_RDWR)
+                        CONN.close()
+                    except Exception as e:
+                        wps_logger("DISCONNECT HANDLER", callsign, f"Socket shutdown exception {e} happened")
+                    break
+
                 if socket_rx[:1] != '{' and socket_rx[:1] != chr(195):
                     wps_logger("CONNECTED SESSION HANDLER", callsign, "First RX not JSON or a Compressed Packet, disconnecting", 'ERROR') 
                     CONN.send((invalid_connect_reponse+'\r').encode())
