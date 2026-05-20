@@ -1066,6 +1066,11 @@ def message_edit_handler(CONN_DB_CURSOR, msg_update, callsign, CONN):
     
     wps_logger("MESSAGE EDIT HANDLER", callsign, f"Received: {msg_update}")
 
+    # TODO: Temp code to correct for clients sending edts in milliseconds, can remove when all clients have been updated
+    if msg_update['edts'] > 9999999999:
+        msg_update['edts'] = msg_update['edts'] // 1000
+        wps_logger("MESSAGE EDIT HANDLER", callsign, "Edit timestamp appears to be in milliseconds, adjusted to seconds", "WARN")
+
     update = { "edts": msg_update['edts'], "m": msg_update['m'], "ed": 1 }
 
     message_edit_response = dbUpdateMessage(CONN_DB_CURSOR, msg_update['_id'], update)
@@ -1126,6 +1131,11 @@ def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
     updated_emojis.remove(emoji_object['e']) if emoji_object['a'] == 0 and emoji_object['e'] in updated_emojis else None
 
     wps_logger("MESSAGE EMOJI HANDLER", callsign, f"Emojis after updating: {updated_emojis}")
+
+    # TODO: Temp code to correct for clients sending ets in milliseconds, can remove when all clients have been updated
+    if emoji_object['ets'] > 9999999999:
+        emoji_object['ets'] = emoji_object['ets'] // 1000
+        wps_logger("MESSAGE EMOJI HANDLER", callsign, "Emoji timestamp appears to be in milliseconds, adjusted to seconds", "WARN")
 
     update = { "e": updated_emojis, "ets": emoji_object['ets'] }
 
