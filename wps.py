@@ -1,3 +1,4 @@
+import struct
 from env import *
 from db import *
 from handlers import *
@@ -8,6 +9,7 @@ import json
 import zlib, base64
 from events import *
 from stats import *
+from enum import IntEnum
 
 def timestamp():
     return datetime.datetime.now().isoformat(timespec='seconds')
@@ -61,6 +63,8 @@ compression_delimiter_base64 = chr(195) + chr(128)
 # Batch Sizes
 MB_BATCH_SIZE = 4 # Number of messages to send in batch type 'mb'
 CPB_BATCH_SIZE = 4 # Number of posts to send in batch type 'pb'
+
+WPS_FRAME_START = 0x7E
 
 def timestamp_milliseconds():
     return round(time.time() * 1000)
@@ -145,6 +149,10 @@ def cleanup_bad_push_player_id(CONN_DB_CURSOR, callsign, bad_player_id):
     except Exception as e:
         wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Error cleaning up bad player ID: {e}", 'ERROR')
 
+'''
+Old Frame Processing Functions - kept for reference until new frame encoding and decoding is fully tested
+'''
+
 def frame_and_compress_json_object(json_obj):
     '''
     Function pre-processes a JSON object to prepare it for sending
@@ -174,15 +182,18 @@ def frame_and_compress_json_object_bytes(json_obj):
     else:
         return uncompressed
 
-def divide_into_batches(array, batch_size):    
+def compress_bytes(string_to_compress):
     '''
-    Takes an input array and divides it into batches of a specified size
-    Returns a new array containing the individual batches
-    Used for batch sending of messages and posts
+    Compress string and return as bytes
+    '''    
+    return zlib.compress(bytes(string_to_compress, 'utf-8'), 9)
+
+def decompress_bytes(string_to_decompress):
     '''
-    
-    for i in range(0, len(array), batch_size): 
-        yield array[i:i + batch_size]
+    Decompress bytes as string and return as string
+    '''        
+    decompressed = zlib.decompress(string_to_decompress).decode('utf-8')
+    return decompressed
 
 def compress(string_to_compress):
     '''
@@ -200,24 +211,71 @@ def decompress(string_to_decompress):
     decompressed = zlib.decompress(decoded).decode('utf-8')
     return decompressed
 
-def compress_bytes(string_to_compress):
-    '''
-    Compress string and return as bytes
-    '''    
-    return zlib.compress(bytes(string_to_compress, 'utf-8'), 9)
+'''
+New Frame Processing Functions
+'''
 
-def decompress_bytes(string_to_decompress):
+class WPS_FRAME_FORMAT(IntEnum):
+    JSON = 1
+    MSGPACK = 2
+    CBOR = 3
+    COMPRESSED_JSON = 4
+    COMPRESSED_MSGPACK = 5
+    COMPRESSED_CBOR = 6    
+
+def wps_frame_encode(format, payload):
+    
+    payload_bytes = payload.encode('utf-8')
+    
+    frame = struct.pack(
+        ">BBH",
+        WPS_FRAME_START,
+        format,
+        len(payload_bytes)
+    )
+
+    frame += payload_bytes
+
+    return frame
+
+def wps_frame_decode(frame):
+    if len(frame) < 4:
+        raise ValueError("Frame too short")
+
+    start, format_id, length = struct.unpack(
+        ">BBH",
+        frame[:4]
+    )
+
+    if start != WPS_FRAME_START:
+        raise ValueError("Invalid start byte")
+
+    payload = frame[4:4+length]
+
+    return {
+        "format": format_id,
+        "payload": payload
+    }
+
+'''
+Frame Processing Functions End
+'''
+
+def divide_into_batches(array, batch_size):    
     '''
-    Decompress bytes as string and return as string
-    '''        
-    decompressed = zlib.decompress(string_to_decompress).decode('utf-8')
-    return decompressed
+    Takes an input array and divides it into batches of a specified size
+    Returns a new array containing the individual batches
+    Used for batch sending of messages and posts
+    '''
+    
+    for i in range(0, len(array), batch_size): 
+        yield array[i:i + batch_size]
 
 def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     '''
     Receives type `c` JSON from client
     Creates user if they don't exist
-    Returns connnect header in response, showing new message and post counts
+    Returns connect header in response, showing new message and post counts
     Runs all code required to update the client
     '''
 
@@ -326,13 +384,13 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
         socket_send_handler(CONN_DB_CURSOR, CONN, callsign, online_response)
 
     # Different handling if this is a connect from a new user or a new browser
-    if connect_object["lm"] == 0 and len(client_channel_subscriptions) == 0:
+    if connect_object["lm"] == 0:
         print(f"{timestamp()} {callsign} {client_version} Connect New {'User' if is_new_user == 1 else 'Browser'}")
         first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, is_new_user)
     else:
         print(f"{timestamp()} {callsign} {client_version} Existing Connect")
         existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, user_db_record, previous_connect_timestamp)
-
+    
 def first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, is_new_user):
     '''
     Handles a connect from a new browser, either because the user is new or an existing user has connected from a new browser
@@ -341,25 +399,60 @@ def first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, i
 
     last_ham_timestamp = connect_object.get('lhts', 0)
 
+    ###
+    # First time connect handler
+    ###
+
     wps_logger("FIRST TIME CONNECT HANDLER", callsign, "Running first time connect handler")
 
-    response = {
-        "t": "c",
-        "mc": 0,
-        "pc": 0,
-        "w": 1 if is_new_user else 0
-    }
-    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
-    
     ###
-    # Return the user records
+    # Fetch the users that this person has messaged before
     ###
 
     messaged_users_result = dbGetMessagedUsers(CONN_DB_CURSOR, callsign)
     close_connection(CONN_DB_CURSOR, callsign, CONN) if messaged_users_result['result'] == 'failure' else None
     wps_logger("FIRST TIME CONNECT HANDLER", callsign, f"Messaged users result: {messaged_users_result}")
     messaged_users = messaged_users_result['data']
-    
+
+    ###
+    # Get the last up-to-10 messages from each messaged user
+    ###
+
+    messages_to_return = []
+
+    for recipient in messaged_users:
+
+        get_last_messages_response = dbGetLastMessages(CONN_DB_CURSOR, callsign, recipient['callsign'], 10)
+        close_connection(CONN_DB_CURSOR, callsign, CONN) if get_last_messages_response['result'] == 'failure' else None
+        messages = get_last_messages_response['data']
+        
+        for message in messages:
+            del message['ms']
+            del message['t']
+            del message['lts']
+        
+            wps_logger("FIRST TIME CONNECT HANDLER", callsign, f"{len(messages)} messages to return for recipient {recipient['callsign']}")
+            messages_to_return.append(message)
+
+    messages_to_return.sort(key=lambda x: x["ts"]) # sort in Ascending order of timestamp, so oldest messages are returned first
+
+    #
+    # Send the connect response with the message count and new browser flag set
+    #
+
+    response = {
+        "t": "c",
+        "mc": len(messages_to_return),
+        "pc": 0,
+        "w": 1 if is_new_user else 0,
+        "n": 1
+    }
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
+
+    ###
+    # Return the users that this person has messaged before
+    ###
+
     user_response = { 
         "t": "u",
         "u": []
@@ -378,39 +471,34 @@ def first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, i
         wps_logger("FIRST TIME CONNECT HANDLER", callsign, "Sending user first time connect batch")
         socket_send_handler(CONN_DB_CURSOR, CONN, callsign, user_response)
 
-    ###
-    # First time connect handler
-    ###
+    #
+    # Now return the messages in batches, so the client can show progress
+    #
 
-    for recipient in messaged_users:
-        connect_batch_array = {
-            "t": "mb",
-            "md": {
-                "mt": 10,
-                "mc": 10
-            },
-            "m": []
-        }
+    message_batch = {
+        "t": "mb",
+        "md": {
+            "mt": len(messages_to_return),
+            "mc": 0
+        },
+        "m": []
+    }
 
-        get_last_messages_response = dbGetLastMessages(CONN_DB_CURSOR, callsign, recipient['callsign'], 10)
-        close_connection(CONN_DB_CURSOR, callsign, CONN) if get_last_messages_response['result'] == 'failure' else None
-        messages = get_last_messages_response['data']
+    if len(messages_to_return) > 0:
+
+        new_messages_batched = list(divide_into_batches(messages_to_return, MB_BATCH_SIZE))
         
-        for message in messages:
-            del message['ms']
-            del message['t']
-            del message['lts']
-            connect_batch_array['m'].append(message)
-        
-        wps_logger("FIRST TIME CONNECT HANDLER", callsign, f"Sending first connect batch for callsign {recipient['callsign']}")
-        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, connect_batch_array)
-    
-    ###
-    # Return users currently online
-    ###
+        running_message_count = 0
+        for messages_batch in new_messages_batched:
+            if (running_message_count + MB_BATCH_SIZE) < len(messages_to_return):
+                running_message_count += MB_BATCH_SIZE
+            else:
+                running_message_count = len(messages_to_return)
 
-    # Now handled in the main connect handler
-    # online_users_connect_handler(CONN_DB_CURSOR, callsign, CONN)
+            message_batch['m'] = messages_batch
+            message_batch['md']['mc'] = running_message_count
+            wps_logger('FIRST TIME CONNECT HANDLER', callsign, f"New messages response batch - up to message {running_message_count} of total {len(messages_to_return)}")
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, message_batch)    
 
     ###
     # Return ham updates
@@ -1797,7 +1885,7 @@ def connected_session_handler(CONN, ADDR):
             wps_logger("CONNECTED SESSION HANDLER", callsign, f"Exception closing existing connection socket: {e}")
 
     # Now continue and add the new connection
-    CONNECTIONS.append({ "callsign": callsign, "socket": CONN })
+    CONNECTIONS.append({ "callsign": callsign, "socket": CONN, "protocol_format": None })
     
     # Print the updated connected callsigns to the console
     rc = []
@@ -1809,23 +1897,73 @@ def connected_session_handler(CONN, ADDR):
     CONNECTION_RX_BUFFER = ''
     first_rx = True
 
+    '''
+    Temp code for compression testing
+    '''
+
+    time.sleep(3)
+
+    START = 0x7E
+
+    def encode_message(format_id, payload_bytes):
+        frame = struct.pack(
+            ">BBH",
+            START,
+            format_id,
+            len(payload_bytes)
+        )
+
+        frame += payload_bytes
+        print(f"Encoded frame: {frame}")
+        return frame
+    
+    # CONN.send(encode_message(1, compress_bytes('{"t":"test","d":"This is a test message to check compression and decompression functionality"}')))
+
+    '''
+    Temp code end
+    '''
+
     while True:
         # This loop runs forever unless the connection is closed or the code terminates on error
         try:
             if not CONN._closed:
                 socket_rx = CONN.recv(1024)
+                wps_logger("CONNECTED SESSION HANDLER", callsign, f"Received before decode: {socket_rx}") 
+                
+                START = 0x7E
+
+                def parse_frame(frame: bytes):
+                    
+                    if frame[0] != START:
+                        raise ValueError("Invalid start byte")
+
+                    format_byte = frame[1]
+
+                    length = int.from_bytes(frame[2:4], "big")
+
+                    payload = frame[4:4+length]
+
+                    return format_byte, payload
+                
+                format_byte, payload = parse_frame(socket_rx)
+                
+                print(f"Decoded message: {payload}")
+
+                wps_logger("CONNECTED SESSION HANDLER", callsign, f"Received data decode: {zlib.decompress(payload)}") 
+                socket_rx = socket_rx.decode()
             else:
                 wps_logger("CONNECTED SESSION HANDLER", callsign, "Socket in closed state, ending thread")
                 break
             
-            wps_logger("CONNECTED SESSION HANDLER", callsign, f"Received: {repr(socket_rx)}") 
-            socket_rx = socket_rx.decode()
+            wps_logger("CONNECTED SESSION HANDLER", callsign, f"Received: {socket_rx}") 
 
             # If the first data is not the start of a JSON or Compressed object, this probably is a manual connect. Send invalid connect response and disconnect
             # Or, the first data is the node disconnecting (which is very rare but has happened), send a disconnect
             if first_rx:
                 first_rx = False
-                
+
+                wps_logger("CONNECTED SESSION HANDLER", callsign, f"Raw frame: {socket_rx}")
+
                 if socket_rx[:28] == '*** Disconnected from Stream':
                     wps_logger("CONNECTED SESSION HANDLER", callsign, "First data is a node disconnect")
                     close_connection(CONN_DB_CURSOR, callsign, CONN)
@@ -1841,13 +1979,25 @@ def connected_session_handler(CONN, ADDR):
                         wps_logger("DISCONNECT HANDLER", callsign, f"Socket shutdown exception {e} happened")
                     break
 
-                if socket_rx[:1] != '{' and socket_rx[:1] != chr(195):
-                    wps_logger("CONNECTED SESSION HANDLER", callsign, "First RX not JSON or a Compressed Packet, disconnecting", 'ERROR') 
+                if socket_rx[:1] != '{' and socket_rx[:1] != chr(195) and socket_rx[0] != WPS_FRAME_START:
+                    wps_logger("CONNECTED SESSION HANDLER", callsign, f"{socket_rx[:1]} {socket_rx[0]} First RX not JSON or a Compressed Packet or the WPS Frame Start Byte, disconnecting", 'ERROR') 
                     CONN.send((invalid_connect_reponse+'\r').encode())
                     time.sleep(2)
                     close_connection(CONN_DB_CURSOR, callsign, CONN)
                     break
-            
+                
+                if socket_rx[0] == WPS_FRAME_START:
+                    format_byte = socket_rx[1]
+                    wps_logger("CONNECTED SESSION HANDLER", callsign, f"Found format byte: {format_byte}") 
+                    try:
+                        format_enum = WPS_FRAME_FORMAT(format_byte)
+                    except ValueError:
+                        raise Exception("Unknown format byte")
+
+                    next(conn for conn in CONNECTIONS if conn["callsign"] == callsign)["protocol_format"] = format_enum.value
+
+                    wps_logger("CONNECTED SESSION HANDLER", callsign, "First RX is SYNC")
+
             wps_logger("CONNECTED SESSION HANDLER", callsign, f"CONNECTION_RX_BUFFER is: {repr(CONNECTION_RX_BUFFER)}") 
 
             if len(socket_rx) == 0:

@@ -82,19 +82,22 @@ ___
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`c`|String|Always type ‘c’
 |New Message Count|`mc`|`5`|Number|Number of new messages pending download
-|Welcome|`w`|`1`|Boolean|Set to 1 if the connect if from a new user, used to display welcome message. Only sent if True
-|Version|`v`|`0.44`|Number|Set to the latest recommended or minimum client version. The client can use this to prompt for upgrade if this value is higher than the currently used client version
+version
+|Version|`v`|`0.44`|Number|Set to the latest recommended or minimum client version. The client can use this to prompt for upgrade if this value is higher than the currently used client 
 |New Post Count|`pc`|`35`|Number|Number of new posts pending download
+|New User Welcome|`w`|`1`|Boolean|Set to 1 if the connect is from a new user, used to display welcome message. Only sent if True
+|New Browser|`n`|`0`|Boolean|Set to 1 if the connect is from a new browser, telling the client there will be an initial data load. Could be deduced on the client, but making it literal based on server behaviour
 
 ### JSON Example
 
 ```json
 {
    "t": "c",
-   "w": 1,
    "mc": 25,
+   "pc": 35,
    "v": 0.44,
-   "pc": 35
+   "w": 1,
+   "n": 0
 }
 ```
 
