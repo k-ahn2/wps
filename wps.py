@@ -444,6 +444,12 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     channel_subscriptions = connect_object.get('cc', [])
     client_version = connect_object.get('v', 0)
 
+    # TODO: Convert to seconds if led or le is in milliseconds
+    if last_message_emoji > 9999999999:
+        last_message_emoji = last_message_emoji // 1000
+    if last_message_edit > 9999999999:
+        last_message_edit = last_message_edit // 1000
+
     ###
     # Get the minimum client version number held in env.json
     ###
