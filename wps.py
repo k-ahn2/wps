@@ -446,10 +446,10 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
 
     # TODO: Convert to seconds if led or le is in milliseconds
     if last_message_emoji > 9999999999:
-        last_message_emoji = last_message_emoji // 1000
+        last_message_emoji = round(last_message_emoji / 1000)
         wps_logger('CONNECT HANDLER', callsign, f"Last message emoji timestamp appears to be in milliseconds, adjusted to seconds. Now {last_message_emoji}", "WARN")
     if last_message_edit > 9999999999:
-        last_message_edit = last_message_edit // 1000
+        last_message_edit = round(last_message_edit / 1000)
         wps_logger('CONNECT HANDLER', callsign, f"Last message edit timestamp appears to be in milliseconds, adjusted to seconds. Now {last_message_edit}", "WARN")
 
     ###
@@ -1076,7 +1076,7 @@ def message_edit_handler(CONN_DB_CURSOR, msg_update, callsign, CONN):
 
     # TODO: Temp code to correct for clients sending edts in milliseconds, can remove when all clients have been updated
     if msg_update['edts'] > 9999999999:
-        msg_update['edts'] = msg_update['edts'] // 1000
+        msg_update['edts'] = round(msg_update['edts'] / 1000)
         wps_logger("MESSAGE EDIT HANDLER", callsign, "Edit timestamp appears to be in milliseconds, adjusted to seconds", "WARN")
 
     update = { "edts": msg_update['edts'], "m": msg_update['m'], "ed": 1 }
@@ -1142,7 +1142,7 @@ def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
 
     # TODO: Temp code to correct for clients sending ets in milliseconds, can remove when all clients have been updated
     if emoji_object['ets'] > 9999999999:
-        emoji_object['ets'] = emoji_object['ets'] // 1000
+        emoji_object['ets'] = round(emoji_object['ets'] / 1000)
         wps_logger("MESSAGE EMOJI HANDLER", callsign, "Emoji timestamp appears to be in milliseconds, adjusted to seconds", "WARN")
 
     update = { "e": updated_emojis, "ets": emoji_object['ets'] }
