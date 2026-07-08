@@ -480,8 +480,8 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     }
 
     # Only return if there is a newer min version
-    if client_version < recommended_client_version:
-        connect_response['v'] = recommended_client_version
+    # if client_version < recommended_client_version:
+    #    connect_response['v'] = recommended_client_version
 
     wps_logger('CONNECT HANDLER', callsign, f"Channel subscriptions {channel_subscriptions}")
 
@@ -535,11 +535,11 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     # Runs after the connect response so the client can see the upgrade prompt
     ###
 
-    if client_version < min_client_version:
-        time.sleep(5)
-        wps_logger('CONNECT HANDLER', callsign, f"Client version {client_version} less than minimum version {min_client_version}", 'ERROR')
-        close_connection(CONN_DB_CURSOR, callsign, CONN)
-        return
+    # if client_version < min_client_version:
+    #     time.sleep(5)
+    #     wps_logger('CONNECT HANDLER', callsign, f"Client version {client_version} less than minimum version {min_client_version}", 'ERROR')
+    #     close_connection(CONN_DB_CURSOR, callsign, CONN)
+    #     return
 
     ###
     # Return users currently online
