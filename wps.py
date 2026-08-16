@@ -43,6 +43,7 @@ ALL_THREADS = []
 
 # Global TCP Connections Array
 CONNECTIONS = []
+_connections_lock = threading.Lock()
 
 # String to return when someone manually connects and sends unknown text
 invalid_connect_reponse = """Welcome to WPS\r
@@ -301,7 +302,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     # Tell all the other connected users about the new connection
     # This is only announced after recieving the connect object from the client
     wps_logger("CONNECT HANDLER", callsign, f"Telling connected users about new connection from {callsign}")
-    for C in CONNECTIONS:
+    for C in list(CONNECTIONS):
         if C['callsign'] == callsign:
             continue
         wps_logger("CONNECT HANDLER", callsign, f"Informing {C['callsign']} that {callsign} has connected")
@@ -318,7 +319,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     wps_logger("CONNECT HANDLER", callsign, f"Telling {callsign} about existing connections")
     online_response = { "t": "o", "o": [] }
 
-    for C in CONNECTIONS:
+    for C in list(CONNECTIONS):
         online_response["o"].append(C['callsign'])
 
     if len(online_response["o"]) > 0:
@@ -453,14 +454,11 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
         wps_logger('CONNECT HANDLER', callsign, f"Last message edit timestamp appears to be in milliseconds, adjusted to seconds. Now {last_message_edit}", "WARN")
 
     ###
-    # Get the minimum client version number held in env.json
+    # Get the minimum client version number held in env (loaded at startup)
     ###
 
-    version_source = open("env.json")
-    version = json.load(version_source)
-    min_client_version = version['minClientVersion']
-    recommended_client_version = version['recommendedClientVersion']
-    version_source.close()
+    min_client_version = env['minClientVersion']
+    recommended_client_version = env['recommendedClientVersion']
     wps_logger('CONNECT HANDLER', callsign, f"Minimum client version is {min_client_version}")
     wps_logger('CONNECT HANDLER', callsign, f"Recommended client version is {recommended_client_version}")
     
@@ -989,13 +987,16 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
             return
         else:
             message_insert_response = dbInsertMessage(CONN_DB_CURSOR, message_to_write_to_wps_database)
-            close_connection(CONN_DB_CURSOR, callsign, CONN) if message_insert_response['result'] == 'failure' else None
+            if message_insert_response['result'] == 'failure':
+                wps_logger("MESSAGE HANDLER", callsign, f"DB insert failed, not sending ack: {message_insert_response['error']}", 'ERROR')
+                close_connection(CONN_DB_CURSOR, callsign, CONN)
+                return
             wps_logger("MESSAGE HANDLER", callsign, f"Client acknowledgment is {client_response}")
             socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
             
         sent_in_real_time = False
         # If the recipient is connected, send the message in real-time
-        for C in CONNECTIONS:
+        for C in list(CONNECTIONS):
             wps_logger("MESSAGE HANDLER", callsign, f"Connections {C['callsign']}")
             # Attempt to find the recipient in active connections
             if C['callsign'] == message['tc']:
@@ -1104,7 +1105,7 @@ def message_edit_handler(CONN_DB_CURSOR, msg_update, callsign, CONN):
         "m": msg_update['m']
     }
 
-    for C in CONNECTIONS:
+    for C in list(CONNECTIONS):
         if C['callsign'] == edited_message['tc']:
             wps_logger("MESSAGE HANDLER", callsign, f"{edited_message['tc']} is logged in, sending in real-time")
             wps_logger("MESSAGE HANDLER", callsign, f"Sending to: {C['socket']}")
@@ -1154,7 +1155,7 @@ def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
     
     real_time_resp = { "t": "mem", "_id": emoji_object['_id'], "e": updated_emojis, "ets": emoji_object['ets'] }
 
-    for C in CONNECTIONS:
+    for C in list(CONNECTIONS):
         if C['callsign'] == message_to_update['fc']:
             wps_logger("MESSAGE EMOJI HANDLER", callsign, f"{message_to_update['fc']} is logged in, sending emoji update in real-time")
             # socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, real_time_resp)
@@ -1267,7 +1268,10 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
             post_to_insert['dts'] = delivery_timestamp
             wps_logger("CHANNELS POST HANDLER", callsign, f"Post to insert: {post_to_insert}")
             post_insert_response = dbInsertPost(CONN_DB_CURSOR, post_to_insert)
-            close_connection(CONN_DB_CURSOR, callsign, CONN) if post_insert_response['result'] == 'failure' else None
+            if post_insert_response['result'] == 'failure':
+                wps_logger("CHANNELS POST HANDLER", callsign, f"DB insert failed, not sending ack: {post_insert_response['error']}", 'ERROR')
+                close_connection(CONN_DB_CURSOR, callsign, CONN)
+                return
             wps_logger("CHANNELS POST HANDLER", callsign, f"Post insert acknowledgment is {post_insert_response}")
             socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
         
@@ -1295,7 +1299,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
 
         # Process active connections
         # If a connected callsign is a subscriber to the channel and doesn't have the channel paused, send the post in real-time
-        for C in CONNECTIONS:
+        for C in list(CONNECTIONS):
             if C['callsign'] != post['fc'] and C['callsign'] in subscribers_callsigns:
                 if C['callsign'] in paused_callsigns:
                     wps_logger("CHANNELS POST HANDLER", callsign, f"{C['callsign']} has channel paused, skipping real-time send")
@@ -1378,7 +1382,7 @@ def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
     channel_subscriber_objects = channel_subscribers_response['data']
     subscribing_callsigns = [s['callsign'] for s in channel_subscriber_objects]
 
-    for C in CONNECTIONS:
+    for C in list(CONNECTIONS):
         if C['callsign'] != callsign and C['callsign'] in subscribing_callsigns:
             wps_logger("MESSAGE HANDLER", callsign, f"Sending to: {C['callsign']}")
             # socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, update_to_connected_clients)
@@ -1454,7 +1458,7 @@ def post_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
 
     emoji_object['fc'] = callsign
     
-    for C in CONNECTIONS:
+    for C in list(CONNECTIONS):
         if C['callsign'] != callsign and C['callsign'] in subscribing_callsigns:
             wps_logger("CHANNELS EMOJI HANDLER", callsign, f"Sending to: {C['callsign']}")
             # socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, emoji_object)
@@ -1588,6 +1592,7 @@ def unpause_channel_handler(CONN_DB_CURSOR, callsign, unpause_channel_request, C
         "p": []
     }
 
+    posts_response = None
     if "lts" in unpause_channel_request:
         # If lts (last timestamp) is provided, get posts since that timestamp
         posts_response = dbGetPosts(CONN_DB_CURSOR, unpause_channel_request['cid'], unpause_channel_request['lts'])
@@ -1595,6 +1600,9 @@ def unpause_channel_handler(CONN_DB_CURSOR, callsign, unpause_channel_request, C
         # If pc (post count) is provided, get the last pc posts
         posts_response = dbGetPostsBatch(CONN_DB_CURSOR, unpause_channel_request['cid'], unpause_channel_request['pc'])
 
+    if posts_response is None:
+        wps_logger('UNPAUSE CHANNEL HANDLER', callsign, "No lts or pc in request, cannot fetch posts", 'ERROR')
+        return
     close_connection(CONN_DB_CURSOR, callsign, CONN) if posts_response['result'] == 'failure' else None
     posts = posts_response['data']
     wps_logger('UNPAUSE CHANNEL HANDLER', callsign, f"Post count to return: {len(posts)}")
@@ -1660,7 +1668,7 @@ def keep_alive_handler(CONN_DB_CURSOR, callsign, CONN):
     keep_alive_response = { "t": "k" }
     socket_send_handler(CONN_DB_CURSOR, CONN, callsign, keep_alive_response)
 
-def close_connection(CONN_DB_CURSOR, callsign, CONN):
+def close_connection(CONN_DB_CURSOR, callsign, CONN=None):
     ###
     # Called when a user disconnects or when the server disconnects a user, if an error is encountered
     # Updates the user record to say they're not online and with disconnected timestamp
@@ -1673,28 +1681,30 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     print(f"{timestamp()} {callsign} disconnected")
     disconnect_timestamp = round(time.time())
 
-    wps_logger("DISCONNECT HANDLER", callsign, f"All connections BEFORE disconnect: {[c['callsign'] for c in CONNECTIONS]}")
+    with _connections_lock:
+        wps_logger("DISCONNECT HANDLER", callsign, f"All connections BEFORE disconnect: {[c['callsign'] for c in CONNECTIONS]}")
 
-    # Only disconnect/remove the specific socket that triggered this handler.
-    # This prevents a stale thread (from an old socket) from disconnecting a new active socket
-    # that has the same callsign.
-    matching_connection_indexes = [
-        i for i, c in enumerate(CONNECTIONS)
-        if c.get('callsign') == callsign and c.get('socket') is CONN
-    ]
-    had_matching_connection = len(matching_connection_indexes) > 0
-    
+        # Only disconnect/remove the specific socket that triggered this handler.
+        # This prevents a stale thread (from an old socket) from disconnecting a new active socket
+        # that has the same callsign.
+        matching_connection_indexes = [
+            i for i, c in enumerate(CONNECTIONS)
+            if c.get('callsign') == callsign and c.get('socket') is CONN
+        ]
+        had_matching_connection = len(matching_connection_indexes) > 0
+
+        # Remove only this specific connection from the active connections list.
+        for key in reversed(matching_connection_indexes):
+            del CONNECTIONS[key]
+
+        remaining_connections_for_callsign = sum(1 for conn in CONNECTIONS if conn.get('callsign') == callsign)
+
     try:
-        CONN.shutdown(socket.SHUT_RDWR)
-        CONN.close()
+        if CONN is not None:
+            CONN.shutdown(socket.SHUT_RDWR)
+            CONN.close()
     except Exception as e:
         wps_logger("DISCONNECT HANDLER", callsign, f"Socket shutdown exception {e} happened")
-
-    # Remove only this specific connection from the active connections list.
-    for key in reversed(matching_connection_indexes):
-        del CONNECTIONS[key]
-
-    remaining_connections_for_callsign = sum(1 for conn in CONNECTIONS if conn.get('callsign') == callsign)
 
     # If this socket was not in CONNECTIONS, it has already been superseded/removed.
     # Do not update online state or broadcast disconnect in that case.
@@ -1727,7 +1737,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
         wps_logger("DISCONNECT HANDLER", callsign, "Skipping disconnect broadcast because user still has active connection(s)")
         return
 
-    for C in CONNECTIONS:
+    for C in list(CONNECTIONS):
         wps_logger("ONLINE STATUS", callsign, f"Disconnect sent to: {C['callsign']}")       
         
         disconnected_response = {
@@ -1801,21 +1811,23 @@ def connected_session_handler(CONN, ADDR):
     
     # Check if the callsign is already connected, if so silently remove existing connections
     # without triggering the disconnect handler or broadcasting a disconnect notification
-    existing_connections = [C for C in CONNECTIONS if C['callsign'] == callsign]
+    with _connections_lock:
+        existing_connections = [C for C in CONNECTIONS if C['callsign'] == callsign]
+        for C in existing_connections:
+            wps_logger("CONNECTED SESSION HANDLER", callsign, "Callsign already connected, silently removing existing connection")
+            print(f"{timestamp()} {callsign} reconnected, silently removing existing connection")
+            # Remove from CONNECTIONS first so that when the old thread's exception handler fires,
+            # close_connection will not find this callsign and will not send a disconnect notification
+            CONNECTIONS[:] = [conn for conn in CONNECTIONS if conn is not C]
+        # Add the new connection while still holding the lock
+        CONNECTIONS.append({ "callsign": callsign, "socket": CONN })
+
     for C in existing_connections:
-        wps_logger("CONNECTED SESSION HANDLER", callsign, "Callsign already connected, silently removing existing connection")
-        print(f"{timestamp()} {callsign} reconnected, silently removing existing connection")
-        # Remove from CONNECTIONS first so that when the old thread's exception handler fires,
-        # close_connection will not find this callsign and will not send a disconnect notification
-        CONNECTIONS[:] = [conn for conn in CONNECTIONS if conn is not C]
         try:
             C['socket'].shutdown(socket.SHUT_RDWR)
             C['socket'].close()
         except Exception as e:
             wps_logger("CONNECTED SESSION HANDLER", callsign, f"Exception closing existing connection socket: {e}")
-
-    # Now continue and add the new connection
-    CONNECTIONS.append({ "callsign": callsign, "socket": CONN })
     
     # Print the updated connected callsigns to the console
     rc = []
@@ -1952,7 +1964,7 @@ def connected_session_handler(CONN, ADDR):
                 
                 ### Message Types
 
-                message_json["t"] == message_json["t"].lower()
+                message_json["t"] = message_json["t"].lower()
 
                 # Message
                 if message_json["t"] == "m":
@@ -2087,7 +2099,7 @@ def socket_send_handler_other_connected_user(CONN_DB_CURSOR, sending_callsign, s
         receiving_connection.send(send.encode())
     except Exception as e:
         wps_logger("SOCKET SEND HANDLER OTHER CONNECTED USER", sending_callsign, f"Error {e} sending {payload} to {receiving_callsign} on {receiving_connection}", "ERROR")
-        close_connection(CONN_DB_CURSOR, sending_callsign, sending_connection)
+        close_connection(CONN_DB_CURSOR, receiving_callsign, receiving_connection)
 
 def check_auto_subscriptions(cursor):
     try:
