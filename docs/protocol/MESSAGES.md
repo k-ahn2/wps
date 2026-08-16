@@ -28,12 +28,12 @@ Batch Variants
 |From Call|`fc`|`M8ABC`|String|Sending Callsign
 |To Call|`tc`|`T3EST`|String|Receiving Callsign
 |Message|`m`|`This is a test`|String|The actual message
-|Timestamp|`ts`|`1740312733123`|Number|Timestamp of message - milliseconds since epoch
+|Timestamp|`ts`|`1740312733`|Number|Timestamp of message - seconds since epoch
 |**Optional Fields**|
 |Reply Id|`r`|`1740312711123-T3EST`|String|The id of the message being replied to
 |**Server Only Fields**|
 |Message Status|`ms`|`1`|Number|0 = Client Sent<BR>1 = Server Received<BR>2 = Recipient Delivered<BR>3 = Recipient Read.<BR>Currently unused - future use case. Server value always currently 1|
-|Logged Timestamp|`lts`|`1740312745123`|Number|The timestamp the server received and processed the message
+|Logged Timestamp|`lts`|`1740312745`|Number|The timestamp the server received and processed the message in seconds
 
 > [!NOTE]
 > WPS will store and forward any optional fields sent by the client. 
@@ -48,7 +48,7 @@ Batch Variants
    "tc": "T3EST",
    "m": "This is a test",
    "ms": 1,
-   "ts": 1740312733123
+   "ts": 1740312733
 }
 ```
 
@@ -66,7 +66,7 @@ Returns type `mr`
 |Id|`_id`|`1740312733123-M8ABC`|String|_id of the edited message - must be common between Client and Server
 |Edited Message|`m`|`This is a test`|String|The edited message in full
 |Edited Flag|`ed`|`1`|Number|Currently used to determine if a message has been edited
-|Edited Timestamp|`edts`|`1740312733123`|Number|Edited timestamp of message - milliseconds since epoch
+|Edited Timestamp|`edts`|`1740312733`|Number|Edited timestamp of message - seconds since epoch
 
 ### JSON Example
 
@@ -75,7 +75,7 @@ Returns type `mr`
     "t": "med",
     "_id": "d25e2702-2023-4906-93f0-5c60a4c18b4d", 
     "m": "Blah 2", 
-    "edts": 1750713928123
+    "edts": 1750713928
 }
 ```
 
@@ -120,7 +120,7 @@ Ater every emoji add or remove, both for real-time connections and during the co
 |Type|`t`|`mem`|String|Type `mem` for Message Emoji
 |Action|`a`|`1`|Number|`1` for Add, `0` for Remove
 |Id|`_id`|`1740312733123-M8ABC`|String|_id of the message to apply the emoji
-|Timestamp|`ets`|`1750713928`|Number|Timestamp the emoji is created on the client IN SECONDS
+|Timestamp|`ets`|`1750713928`|Number|Timestamp the emoji is created on the client in seconds since epoch
 |Emoji|`e`|`1f44d`|String|The unicode value of the emoji to add or remove
 
 ### JSON Example
