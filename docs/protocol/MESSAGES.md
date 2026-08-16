@@ -120,7 +120,7 @@ Ater every emoji add or remove, both for real-time connections and during the co
 |Type|`t`|`mem`|String|Type `mem` for Message Emoji
 |Action|`a`|`1`|Number|`1` for Add, `0` for Remove
 |Id|`_id`|`1740312733123-M8ABC`|String|_id of the message to apply the emoji
-|Timestamp|`ets`|`1750713928123`|Number|Timestamp the emoji is created on the client
+|Timestamp|`ets`|`1750713928`|Number|Timestamp the emoji is created on the client IN SECONDS
 |Emoji|`e`|`1f44d`|String|The unicode value of the emoji to add or remove
 
 ### JSON Example
