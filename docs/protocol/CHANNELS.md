@@ -146,7 +146,7 @@ Ater every emoji add or remove, both for real-time connections and during the co
 |Action|`a`|`1` or `0`|String|`1` for Emoji Add or `0` for Emoji Remove
 |Timestamp|`ts`|`1750361450494`|Number|The ts of post to add or remove the emoji
 |Channel Id|`cid`|`6`|Number|id of the channel|
-|Emoji Timestamp|`ets`|`1750804825979`|Number|Timestamp of the emoji update|
+|Emoji Timestamp|`ets`|`1750804825979`|Number|Timestamp of the emoji update in MILLISECONDS|
 |Emoji|`e`|`1f44d`|String|The unicode value of the emoji to add or remove
 
 ### JSON Example
