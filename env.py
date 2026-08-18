@@ -26,6 +26,7 @@ env_template = {
     "autoSubscribeToChannelIds": [],
     "maxNewPostsToReturnPerChannelOnConnect": 100,
     "channels": {},
+    "pacagotchiChannelId": 0,
     "wpsLoggingEnabled": True,
     "dbLoggingEnabled": True,
     "daysToRetainLogFiles": 5,

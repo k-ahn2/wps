@@ -8,6 +8,7 @@ import json
 import zlib, base64
 from events import *
 from stats import *
+import pacagotchi
 
 def timestamp():
     return datetime.datetime.now().isoformat(timespec='seconds')
@@ -1337,6 +1338,18 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
                 close_connection(CONN_DB_CURSOR, callsign, CONN) if post_update_response['result'] == 'failure' else None
                 wps_logger("CHANNELS POST HANDLER", callsign, f"User update response is {post_update_response.get('result', None)}")
 
+        # If this is the pacagotchi channel and the post looks like a command,
+        # let the bot handle it and broadcast its response
+        pacagotchi_cid = env.get('pacagotchiChannelId', 0)
+        if pacagotchi_cid and post['cid'] == pacagotchi_cid and post.get('p', '').startswith('/'):
+            try:
+                bot_cursor = db.cursor()
+                bot_resp = pacagotchi.handle_command(bot_cursor, post['p'], callsign)
+                if bot_resp:
+                    bot_broadcast_to_channel(CONN_DB_CURSOR, pacagotchi_cid, bot_resp['text'], bot_resp['fc'])
+            except Exception as bot_e:
+                wps_logger("PACAGOTCHI COMMAND", callsign, f"Error handling command: {bot_e}", "ERROR")
+
         return None
 
     except Exception as e:
@@ -2117,6 +2130,57 @@ def check_auto_subscriptions(cursor):
         wps_logger("AUTO SUBSCRIBE HANDLER", "-----", f"Error processing auto-subscription: {e}", "ERROR")
         return
 
+def bot_broadcast_to_channel(CONN_DB_CURSOR, cid, text, from_callsign):
+    '''
+    Post a server-generated (bot) message to a channel and deliver it in
+    real-time to all connected, subscribed, and un-paused users.
+    The post is stored in the database so users who are offline receive it
+    on their next connect, just like any other channel post.
+    '''
+    ts = round(time.time() * 1000)
+    post = {
+        "t":   "cp",
+        "cid": cid,
+        "fc":  from_callsign,
+        "ts":  ts,
+        "p":   text,
+        "dts": ts,
+    }
+
+    # Insert a deep copy so dbInsertPost's quote-escaping doesn't corrupt the
+    # object we then broadcast to live sockets
+    post_for_db = json.loads(json.dumps(post))
+    insert_resp = dbInsertPost(CONN_DB_CURSOR, post_for_db)
+    if insert_resp['result'] == 'failure':
+        wps_logger("BOT BROADCAST", "-----", f"Failed to insert bot post: {insert_resp}")
+        return
+
+    subscribers_resp = dbChannelSubscribers(CONN_DB_CURSOR, from_callsign, cid)
+    if subscribers_resp['result'] == 'failure':
+        return
+    subscriber_callsigns = {s['callsign'] for s in subscribers_resp['data']}
+
+    paused_resp = dbPausedCallsignsForChannel(CONN_DB_CURSOR, cid)
+    paused_callsigns = set(paused_resp['data']) if paused_resp['result'] == 'success' else set()
+
+    send_payload = frame_and_compress_json_object(post)
+
+    for C in CONNECTIONS:
+        cs = C['callsign']
+        if cs not in subscriber_callsigns or cs in paused_callsigns:
+            continue
+        # Only deliver to users who have completed their connect handshake
+        user_resp = dbUserSearch(CONN_DB_CURSOR, cs)
+        if user_resp['result'] != 'success' or not user_resp['data']:
+            continue
+        if not user_resp['data'].get('is_online'):
+            continue
+        try:
+            C['socket'].send(send_payload.encode())
+        except Exception as e:
+            wps_logger("BOT BROADCAST", "-----", f"Send error to {cs}: {e}", "ERROR")
+
+
 def startup_and_listen():
     print(f"{timestamp()} Using database {env['dbFilename']}")
     print(f"{timestamp()} Listening on TCP Port {env['socketTcpPort']}")
@@ -2131,6 +2195,19 @@ def startup_and_listen():
     
     # Create the database tables, if they don't exist
     dbInit(global_cursor)
+
+    # Initialise Pacagotchi bot if a channel ID is configured
+    pacagotchi_cid = env.get('pacagotchiChannelId', 0)
+    if pacagotchi_cid:
+        pacagotchi.init(db)
+        pacagotchi.start_tick_thread(
+            db,
+            lambda cursor, cid, text, fc: bot_broadcast_to_channel(cursor, cid, text, fc),
+            pacagotchi_cid,
+        )
+        print(f"{timestamp()} Pacagotchi bot enabled on channel {pacagotchi_cid}")
+    else:
+        print(f"{timestamp()} Pacagotchi bot disabled (set pacagotchiChannelId in env.json to enable)")
 
     # Confirm users are subscribed to the default channels
     check_auto_subscriptions(global_cursor)
