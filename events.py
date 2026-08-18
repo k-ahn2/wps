@@ -43,12 +43,9 @@ def event_logger(timestamp, event_type, callsign, event=None, meta=None):
         cursor = conn.cursor()
         
         try:
-            insert_query = f"""
-            INSERT INTO events (event) 
-            VALUES ('{json.dumps(event_to_insert, separators=(',', ':'))}')
-            """
-            
-            cursor.execute(insert_query)
+            insert_query = "INSERT INTO events (event) VALUES (?)"
+
+            cursor.execute(insert_query, [json.dumps(event_to_insert, separators=(',', ':'))])
             conn.commit()
             return
 

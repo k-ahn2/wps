@@ -1797,8 +1797,8 @@ def connected_session_handler(CONN, ADDR):
 
     wps_logger("CONNECTED SESSION HANDLER", callsign, "Callsign seems valid, continuing")
 
-    CONN_DB_CURSOR = db.cursor()
-    
+    CONN_DB_CURSOR = get_db_connection().cursor()
+
     # Check if the callsign is already connected, if so silently remove existing connections
     # without triggering the disconnect handler or broadcasting a disconnect notification
     existing_connections = [C for C in CONNECTIONS if C['callsign'] == callsign]
@@ -1952,7 +1952,7 @@ def connected_session_handler(CONN, ADDR):
                 
                 ### Message Types
 
-                message_json["t"] == message_json["t"].lower()
+                message_json["t"] = message_json["t"].lower()
 
                 # Message
                 if message_json["t"] == "m":
@@ -2121,7 +2121,7 @@ def startup_and_listen():
     print(f"{timestamp()} Using database {env['dbFilename']}")
     print(f"{timestamp()} Listening on TCP Port {env['socketTcpPort']}")
 
-    global_cursor = db.cursor()
+    global_cursor = get_db_connection().cursor()
 
     # Output the SQLite version to the console
     global_cursor.execute('''select sqlite_version()''')
