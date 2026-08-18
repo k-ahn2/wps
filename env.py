@@ -57,5 +57,6 @@ if os.path.exists("env.json"):
             json.dump(env, f, indent=4)
 else:
     print("env.json not found, creating default env.json")
+    env = env_template
     with open("env.json", "w") as f:
         json.dump(env_template, f, indent=4)
