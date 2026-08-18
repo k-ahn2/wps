@@ -6,9 +6,9 @@ import threading
 import socket
 import json
 import zlib, base64
+import importlib
 from events import *
 from stats import *
-import pacagotchi
 
 def timestamp():
     return datetime.datetime.now().isoformat(timespec='seconds')
@@ -1338,17 +1338,15 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
                 close_connection(CONN_DB_CURSOR, callsign, CONN) if post_update_response['result'] == 'failure' else None
                 wps_logger("CHANNELS POST HANDLER", callsign, f"User update response is {post_update_response.get('result', None)}")
 
-        # If this is the pacagotchi channel and the post looks like a command,
-        # let the bot handle it and broadcast its response
-        pacagotchi_cid = env.get('pacagotchiChannelId', 0)
-        if pacagotchi_cid and post['cid'] == pacagotchi_cid and post.get('p', '').startswith('/'):
+        # Route slash commands to whichever bot owns this channel
+        bot = BOTS.get(post['cid'])
+        if bot and post.get('p', '').startswith('/'):
             try:
-                bot_cursor = db.cursor()
-                bot_resp = pacagotchi.handle_command(bot_cursor, post['p'], callsign)
+                bot_resp = bot.handle_command(db.cursor(), post['p'], callsign)
                 if bot_resp:
-                    bot_broadcast_to_channel(CONN_DB_CURSOR, pacagotchi_cid, bot_resp['text'], bot_resp['fc'])
+                    bot_broadcast_to_channel(CONN_DB_CURSOR, post['cid'], bot_resp['text'], bot_resp['fc'])
             except Exception as bot_e:
-                wps_logger("PACAGOTCHI COMMAND", callsign, f"Error handling command: {bot_e}", "ERROR")
+                wps_logger("BOT COMMAND", callsign, f"Error in bot for channel {post['cid']}: {bot_e}", "ERROR")
 
         return None
 
@@ -1894,7 +1892,7 @@ def connected_session_handler(CONN, ADDR):
             if CONNECTION_RX_BUFFER[-2:] == '\r\n':
                 buffer_has_complete_data = True
                 wps_logger("CONNECTED SESSION HANDLER", callsign, "CONNECTION_RX_BUFFER ends with \\r\\n, has complete data to process")
-            
+
             # Split on the /r/n and process
             messages_to_process = CONNECTION_RX_BUFFER.split('\r\n')
             wps_logger("CONNECTED SESSION HANDLER", callsign, f"CONNECTION_RX_BUFFER after splitting is: {messages_to_process}")
@@ -2196,18 +2194,28 @@ def startup_and_listen():
     # Create the database tables, if they don't exist
     dbInit(global_cursor)
 
-    # Initialise Pacagotchi bot if a channel ID is configured
-    pacagotchi_cid = env.get('pacagotchiChannelId', 0)
-    if pacagotchi_cid:
-        pacagotchi.init(db)
-        pacagotchi.start_tick_thread(
-            db,
-            lambda cursor, cid, text, fc: bot_broadcast_to_channel(cursor, cid, text, fc),
-            pacagotchi_cid,
-        )
-        print(f"{timestamp()} Pacagotchi bot enabled on channel {pacagotchi_cid}")
-    else:
-        print(f"{timestamp()} Pacagotchi bot disabled (set pacagotchiChannelId in env.json to enable)")
+    # Load bots from env.json "bots": {"<cid>": "<module_name>", ...}
+    # Also support the legacy pacagotchiChannelId key for backwards compatibility.
+    bots_config = dict(env.get('bots', {}))
+    legacy_cid = env.get('pacagotchiChannelId', 0)
+    if legacy_cid and str(legacy_cid) not in bots_config:
+        bots_config[str(legacy_cid)] = 'pacagotchi'
+
+    BOTS = {}  # cid (int) -> module
+    for cid_str, module_name in bots_config.items():
+        try:
+            mod = importlib.import_module(module_name)
+            cid = int(cid_str)
+            mod.init(db)
+            mod.start_tick_thread(
+                db,
+                lambda cursor, c, text, fc: bot_broadcast_to_channel(cursor, c, text, fc),
+                cid,
+            )
+            BOTS[cid] = mod
+            print(f"{timestamp()} Bot '{module_name}' enabled on channel {cid}")
+        except Exception as bot_init_e:
+            print(f"{timestamp()} ERROR: failed to load bot '{module_name}' on channel {cid_str}: {bot_init_e}")
 
     # Confirm users are subscribed to the default channels
     check_auto_subscriptions(global_cursor)
