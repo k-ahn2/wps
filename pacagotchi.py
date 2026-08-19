@@ -37,16 +37,22 @@ AGE_JUVENILE = 3600          # 1 hour
 AGE_ADULT    = 172800        # 48 hours
 
 # Stat deltas per tick (every TICK_INTERVAL = 5 minutes)
-# Original: 4 hunger hearts, each lasting ~30 min → full depletion in ~2 hours.
-# We model 0–100 hunger, targeting empty in ~2 hours:
-#   100 / (120 min / 5 min per tick) = ~4.2 → round to 4
-HUNGER_DROP_PER_TICK     = 4    # empty in ~125 min ≈ 2 hours
-HAPPINESS_DROP_BORED     = 4    # same rate as hunger when not played with
-HEALTH_DROP_STARVING     = 8    # ~3 hours of starvation → death without care
-HEALTH_DROP_DIRTY        = 4    # poop_level >= 4 adds this per tick
-HEALTH_DROP_ILL_LATE     = 12   # applied when ill for > ILL_DEATH_TIMEOUT
+# Awake: hunger empties in ~8h; health lost in another ~4h → death ~12h of total neglect.
+# Asleep (SLEEP_TICK_MULTIPLIER): all negative deltas scaled down, surviving ~36h without care.
+HUNGER_DROP_PER_TICK     = 2    # empty in ~250 min ≈ 4h awake; ~16h asleep
+HAPPINESS_DROP_BORED     = 2
+HEALTH_DROP_STARVING     = 4    # ~4h of starvation → death without care (awake)
+HEALTH_DROP_DIRTY        = 2    # poop_level >= 4 adds this per tick
+HEALTH_DROP_ILL_LATE     = 8    # applied when ill for > ILL_DEATH_TIMEOUT
 
-# Original: poop every ~3 hours.  5-level scale, one level every ~36 min:
+# Sleep mode: all negative stat changes multiplied by this fraction while sleeping.
+# 0.25 means 1/4 normal rate → 4× longer survival.
+SLEEP_TICK_MULTIPLIER    = 0.25
+
+# Inactivity auto-sleep: if no command received for this many seconds, pet dozes off.
+AUTO_SLEEP_AFTER         = 10800  # 3 hours
+
+# Poop every ~3 hours (awake). 5-level scale, one level every ~36 min:
 #   36 min / 5 min tick = ~7 ticks per poop level increment
 POOP_RISE_EVERY_N_TICKS  = 7
 
@@ -258,6 +264,14 @@ def tick(cursor, broadcast_fn, channel_id, fallback_fc="PACBOT"):
     now = int(time.time())
     state["last_tick"] = now
 
+    # Auto-sleep after inactivity
+    last_active = state.get("last_active", state.get("born_at", now))
+    if not state.get("is_sleeping") and (now - last_active) > AUTO_SLEEP_AFTER:
+        state["is_sleeping"] = True
+
+    sleeping = state.get("is_sleeping", False)
+    m = SLEEP_TICK_MULTIPLIER if sleeping else 1.0  # multiplier for negative deltas
+
     # Stage promotion
     age_s = now - state["born_at"]
     if age_s >= AGE_ADULT and state["stage"] < 3:
@@ -265,13 +279,14 @@ def tick(cursor, broadcast_fn, channel_id, fallback_fc="PACBOT"):
     elif age_s >= AGE_JUVENILE and state["stage"] < 2:
         state["stage"] = 2
 
-    # Hunger
-    state["hunger"] = max(MIN_STAT, state["hunger"] - HUNGER_DROP_PER_TICK)
+    # Hunger (halved while asleep — metabolism slows)
+    state["hunger"] = max(MIN_STAT, state["hunger"] - round(HUNGER_DROP_PER_TICK * m))
 
-    # Poop accumulation (every N ticks)
+    # Poop accumulation (every N ticks; slower asleep)
     tick_ctr = state.get("poop_tick_ctr", 0) + 1
-    state["poop_tick_ctr"] = tick_ctr % POOP_RISE_EVERY_N_TICKS
-    if tick_ctr >= POOP_RISE_EVERY_N_TICKS:
+    effective_poop_ticks = round(POOP_RISE_EVERY_N_TICKS / m)  # longer cycle asleep
+    state["poop_tick_ctr"] = tick_ctr % effective_poop_ticks
+    if tick_ctr >= effective_poop_ticks:
         state["poop_level"] = min(5, state["poop_level"] + 1)
 
     # Poop illness trigger
@@ -280,14 +295,14 @@ def tick(cursor, broadcast_fn, channel_id, fallback_fc="PACBOT"):
 
     # Health impacts
     if state["hunger"] < 20:
-        state["health"] = max(MIN_STAT, state["health"] - HEALTH_DROP_STARVING)
+        state["health"] = max(MIN_STAT, state["health"] - round(HEALTH_DROP_STARVING * m))
     if state["poop_level"] >= 4:
-        state["health"] = max(MIN_STAT, state["health"] - HEALTH_DROP_DIRTY)
+        state["health"] = max(MIN_STAT, state["health"] - round(HEALTH_DROP_DIRTY * m))
     if state.get("ill_since") and (now - state["ill_since"]) > ILL_DEATH_TIMEOUT:
-        state["health"] = max(MIN_STAT, state["health"] - HEALTH_DROP_ILL_LATE)
+        state["health"] = max(MIN_STAT, state["health"] - round(HEALTH_DROP_ILL_LATE * m))
 
-    # Boredom — original Tamagotchi needed play every ~30 min to hold happiness
-    if (now - state.get("last_played", now)) > 1800:
+    # Boredom — not applied while sleeping
+    if not sleeping and (now - state.get("last_played", now)) > 1800:
         state["happiness"] = max(MIN_STAT, state["happiness"] - HAPPINESS_DROP_BORED)
 
     # Death check
@@ -302,8 +317,8 @@ def tick(cursor, broadcast_fn, channel_id, fallback_fc="PACBOT"):
     current_mood = _mood(state)
     _save(cursor, state)
 
-    # Post a status nudge if things are going wrong
-    if current_mood in ("sad", "ill") or state["hunger"] < 30:
+    # Post a status nudge if things are going wrong — but stay quiet while sleeping
+    if not sleeping and (current_mood in ("sad", "ill") or state["hunger"] < 30):
         msg = _render(state)
         broadcast_fn(cursor, channel_id, msg, state.get("name", fallback_fc))
 
@@ -339,6 +354,14 @@ def handle_command(cursor, post_text, from_callsign):
     if not state.get("is_alive"):
         return {"text": f"{fc} has died. Use /spawn to get a new one.", "fc": fc}
 
+    # Commands that wake the pet (any interactive care action)
+    WAKING_CMDS = {"/feed", "/play", "/clean", "/medicate"}
+    if cmd in WAKING_CMDS:
+        woke = _wake_if_sleeping(state, from_callsign)
+    else:
+        # Non-waking commands still update last_active so auto-sleep resets
+        state["last_active"] = int(time.time())
+
     handlers = {
         "/feed":     lambda: _cmd_feed(cursor, state, args, from_callsign),
         "/play":     lambda: _cmd_play(cursor, state, from_callsign),
@@ -354,7 +377,10 @@ def handle_command(cursor, post_text, from_callsign):
 
     handler = handlers.get(cmd)
     if handler:
-        return handler()
+        result = handler()
+        if cmd in WAKING_CMDS and woke:
+            result["text"] = f"({from_callsign} woke {fc} up!)\n" + result["text"]
+        return result
     return {"text": f"Unknown command '{cmd}'. Try /help", "fc": fc}
 
 
@@ -467,12 +493,24 @@ def _cmd_medicate(cursor, state, from_callsign):
 
 def _cmd_sleep(cursor, state, from_callsign):
     fc = state["name"]
-    state["health"]    = min(MAX_STAT, state["health"]    + 20)
-    state["happiness"] = max(MIN_STAT, state["happiness"] - 10)
-    state["hunger"]    = max(MIN_STAT, state["hunger"]    - 5)
+    if state.get("is_sleeping"):
+        return {"text": f"{fc} is already asleep. Shh! Use /feed, /play or /clean to wake them up.", "fc": fc}
+    state["is_sleeping"] = True
+    state["health"]    = min(MAX_STAT, state["health"]    + 10)
+    state["happiness"] = max(MIN_STAT, state["happiness"] - 5)
     _save(cursor, state)
-    extra = f"\n{fc} had a good rest. Health up, but a bit bored (boring = {from_callsign}'s fault)."
+    extra = f"\n{fc} is now sleeping. Stats will drop 4x slower until someone wakes them. Zzz..."
     return {"text": _render(state) + extra, "fc": fc}
+
+
+def _wake_if_sleeping(state, from_callsign):
+    """Clear sleep flag and record activity. Called by any interactive command."""
+    now = int(time.time())
+    state["last_active"] = now
+    if state.get("is_sleeping"):
+        state["is_sleeping"] = False
+        return True
+    return False
 
 
 def _cmd_stats(state):
@@ -516,7 +554,7 @@ def _cmd_help(fc):
         "/play         - Play with pet (increases happiness)",
         "/clean        - Clean up poop",
         "/medicate     - Cure illness",
-        "/sleep        - Let it rest (recovers health)",
+        "/sleep        - Put it to sleep (4x slower stat drops, auto after 3h idle)",
         "/pet          - Show pet status",
         "/stats        - Full stats + top caretakers",
         "/help         - This help text",
