@@ -534,12 +534,8 @@ def _cmd_stats(state):
     sorted_ct  = sorted(caretakers.items(), key=lambda x: x[1], reverse=True)
 
     lines = [
-        f"=== Stats: {fc} the {type_name} ===",
-        _art(pet_type, stage, mood),
-        f"Stage: {stage_n} | Age: {age_h}h {age_m}m",
-        f"Health: {state.get('health',100)}% | Hunger: {state.get('hunger',100)}%",
-        f"Happiness: {state.get('happiness',100)}% | Poop: {state.get('poop_level',0)}/5",
-        f"Mood: {mood.upper()}",
+        _render(state),
+        f"Age: {age_h}h {age_m}m",
         "--- Top Caretakers ---",
     ]
     if sorted_ct:
