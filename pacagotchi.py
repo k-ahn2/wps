@@ -20,48 +20,37 @@ import json, time, random, threading
 from handlers import db_logger
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — loaded from env.json "pacagotchi" block, with fallbacks
 # ---------------------------------------------------------------------------
 
-# How often the background thread fires.
-# Original Tamagotchi polled every ~30 seconds internally, but meaningful
-# stat changes happened every 30 minutes.  We tick every 5 minutes as a
-# reasonable compromise for a packet radio channel.
-TICK_INTERVAL = 300          # seconds between automatic state updates (5 min)
+def _load_config():
+    try:
+        with open("env.json") as f:
+            return json.load(f).get("pacagotchi", {})
+    except Exception:
+        return {}
 
-# Age thresholds for stage promotion — matching original Tamagotchi roughly:
-#   Baby → Child  ~1 hour
-#   Child → Teen  ~24 hours
-#   Teen → Adult  ~48 hours  (we collapse child/teen into one "Juvenile" stage)
-AGE_JUVENILE = 3600          # 1 hour
-AGE_ADULT    = 172800        # 48 hours
+_cfg = _load_config()
 
-# Stat deltas per tick (every TICK_INTERVAL = 5 minutes)
-# Awake: hunger empties in ~8h; health lost in another ~4h → death ~12h of total neglect.
-# Asleep (SLEEP_TICK_MULTIPLIER): all negative deltas scaled down, surviving ~36h without care.
-HUNGER_DROP_PER_TICK     = 2    # empty in ~250 min ≈ 4h awake; ~16h asleep
-HAPPINESS_DROP_BORED     = 2
-HEALTH_DROP_STARVING     = 4    # ~4h of starvation → death without care (awake)
-HEALTH_DROP_DIRTY        = 2    # poop_level >= 4 adds this per tick
-HEALTH_DROP_ILL_LATE     = 8    # applied when ill for > ILL_DEATH_TIMEOUT
+def _c(key, default):
+    return _cfg.get(key, default)
 
-# Sleep mode: all negative stat changes multiplied by this fraction while sleeping.
-# 0.25 means 1/4 normal rate → 4× longer survival.
-SLEEP_TICK_MULTIPLIER    = 0.25
+TICK_INTERVAL            = _c("tick_interval",           300)
+AGE_JUVENILE             = _c("age_juvenile",            3600)
+AGE_ADULT                = _c("age_adult",               172800)
+HUNGER_DROP_PER_TICK     = _c("hunger_drop_per_tick",    2)
+HAPPINESS_DROP_BORED     = _c("happiness_drop_bored",    2)
+HEALTH_DROP_STARVING     = _c("health_drop_starving",    4)
+HEALTH_DROP_DIRTY        = _c("health_drop_dirty",       2)
+HEALTH_DROP_ILL_LATE     = _c("health_drop_ill_late",    8)
+SLEEP_TICK_MULTIPLIER    = _c("sleep_tick_multiplier",   0.25)
+AUTO_SLEEP_AFTER         = _c("auto_sleep_after",        10800)
+SLEEP_MIN_HOURS          = _c("sleep_min_hours",         6)
+SLEEP_MAX_HOURS          = _c("sleep_max_hours",         10)
+POOP_RISE_EVERY_N_TICKS  = _c("poop_rise_every_n_ticks", 7)
+JUNK_ILLNESS_THRESHOLD   = _c("junk_illness_threshold",  3)
+ILL_DEATH_TIMEOUT        = _c("ill_death_timeout",       10800)
 
-# Inactivity auto-sleep: if no command received for this many seconds, pet dozes off.
-AUTO_SLEEP_AFTER         = 10800  # 3 hours
-
-# Poop every ~3 hours (awake). 5-level scale, one level every ~36 min:
-#   36 min / 5 min tick = ~7 ticks per poop level increment
-POOP_RISE_EVERY_N_TICKS  = 7
-
-# Illness triggers
-JUNK_ILLNESS_THRESHOLD   = 3    # consecutive junk feeds before illness
-# Original: sick → dead in ~6–12 hours if untreated
-ILL_DEATH_TIMEOUT        = 10800 # 3 hours of illness before accelerated health loss
-
-# Stat caps
 MAX_STAT = 100
 MIN_STAT = 0
 
@@ -264,12 +253,23 @@ def tick(cursor, broadcast_fn, channel_id, fallback_fc="PACBOT"):
     now = int(time.time())
     state["last_tick"] = now
 
-    # Auto-sleep after inactivity
-    last_active = state.get("last_active", state.get("born_at", now))
-    if not state.get("is_sleeping") and (now - last_active) > AUTO_SLEEP_AFTER:
-        state["is_sleeping"] = True
+    sleep_until = state.get("sleep_until", 0)
 
-    sleeping = state.get("is_sleeping", False)
+    # Auto-sleep after inactivity (if not already sleeping)
+    last_active = state.get("last_active", state.get("born_at", now))
+    if sleep_until <= now and (now - last_active) > AUTO_SLEEP_AFTER:
+        sleep_until = now + random.randint(SLEEP_MIN_HOURS * 3600, SLEEP_MAX_HOURS * 3600)
+        state["sleep_until"] = sleep_until
+
+    # Wake up automatically when sleep_until has passed
+    if sleep_until > now:
+        sleeping = True
+    else:
+        sleeping = False
+        if state.get("sleep_until", 0) > 0 and "sleep_until" in state:
+            # Just woke up — clear the field so we don't re-trigger next tick
+            state["sleep_until"] = 0
+
     m = SLEEP_TICK_MULTIPLIER if sleeping else 1.0  # multiplier for negative deltas
 
     # Stage promotion
@@ -493,22 +493,26 @@ def _cmd_medicate(cursor, state, from_callsign):
 
 def _cmd_sleep(cursor, state, from_callsign):
     fc = state["name"]
-    if state.get("is_sleeping"):
-        return {"text": f"{fc} is already asleep. Shh! Use /feed, /play or /clean to wake them up.", "fc": fc}
-    state["is_sleeping"] = True
-    state["health"]    = min(MAX_STAT, state["health"]    + 10)
+    now = int(time.time())
+    if state.get("sleep_until", 0) > now:
+        wake_in = (state["sleep_until"] - now) // 3600
+        return {"text": f"{fc} is already asleep (wakes in ~{wake_in}h). Shh! Use /feed, /play or /clean to wake.", "fc": fc}
+    duration = random.randint(SLEEP_MIN_HOURS * 3600, SLEEP_MAX_HOURS * 3600)
+    state["sleep_until"] = now + duration
+    state["health"] = min(MAX_STAT, state["health"] + 10)
     state["happiness"] = max(MIN_STAT, state["happiness"] - 5)
     _save(cursor, state)
-    extra = f"\n{fc} is now sleeping. Stats will drop 4x slower until someone wakes them. Zzz..."
+    hours = duration // 3600
+    extra = f"\n{fc} is now sleeping for ~{hours}h. Stats drop 4x slower. Use /feed, /play or /clean to wake early. Zzz..."
     return {"text": _render(state) + extra, "fc": fc}
 
 
 def _wake_if_sleeping(state, from_callsign):
-    """Clear sleep flag and record activity. Called by any interactive command."""
+    """Wake the pet if sleeping and record activity. Called by any interactive care command."""
     now = int(time.time())
     state["last_active"] = now
-    if state.get("is_sleeping"):
-        state["is_sleeping"] = False
+    if state.get("sleep_until", 0) > now:
+        state["sleep_until"] = 0
         return True
     return False
 

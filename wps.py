@@ -1275,57 +1275,24 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
             wps_logger("CHANNELS POST HANDLER", callsign, f"Post insert acknowledgment is {post_insert_response}")
             socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
         
-        # Get the channel subscribers
-        # Gets an array of subscriber objects with callsign and push settings
-        subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
-        close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_response['result'] == 'failure' else None
-        subscribers = subscribers_response['data']
+        # Deliver to connected subscribers and collect push candidates
+        sent_post_in_real_time, subscribers = _broadcast_post_to_channel(
+            CONN_DB_CURSOR, post, exclude_callsign=callsign
+        )
+        wps_logger("CHANNELS POST HANDLER", callsign, f"Sent real-time to: {sent_post_in_real_time}")
 
-        # Creates an array of subscriber callsigns only
-        subscribers_callsigns = [s['callsign'] for s in subscribers]
-        wps_logger("CHANNELS POST HANDLER", callsign, f"Channel Subscribers: {subscribers_callsigns}")
-
-        # Get the list of callsigns who have this channel paused
-        # Creates an array of callsigns who have paused the channel
-        paused_callsigns_response = dbPausedCallsignsForChannel(CONN_DB_CURSOR, post['cid'])
-        close_connection(CONN_DB_CURSOR, callsign, CONN) if paused_callsigns_response['result'] == 'failure' else None
-        paused_callsigns = paused_callsigns_response['data']
-        wps_logger("CHANNELS POST HANDLER", callsign, f"Channel Paused Subscribers: {paused_callsigns}")
-
-        sent_post_in_real_time = []
-
-        # Send to connected subscribers in real time
-        wps_logger("CHANNELS POST HANDLER", callsign, f"Connections {[[item['callsign'] for item in CONNECTIONS]]}")
-
-        # Process active connections
-        # If a connected callsign is a subscriber to the channel and doesn't have the channel paused, send the post in real-time
-        for C in CONNECTIONS:
-            if C['callsign'] != post['fc'] and C['callsign'] in subscribers_callsigns:
-                if C['callsign'] in paused_callsigns:
-                    wps_logger("CHANNELS POST HANDLER", callsign, f"{C['callsign']} has channel paused, skipping real-time send")
-                    continue
-                wps_logger("CHANNELS POST HANDLER", callsign, f"Sending real-time to: {C['callsign']}")
-                # socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, post)
-                socket_send_handler_other_connected_user(CONN_DB_CURSOR,
-                                                        sending_callsign=callsign,
-                                                        sending_connection=CONN,
-                                                        receiving_callsign=C['callsign'],
-                                                        receiving_connection=C['socket'],
-                                                        payload=post)
-                sent_post_in_real_time.append(C['callsign'])
-
-        # Send to remaining subscribers not online and with push enabled      
+        # Push notifications for offline subscribers
         for subscriber in subscribers:
             wps_logger("CHANNELS POST HANDLER", callsign, f"Processing {subscriber['callsign']} for push notification")
-            
+
             if subscriber['callsign'] in sent_post_in_real_time:
                 wps_logger("CHANNELS POST HANDLER", callsign, "Already sent in real-time")
                 continue
-            
+
             if post['cid'] in subscriber['channel_notifications_since_last_logout']:
                 wps_logger("CHANNELS POST HANDLER", callsign, "Already received push for this channel since last logout")
                 continue
-            
+
             wps_logger("CHANNELS POST HANDLER", callsign, f"Enabled Player Ids: {subscriber['enabled_player_ids']}")
 
             for playerId in subscriber['enabled_player_ids']:
@@ -2131,12 +2098,48 @@ def check_auto_subscriptions(cursor):
         wps_logger("AUTO SUBSCRIBE HANDLER", "-----", f"Error processing auto-subscription: {e}", "ERROR")
         return
 
+def _broadcast_post_to_channel(CONN_DB_CURSOR, post, exclude_callsign):
+    '''
+    Deliver an already-inserted post to all connected, subscribed, non-paused,
+    online users — except exclude_callsign (the sender, who already got a cpr).
+    Returns the list of callsigns sent to in real-time, and the full subscribers list.
+    '''
+    cid = post['cid']
+
+    subscribers_resp = dbChannelSubscribers(CONN_DB_CURSOR, exclude_callsign, cid)
+    if subscribers_resp['result'] == 'failure':
+        return [], []
+    subscribers = subscribers_resp['data']
+    subscriber_callsigns = {s['callsign'] for s in subscribers}
+
+    paused_resp = dbPausedCallsignsForChannel(CONN_DB_CURSOR, cid)
+    paused_callsigns = set(paused_resp['data']) if paused_resp['result'] == 'success' else set()
+
+    send_payload = frame_and_compress_json_object(post)
+    sent_in_real_time = []
+
+    for C in CONNECTIONS:
+        cs = C['callsign']
+        if cs not in subscriber_callsigns or cs in paused_callsigns:
+            continue
+        user_resp = dbUserSearch(CONN_DB_CURSOR, cs)
+        if user_resp['result'] != 'success' or not user_resp['data']:
+            continue
+        if not user_resp['data'].get('is_online'):
+            continue
+        try:
+            C['socket'].send(send_payload.encode())
+            sent_in_real_time.append(cs)
+        except Exception as e:
+            wps_logger("BROADCAST", "-----", f"Send error to {cs}: {e}", "ERROR")
+
+    return sent_in_real_time, subscribers
+
+
 def bot_broadcast_to_channel(CONN_DB_CURSOR, cid, text, from_callsign):
     '''
     Post a server-generated (bot) message to a channel and deliver it in
     real-time to all connected, subscribed, and un-paused users.
-    The post is stored in the database so users who are offline receive it
-    on their next connect, just like any other channel post.
     '''
     ts = round(time.time() * 1000)
     post = {
@@ -2147,39 +2150,12 @@ def bot_broadcast_to_channel(CONN_DB_CURSOR, cid, text, from_callsign):
         "p":   text,
         "dts": ts,
     }
-
-    # Insert a deep copy so dbInsertPost's quote-escaping doesn't corrupt the
-    # object we then broadcast to live sockets
     post_for_db = json.loads(json.dumps(post))
     insert_resp = dbInsertPost(CONN_DB_CURSOR, post_for_db)
     if insert_resp['result'] == 'failure':
         wps_logger("BOT BROADCAST", "-----", f"Failed to insert bot post: {insert_resp}")
         return
-
-    subscribers_resp = dbChannelSubscribers(CONN_DB_CURSOR, from_callsign, cid)
-    if subscribers_resp['result'] == 'failure':
-        return
-    subscriber_callsigns = {s['callsign'] for s in subscribers_resp['data']}
-
-    paused_resp = dbPausedCallsignsForChannel(CONN_DB_CURSOR, cid)
-    paused_callsigns = set(paused_resp['data']) if paused_resp['result'] == 'success' else set()
-
-    send_payload = frame_and_compress_json_object(post)
-
-    for C in CONNECTIONS:
-        cs = C['callsign']
-        if cs not in subscriber_callsigns or cs in paused_callsigns:
-            continue
-        # Only deliver to users who have completed their connect handshake
-        user_resp = dbUserSearch(CONN_DB_CURSOR, cs)
-        if user_resp['result'] != 'success' or not user_resp['data']:
-            continue
-        if not user_resp['data'].get('is_online'):
-            continue
-        try:
-            C['socket'].send(send_payload.encode())
-        except Exception as e:
-            wps_logger("BOT BROADCAST", "-----", f"Send error to {cs}: {e}", "ERROR")
+    _broadcast_post_to_channel(CONN_DB_CURSOR, post, exclude_callsign=from_callsign)
 
 
 def startup_and_listen():
