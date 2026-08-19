@@ -45,6 +45,9 @@ ALL_THREADS = []
 # Global TCP Connections Array
 CONNECTIONS = []
 
+# Bot modules keyed by channel id (int), populated at startup
+BOTS = {}
+
 # String to return when someone manually connects and sends unknown text
 invalid_connect_reponse = """Welcome to WPS\r
 I didn't recognise that command and guess you have connected manually.\r
@@ -2201,6 +2204,7 @@ def startup_and_listen():
     if legacy_cid and str(legacy_cid) not in bots_config:
         bots_config[str(legacy_cid)] = 'pacagotchi'
 
+    global BOTS
     BOTS = {}  # cid (int) -> module
     for cid_str, module_name in bots_config.items():
         try:
