@@ -18,6 +18,10 @@ Batch Variants
 2. [Type cpedb - Channel Post Edit Batch](#type-cpedb---channel-post-edit-batch)
 3. [Type cpemb - Channel Post Emoji Batch](#type-cpemb---channel-post-emoji-batch)
 
+Bots
+
+1. [Bots - Calling the Channel Post Handler Directly](#bots---calling-the-channel-post-handler-directly)
+
 [Return to README](/README.md)
 
 ## Type cp - Channel Post
@@ -37,6 +41,7 @@ Sends a new Post to a given channel
 |Reply Timestamp|`rts`|`1750804825979`|Number|The timestamp of the post being replied to
 |Reply From Call|`rfc`|`T3EST`|String|The sender of the post being replied to
 |Gap|`g`|`1`|Boolean|If a user doesn't request all outstanding posts for a channel, this flag signifies the first new post after the posts gap
+|Receipt|`r`|`0`|Number|Set to `0` to suppress the `cpr` delivery receipt for this post - see [Bots - Calling the Channel Post Handler Directly](#bots---calling-the-channel-post-handler-directly)
 |**Server Only Fields**|
 |Delivery Timestamp|`dts`|`1750804826875`|Number|The timestamp the server received and processed the message. This is returned to the client in the `cpr` response for the client to calculate the delivery time to server
 
@@ -458,5 +463,30 @@ Return the latest 50 posts
    "t": "cu",
    "cid": 0,
    "pc": 50
+}
+```
+
+## Bots - Calling the Channel Post Handler Directly
+
+A bot running in-process with WPS (i.e. imported into the same Python process, rather than connecting as a packet client) can skip the socket/packet layer entirely and call `post_handler()` directly.
+
+```python
+post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=True)
+```
+
+`post` is a standard [`cp` object](#type-cp---channel-post). `suppress_cpr` defaults to `False`; set it to `True` so WPS doesn't attempt to deliver a `cpr` back to the bot, since there is no client connection to receive it.
+
+### Bots Posting Over a Packet Connection
+
+A bot that instead connects like a normal client over the packet network doesn't have access to the `suppress_cpr` argument directly. In this case, add `r: 0` to the `cp` object it sends - this tells WPS to suppress the `cpr` for that post.
+
+``` json
+{
+   "t": "cp",
+   "cid": 6,
+   "fc": "BOT1",
+   "ts": 1750804825979,
+   "p": "Testing 123",
+   "r": 0
 }
 ```
