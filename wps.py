@@ -2309,7 +2309,14 @@ def bot_broadcast_to_channel(CONN_DB_CURSOR, cid, text, callsign):
     if insert_resp['result'] == 'failure':
         wps_logger("BOT BROADCAST", "-----", f"Failed to insert bot post: {insert_resp}")
         return
-    broadcast_post_handler(CONN_DB_CURSOR, post, callsign, None)
+
+    # Get the channel subscribers
+    # Gets an array of subscriber objects with callsign and push settings
+    subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_response['result'] == 'failure' else None
+    subscribers = subscribers_response['data']
+
+    broadcast_post_handler(CONN_DB_CURSOR, subscribers, post, callsign, None)
 
 def startup_and_listen():
     print(f"{timestamp()} Using database {env['dbFilename']}")
