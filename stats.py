@@ -1,6 +1,11 @@
 from env import *
 import sqlite3
 
+# Environment Variables
+env_source = open("env.json", "r")
+env = json.load(env_source)
+env_source.close()
+
 EVENTS_DB_FILENAME = env['events']['eventsDbFilename']
 DB_FILENAME = env['dbFilename']
 
