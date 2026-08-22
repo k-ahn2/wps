@@ -1,4 +1,4 @@
-import sqlite3, json
+import sqlite3, json, time
 import datetime
 from handlers import *
 
@@ -50,6 +50,17 @@ def dbInit(CONN_DB_CURSOR):
     );
     '''
     CONN_DB_CURSOR.execute(create_posts_table)
+
+    # Single row (id = 1) holding the channel list last loaded from env.json and
+    # the timestamp it was last changed, so clients can tell whether their copy is stale
+    create_channels_table = '''
+    CREATE TABLE IF NOT EXISTS channels (
+        id INTEGER PRIMARY KEY,
+        channels TEXT,
+        ts INTEGER
+    );
+    '''
+    CONN_DB_CURSOR.execute(create_channels_table)
 
     CONN_DB_CURSOR.connection.commit()
 
@@ -1041,4 +1052,80 @@ def dbGetUpdatedAvatars(CONN_DB_CURSOR, callsign, last_avatar_timestamp):
             "params": [ callsign, last_avatar_timestamp ]
         }
         db_logger("dbGetUpdatedAvatars", "Return: " + str(return_error), 'ERROR')
+        return return_error
+
+def dbGetChannels(CONN_DB_CURSOR):
+    try:
+        select_query = """
+        SELECT channels, ts
+        FROM channels
+        WHERE id = 1
+        """
+        db_logger("dbGetChannels", "Query: " + ' '.join(select_query.split()))
+
+        CONN_DB_CURSOR.execute(select_query)
+        result = [row for row in CONN_DB_CURSOR]
+
+        return_success = {
+            "result": "success",
+            "data": { "channels": json.loads(result[0][0]), "ts": result[0][1] } if len(result) == 1 else None,
+        }
+        db_logger("dbGetChannels", "Return: " + str(return_success))
+        return return_success
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbGetChannels",
+            "params": []
+        }
+        db_logger("dbGetChannels", "Return: " + str(return_error), 'ERROR')
+        return return_error
+
+def dbSyncChannels(CONN_DB_CURSOR, current_channels):
+    '''
+    Compares current_channels (freshly read from env.json) against the copy stored in the
+    database. If it differs, or nothing has been stored yet, upserts the single channels row
+    with a fresh timestamp. Returns the channels and timestamp now current in the database.
+    '''
+    try:
+        existing = dbGetChannels(CONN_DB_CURSOR)
+        if existing['result'] == 'failure':
+            raise Exception(existing['error'])
+
+        existing_data = existing['data']
+
+        if existing_data is not None and existing_data['channels'] == current_channels:
+            return {
+                "result": "success",
+                "data": existing_data,
+            }
+
+        sync_ts = round(time.time() * 1000)
+        upsert_query = """
+        INSERT INTO channels (id, channels, ts) VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET channels = excluded.channels, ts = excluded.ts
+        """
+        params = [json.dumps(current_channels), sync_ts]
+        db_logger("dbSyncChannels", "Query: " + ' '.join(upsert_query.split()) + " | Params: " + str(params))
+
+        CONN_DB_CURSOR.execute(upsert_query, params)
+        CONN_DB_CURSOR.connection.commit()
+
+        return_success = {
+            "result": "success",
+            "data": { "channels": current_channels, "ts": sync_ts },
+        }
+        db_logger("dbSyncChannels", "Return: " + str(return_success))
+        return return_success
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbSyncChannels",
+            "params": [current_channels]
+        }
+        db_logger("dbSyncChannels", "Return: " + str(return_error), 'ERROR')
         return return_error
