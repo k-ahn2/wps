@@ -294,13 +294,14 @@ def get_channel_name(cid):
 
 def load_bots_config():
     '''
-    Reads bots.json - keyed by bot name (the Python module under the bots/ package to import),
-    with an object holding the channel id (cid) the bot operates on plus any bot-specific
-    config as the value. Returns {} if bots.json doesn't exist, since bots are optional.
+    Reads bots/bots.json - keyed by bot name (the Python module under the bots/ package to
+    import), with an object holding the channel id (cid) the bot operates on plus any
+    bot-specific config as the value. Returns {} if bots/bots.json doesn't exist, since bots
+    are optional.
     '''
 
     try:
-        with open("bots.json") as bots_source:
+        with open(os.path.join("bots", "bots.json")) as bots_source:
             return json.load(bots_source)
     except FileNotFoundError:
         return {}
@@ -2336,38 +2337,43 @@ def startup_and_listen():
     # Load the channel list from channels.json into the database
     sync_channels_from_file(global_cursor)
 
-    # Load bots from bots.json - keyed by bot name, the Python module under the bots/ package
-    # to import, with an object holding the channel id (cid) the bot operates on plus any
-    # bot-specific config as the value. bots.json is the master: every key must have a matching
-    # bots/<name>.py module and a channels.json channel with that cid flagged "b": true.
-    bots_config = load_bots_config()
-
+    # Load bots from bots/bots.json - keyed by bot name, the Python module under the bots/
+    # package to import, with an object holding the channel id (cid) the bot operates on plus
+    # any bot-specific config as the value. bots/bots.json is the master: every key must have a
+    # matching bots/<name>.py module and a channels.json channel with that cid flagged "b": true.
+    # Only loaded and processed at all if enableBots is set in env.json.
     global BOTS
     BOTS = {}  # cid (int) -> module
-    for bot_name, bot_config in bots_config.items():
-        try:
-            cid = bot_config['cid']
 
-            channel = get_channel(cid)
-            if channel is None:
-                raise Exception(f"no channel with cid {cid} found in channels.json")
-            if not channel.get('b'):
-                raise Exception(f"channel {cid} ('{channel.get('cn')}') is missing \"b\": true in channels.json")
+    if not env.get('enableBots', False):
+        print(f"{timestamp()} Bots: Disabled")
+    else:
+        bots_config = load_bots_config()
 
-            if not os.path.isfile(os.path.join("bots", f"{bot_name}.py")):
-                raise Exception(f"bots/{bot_name}.py not found")
+        for bot_name, bot_config in bots_config.items():
+            try:
+                cid = bot_config['cid']
 
-            mod = importlib.import_module(f"bots.{bot_name}")
-            mod.init(get_db_connection())
-            mod.start_tick_thread(
-                get_db_connection(),
-                lambda cursor, c, text, fc: bot_broadcast_to_channel(cursor, c, text, fc),
-                cid,
-            )
-            BOTS[cid] = mod
-            print(f"{timestamp()} Bot '{bot_name}' enabled on channel {cid}")
-        except Exception as bot_init_e:
-            print(f"{timestamp()} ERROR: failed to load bot '{bot_name}': {bot_init_e}")
+                channel = get_channel(cid)
+                if channel is None:
+                    raise Exception(f"no channel with cid {cid} found in channels.json")
+                if not channel.get('b'):
+                    raise Exception(f"channel {cid} ('{channel.get('cn')}') is missing \"b\": true in channels.json")
+
+                if not os.path.isfile(os.path.join("bots", f"{bot_name}.py")):
+                    raise Exception(f"bots/{bot_name}.py not found")
+
+                mod = importlib.import_module(f"bots.{bot_name}")
+                mod.init(get_db_connection())
+                mod.start_tick_thread(
+                    get_db_connection(),
+                    lambda cursor, c, text, fc: bot_broadcast_to_channel(cursor, c, text, fc),
+                    cid,
+                )
+                BOTS[cid] = mod
+                print(f"{timestamp()} Bot '{bot_name}' enabled on channel {cid}")
+            except Exception as bot_init_e:
+                print(f"{timestamp()} ERROR: failed to load bot '{bot_name}': {bot_init_e}")
 
     # Confirm users are subscribed to the default channels
     check_auto_subscriptions(global_cursor)
