@@ -11,6 +11,7 @@ Singular Types
 5. [Type cs - Channel Subscribe](#type-cs---channel-subscribe)
 6. [Type pch - Paused Channel Headers](#type-pch---paused-channel-headers)
 7. [Type cu - Channel Unpause](#type-cu---channel-unpause)
+8. [Type chl - Channel List](#type-chl---channel-list)
 
 Batch Variants
 
@@ -463,6 +464,76 @@ Return the latest 50 posts
    "t": "cu",
    "cid": 0,
    "pc": 50
+}
+```
+
+## Type chl - Channel List
+
+Fetches the channel list (channel id to name mapping), sourced from the `channels` key in `env.json`. WPS re-reads `env.json` and syncs the `channels` table on every startup and every client connect, so `env.json` can be edited to add, rename or remove channels without restarting WPS - the updated list becomes available within one connect cycle.
+
+Also supports a count-only mode, letting the client cheaply check whether it needs to download an updated list before requesting the full one.
+
+### Client to Server
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`chl`|String|Always type `chl` for Channel List|
+|Last Channels Timestamp|`lcts`|`1755000000000`|Number|The timestamp of the channel list already held by the client, in milliseconds since epoch. `0` if none held|
+|**Optional Fields**|
+|Count Only|`co`|`1`|Boolean|If present, the server only returns whether an update is available (and the current timestamp), suppressing the full channel list|
+
+### JSON Example
+
+Fetch the full channel list
+```json
+{
+   "t": "chl",
+   "lcts": 0
+}
+```
+
+Check whether an update is available, without downloading the full list
+```json
+{
+   "t": "chl",
+   "lcts": 1755000000000,
+   "co": 1
+}
+```
+
+### Server to Client
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`chl`|String|Always type `chl` for Channel List|
+|Timestamp|`ts`|`1755000100000`|Number|The timestamp the channel list held by the server was last changed, in milliseconds since epoch|
+|Update Available|`u`|`1` or `0`|Boolean|Only present when `co` was set - `1` if `ts` is newer than the client's `lcts`, otherwise `0`|
+|Channels|`cl`|`[]`|Array of Objects|Only present when `co` was not set|
+|**Channel Objects**|
+|Channel Id|`cid`|`1`|Number|id of the channel|
+|Name|`n`|`packet-general`|String|The channel's display name|
+
+### JSON Example
+
+Full channel list response
+```json
+{
+   "t": "chl",
+   "ts": 1755000100000,
+   "cl": [
+      { "cid": 0, "n": "packet-tech" },
+      { "cid": 1, "n": "packet-general" },
+      { "cid": 100, "n": "announcements" }
+   ]
+}
+```
+
+Count-only response
+```json
+{
+   "t": "chl",
+   "ts": 1755000100000,
+   "u": 1
 }
 ```
 

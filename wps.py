@@ -226,6 +226,24 @@ def decompress_bytes(string_to_decompress):
     decompressed = zlib.decompress(string_to_decompress).decode('utf-8')
     return decompressed
 
+def sync_channels_from_env_file(CONN_DB_CURSOR):
+    '''
+    Re-reads the "channels" key from env.json (not the copy of env loaded at process start)
+    and, if it has changed since the last sync, updates the channels table with a fresh
+    timestamp. Called on startup and on every connect so env.json can be administered
+    dynamically without needing to restart WPS.
+    '''
+
+    env_source = open("env.json")
+    current_env = json.load(env_source)
+    env_source.close()
+
+    sync_response = dbSyncChannels(CONN_DB_CURSOR, current_env.get('channels', {}))
+    if sync_response['result'] == 'failure':
+        wps_logger("CHANNELS SYNC", "-----", f"Failed to sync channels from env.json: {sync_response}", "ERROR")
+
+    return sync_response
+
 def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     '''
     Receives type `c` JSON from client
@@ -233,6 +251,12 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     Returns connnect header in response, showing new message and post counts
     Runs all code required to update the client
     '''
+
+    sync_channels_from_env_file(CONN_DB_CURSOR)
+
+    last_channels_timestamp = connect_object.get('lcts')
+    if last_channels_timestamp is not None:
+        channel_list_handler(CONN_DB_CURSOR, { "lcts": last_channels_timestamp }, callsign, CONN, only_if_newer=True)
 
     event_logger(timestamp_milliseconds(), 'USER_CONNECT', callsign, { "total": len(CONNECTIONS) }, None)
 
@@ -1691,6 +1715,43 @@ def stats_handler(CONN_DB_CURSOR, callsign, CONN):
 
     socket_send_handler(CONN_DB_CURSOR, CONN, callsign, stats_response)
 
+def channel_list_handler(CONN_DB_CURSOR, request, callsign, CONN, only_if_newer=False):
+    '''
+    Returns the current channel list and its timestamp.
+    If `co` (Count Only) is set, skips the full list and just tells the client whether the
+    server's channel list is newer than the `lcts` timestamp the client already holds.
+    If only_if_newer is True, sends nothing at all unless the server's channel list is newer
+    than `lcts` - used when called unsolicited from connect_handler, so the client only
+    receives a channel list there when it actually needs one.
+    '''
+
+    last_channels_timestamp = request.get('lcts', 0)
+    count_only = request.get('co', 0) == 1
+
+    channels_response = dbGetChannels(CONN_DB_CURSOR)
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if channels_response['result'] == 'failure' else None
+    channels_data = channels_response['data']
+
+    current_ts = channels_data['ts'] if channels_data else 0
+    current_channels = channels_data['channels'] if channels_data else {}
+
+    if only_if_newer and current_ts <= last_channels_timestamp:
+        wps_logger("CHANNEL LIST HANDLER", callsign, f"Client channel list timestamp {last_channels_timestamp} is current, no update to send")
+        return
+
+    response = {
+        "t": "chl",
+        "ts": current_ts
+    }
+
+    if count_only:
+        response["u"] = 1 if current_ts > last_channels_timestamp else 0
+    else:
+        response["cl"] = [{"cid": int(cid), "n": name} for cid, name in current_channels.items()]
+
+    wps_logger("CHANNEL LIST HANDLER", callsign, f"Channel list response: {response}")
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
+
 def keep_alive_handler(CONN_DB_CURSOR, callsign, CONN):
     '''
     Handles when the user sends a keep alive packet
@@ -2089,6 +2150,11 @@ def connected_session_handler(CONN, ADDR):
                     wps_logger("CONNECTED SESSION HANDLER", callsign, "Stats handler")
                     stats_handler(CONN_DB_CURSOR, callsign, CONN)
 
+                # Channel List
+                if message_json["t"] == "chl":
+                    wps_logger("CONNECTED SESSION HANDLER", callsign, "Invoking channel list handler")
+                    channel_list_handler(CONN_DB_CURSOR, message_json, callsign, CONN)
+
         except Exception as e:
             wps_logger("CONNECTED SESSION HANDLER", callsign, f"Exception {e} happened. Disconnecting", "ERROR")
             close_connection(CONN_DB_CURSOR, callsign, CONN)
@@ -2199,6 +2265,9 @@ def startup_and_listen():
     
     # Create the database tables, if they don't exist
     dbInit(global_cursor)
+
+    # Load the channel list from env.json into the database
+    sync_channels_from_env_file(global_cursor)
 
     # Load bots from env.json "bots": {"<cid>": "<module_name>", ...}
     # Also support the legacy pacagotchiChannelId key for backwards compatibility.
