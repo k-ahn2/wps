@@ -8,3 +8,5 @@ test.py
 *.log.*
 *.old
 .vscode/*
+wps.db-shm
+wps.db-wal

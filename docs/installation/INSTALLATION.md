@@ -75,6 +75,7 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`autoSubscribeToChannelIds`|Array|`[]`|Add any channel ids required for auto subscription. WPS will check all users are subscribed to these channels on startup|
 |`maxNewPostsToReturnPerChannelOnConnect`|Number|`100`|During connect, if total number of posts to return to the client for a given channel is more than this number, return paused channel headers only via `pch`
 |`channels`|Object|`{}`|Add a key / value pair corresponding to the channel id (`cid`) and channel name. Used by notifications to include the Channel Name in the notification description - e.g. when a new post arrives in `cid` = 1, send "New Post from #packet-general"|
+|`bots`|Object|`{}`|Register channel bots. Each key is a channel id (as a string) and the value is the Python module name to load. E.g. `{"7": "pacagotchi"}`. See the [Bots section in the README](/README.md#bots) for how to write a bot.|
 |`events`|Object|`{}`|Contains the configuration settings for WPS event logging|
 |**Events Fields**|
 |`enableWpsEvents`|Boolean|`False`|Enable the WPS event logging capability, used for capturing select activities such as user connnect, user disconnect and bytes sent
@@ -110,6 +111,9 @@ Any new keys should first be added to `env.py`, which will automatically add the
         "0": "packet-tech",
         "1": "packet-general",
         "100": "announcements"
+    },
+    "bots": {
+        "7": "pacagotchi"
     }
 }
 ```

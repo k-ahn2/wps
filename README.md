@@ -20,6 +20,7 @@ WPS runs entirely in Python, starts with just three files, has minimal dependenc
 6. [Timestamps and Delivery Sequence](#timestamps-and-delivery-sequence)
 7. [How WPS handles JSON](#how-wps-handles-json)
 8. [Sending a JSON object to WPS (Javascript Example)](#sending-a-json-object-to-wps---a-javascript-example)
+9. [Bots](#bots)
 
 
 ### WPS Installation and Protocol Documentation
@@ -144,3 +145,72 @@ const samplePost = {
 }
 send(`${JSON.stringify(samplePost)}\r\n`)
 ```
+
+## Bots
+
+WPS includes a lightweight bot framework that allows channel bots to be added without modifying the core WPS code. Each bot is a self-contained Python module placed alongside `wps.py`.
+
+### Built-in Bot: Pacagotchi
+
+Pacagotchi is a Tamagotchi-style pet that lives in a WPS channel and is cared for collectively by everyone on the network.
+
+**Setup:** assign it a channel ID in `env.json`:
+
+```json
+"bots": {
+    "7": "pacagotchi"
+}
+```
+
+**Commands** (posted to the channel):
+
+| Command | Description |
+| - | :- |
+| `/spawn` | Create a new pet (only when none exists or the previous one died) |
+| `/feed [food]` | Feed the pet. Junk food keywords (`burger`, `pizza`, `chips`, `sweets`, `cake`, `donut`, `crisps`, `biscuit`) make it happier but risk illness after 3 in a row |
+| `/play` | Play with the pet — raises happiness but costs hunger |
+| `/clean` | Clean up poop — neglected poop causes illness |
+| `/medicate` | Cure illness (requires health > 20%) |
+| `/sleep` | Rest the pet — raises health, lowers happiness |
+| `/pet` | Show the pet's current status and ASCII art |
+| `/stats` | Full stats including top caretakers leaderboard |
+| `/help` | Command reference |
+
+The pet ticks every 5 minutes: hunger drops, poop accumulates, and health is affected by neglect. If health reaches zero the pet dies — use `/spawn` to start fresh.
+
+### Adding a New Bot
+
+1. Create a Python file next to `wps.py`, e.g. `mybot.py`, exposing these three functions:
+
+```python
+def init(db_connection):
+    """Called once at startup. Create any required DB tables here."""
+    pass
+
+def start_tick_thread(db_connection, broadcast_fn, channel_id):
+    """
+    Start a background thread for time-driven behaviour (optional).
+    broadcast_fn(cursor, cid, text, from_callsign) posts a message to the channel.
+    """
+    pass
+
+def handle_command(cursor, post_text, from_callsign):
+    """
+    Called when a slash command is posted to the bot's channel.
+    Return {"text": str, "fc": str} to reply, or None to stay silent.
+    """
+    if not post_text.startswith("/"):
+        return None
+    return {"text": "Hello from mybot!", "fc": "MYBOT"}
+```
+
+2. Register it in `env.json` with the channel ID it should respond to:
+
+```json
+"bots": {
+    "7":  "pacagotchi",
+    "12": "mybot"
+}
+```
+
+3. Restart WPS — the bot is loaded automatically with no other changes required.
