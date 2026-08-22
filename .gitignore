@@ -10,3 +10,6 @@ test.py
 .vscode/*
 wps.db-shm
 wps.db-wal
+wps_dev.db-shm
+wps_dev.db-wal
+misc/10k.py

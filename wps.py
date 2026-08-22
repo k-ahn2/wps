@@ -1406,7 +1406,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=False):
         bot = BOTS.get(post['cid'])
         if bot and post.get('p', '').startswith('/'):
             try:
-                bot_resp = bot.handle_command(db.cursor(), post['p'], callsign)
+                bot_resp = bot.handle_command(get_db_connection().cursor(), post['p'], callsign)
                 if bot_resp:
                     bot_broadcast_to_channel(CONN_DB_CURSOR, post['cid'], bot_resp['text'], bot_resp['fc'])
             except Exception as bot_e:
@@ -2352,7 +2352,7 @@ def startup_and_listen():
             mod = importlib.import_module(f"bots.{bot_name}")
             mod.init(global_cursor)
             mod.start_tick_thread(
-                global_cursor,
+                get_db_connection(),
                 lambda cursor, c, text, fc: bot_broadcast_to_channel(cursor, c, text, fc),
                 cid,
             )
