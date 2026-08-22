@@ -1368,11 +1368,18 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=False):
             close_connection(CONN_DB_CURSOR, callsign, CONN) if post_insert_response['result'] == 'failure' else None
             wps_logger("CHANNELS POST HANDLER", callsign, f"Post insert acknowledgment is {post_insert_response}")
             socket_send_handler(CONN_DB_CURSOR, CONN, callsign, delivery_receipt) if not suppress_cpr else None
-        
+
+        # Get the channel subscribers
+        # Gets an array of subscriber objects with callsign and push settings
+        subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
+        close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_response['result'] == 'failure' else None
+        subscribers = subscribers_response['data']
+
         # Deliver to connected subscribers and collect push candidates
-        sent_post_in_real_time, subscribers = broadcast_post_handler(
-            CONN_DB_CURSOR, post, callsign, CONN
+        sent_post_in_real_time = broadcast_post_handler(
+            CONN_DB_CURSOR, subscribers, post, callsign, CONN
         )
+
         wps_logger("CHANNELS POST HANDLER", callsign, f"Sent real-time to: {sent_post_in_real_time}")
 
         # Push notifications for offline subscribers
@@ -1417,18 +1424,12 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=False):
     except Exception as e:
         wps_logger("CHANNELS POST HANDLER", callsign, f"Error {e}")
 
-def broadcast_post_handler(CONN_DB_CURSOR, post, callsign, CONN):
+def broadcast_post_handler(CONN_DB_CURSOR, subscribers, post, callsign, CONN):
     '''
     Deliver an already-inserted post to all connected, subscribed, non-paused,
     online users — except exclude_callsign (the sender, who already got a cpr).
     Returns the list of callsigns sent to in real-time, and the full subscribers list.
     '''
-
-    # Get the channel subscribers
-    # Gets an array of subscriber objects with callsign and push settings
-    subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
-    close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_response['result'] == 'failure' else None
-    subscribers = subscribers_response['data']
 
     # Creates an array of subscriber callsigns only
     subscribers_callsigns = [s['callsign'] for s in subscribers]
@@ -1465,7 +1466,7 @@ def broadcast_post_handler(CONN_DB_CURSOR, post, callsign, CONN):
                                                     payload=post)
             sent_post_in_real_time.append(C['callsign'])
 
-    return sent_post_in_real_time, subscribers_callsigns
+    return sent_post_in_real_time
 
 def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
     '''
@@ -2350,7 +2351,7 @@ def startup_and_listen():
                 raise Exception(f"bots/{bot_name}.py not found")
 
             mod = importlib.import_module(f"bots.{bot_name}")
-            mod.init(global_cursor)
+            mod.init(get_db_connection())
             mod.start_tick_thread(
                 get_db_connection(),
                 lambda cursor, c, text, fc: bot_broadcast_to_channel(cursor, c, text, fc),
