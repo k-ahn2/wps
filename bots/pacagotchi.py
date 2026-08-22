@@ -20,12 +20,12 @@ import json, time, random, threading
 from handlers import db_logger
 
 # ---------------------------------------------------------------------------
-# Configuration — loaded from env.json "pacagotchi" block, with fallbacks
+# Configuration — loaded from bots.json "pacagotchi" block, with fallbacks
 # ---------------------------------------------------------------------------
 
 def _load_config():
     try:
-        with open("env.json") as f:
+        with open("bots.json") as f:
             return json.load(f).get("pacagotchi", {})
     except Exception:
         return {}

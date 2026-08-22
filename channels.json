@@ -1,0 +1,116 @@
+{
+    "cg": [
+        {
+            "cgid": 0,
+            "gn": "General"
+        },
+        {
+            "cgid": 1,
+            "gn": "Packet"
+        },
+        {
+            "cgid": 2,
+            "gn": "Clubs"
+        },   
+        {
+            "cgid": 3,
+            "gn": "Bots"
+        }
+    ],
+    "c": [
+        {
+            "cgid": 1,
+            "cid": 0,
+            "cn": "packet-network",
+            "cd": "All things packet network related - links, routing, NETROM, QUALITY, INP3 etc."
+        },
+        {
+            "cgid": 1,
+            "cid": 1,
+            "cn": "packet-general",
+            "cd": "Anything Packet Radio goes here!"
+        },
+        {
+            "cgid": 0,
+            "cid": 2,
+            "cn": "ham-radio-general",
+            "cd": "Anything Ham Radio"
+        },
+        {
+            "cgid": 1,
+            "cid": 3,
+            "cn": "ask-devs",
+            "cd": "Found a bug or got a feature request? Ask here!"
+        },
+        {
+            "cgid": 2,
+            "cid": 4,
+            "cn": "bath-and-district-arc",
+            "cd": "Bath and District ARC Club Chat"
+        },
+        {
+            "cgid": 0,
+            "cid": 5,
+            "cn": "lounge",
+            "cd": "Anything and everything in here!"
+        },
+        {
+            "cgid": 0,
+            "cid": 6,
+            "cn": "test-channel-ignore",
+            "cd": "Used for anything that needs testing - generally best ignored!"
+        },
+        {
+            "cgid": 1,
+            "cid": 7,
+            "cn": "new-packet-radio",
+            "cd": "Everything related to New Packet Radio"
+        },
+        {
+            "cgid": 2,
+            "cid": 9,
+            "cn": "bracknell-arc",
+            "cd": "Bracknell Amateur Radio Club Chat"
+        },
+        {
+            "cgid": 0,
+            "cid": 10,
+            "cn": "small-victories",
+            "cd": "Achieved something good? Whether radio related or not, share it here!"
+        },
+        {
+            "gid": null,
+            "cid": 100,
+            "cn": "announcements",
+            "cd": "General news and announcements relevant to the community",
+            "as": true,
+            "ro": true
+        },
+        {
+            "cgid": 1,
+            "cid": 11,
+            "cn": "wps-development",
+            "cd": "Channel for everything related to the development of the WPS, the backend service powering Frames. See https://github.com/k-ahn2/wps"
+        },
+        {
+            "cgid": 1,
+            "cid": 12,
+            "cn": "network-monitoring",
+            "cd": "Channel for everything related to the new packet network monitoring capability"
+        },
+        {
+            "cgid": 2,
+            "cid": 13,
+            "cn": "eirpak-network",
+            "cd": "EirPak - Irish Packet Network Group Chat"
+        },
+        {
+            "cgid": 3,
+            "cid": 14,
+            "cn": "pacogotchi",
+            "cd": "Your Pet Pacogotchi",
+            "b": true
+        }
+    ]
+}
+

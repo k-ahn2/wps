@@ -5,7 +5,8 @@
 1. [WPS Installation and Prereqs](#wps-installation-and-prereqs)
 2. [Node Integration - Interfacing with BPQ or Xrouter](#node-integration---interfacing-with-bpq-or-xrouter)
 3. [Configuring `env.json`](#configuring-envjson)
-4. [WPS System and Log Files](#wps-system-and-log-files)
+4. [Configuring `channels.json`](#configuring-channelsjson)
+5. [WPS System and Log Files](#wps-system-and-log-files)
 
 [Return to README](/README.md)
 
@@ -18,7 +19,7 @@
 2. Go to the `wps` directory
 3. Run `python3 wps.py`
 
-This will start WPS with a default configuration. When running for the first time, WPS will create and initialise the database `wps.db`, plus `env.json`, `wps.log` and `db.log`
+This will start WPS with a default configuration. When running for the first time, WPS will create and initialise the database `wps.db`, plus `env.json`, `channels.json`, `wps.log` and `db.log`
 
 Check for errors in the console. Confirmation of the TCP Port is shown - check this matches the port in BPQ or Xrouter.
 
@@ -74,8 +75,6 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`notificationsProdRestKey`|String|`""`|Add the REST API key of your OneSignal Service|
 |`autoSubscribeToChannelIds`|Array|`[]`|Add any channel ids required for auto subscription. WPS will check all users are subscribed to these channels on startup|
 |`maxNewPostsToReturnPerChannelOnConnect`|Number|`100`|During connect, if total number of posts to return to the client for a given channel is more than this number, return paused channel headers only via `pch`
-|`channels`|Object|`{}`|Add a key / value pair corresponding to the channel id (`cid`) and channel name. Used by notifications to include the Channel Name in the notification description - e.g. when a new post arrives in `cid` = 1, send "New Post from #packet-general"|
-|`bots`|Object|`{}`|Register channel bots. Each key is a channel id (as a string) and the value is the Python module name to load. E.g. `{"7": "pacagotchi"}`. See the [Bots section in the README](/README.md#bots) for how to write a bot.|
 |`events`|Object|`{}`|Contains the configuration settings for WPS event logging|
 |**Events Fields**|
 |`enableWpsEvents`|Boolean|`False`|Enable the WPS event logging capability, used for capturing select activities such as user connnect, user disconnect and bytes sent
@@ -106,17 +105,37 @@ Any new keys should first be added to `env.py`, which will automatically add the
     "notificationsProdId": "",
     "notificationsProdRestKey": "",
     "autoSubscribeToChannelIds": [100, 1],
-    "maxNewPostsToReturnPerChannelOnConnect": 100,
-    "channels": {
-        "0": "packet-tech",
-        "1": "packet-general",
-        "100": "announcements"
-    },
-    "bots": {
-        "7": "pacagotchi"
-    }
+    "maxNewPostsToReturnPerChannelOnConnect": 100
 }
 ```
+
+## Configuring `channels.json`
+
+`channels.json` holds the channel list WPS serves to clients. It has two top-level keys:
+- `c` - the array of channels. Required
+- `cg` - the array of channel groups, used to organise channels in the client UI. Optional - omit or leave empty if you don't need grouping
+
+If `channels.json` doesn't exist when WPS starts (e.g. on first run), it's created automatically with a single "Lounge" channel (`cid` 0, no group) - the simplest possible setup, shown below. WPS reloads `channels.json` on every client connect, so it can then be edited to add, rename or remove channels and groups without restarting WPS.
+
+### Sample `channels.json`
+
+The default created on first run - a single channel assigned to no group:
+
+```json
+{
+    "cg": [],
+    "c": [
+        {
+            "gid": null,
+            "cid": 0,
+            "cn": "Lounge",
+            "cd": "General discussion"
+        }
+    ]
+}
+```
+
+For grouping channels, adding auto-subscribed or read-only channels, or linking a channel to a bot, see the full field reference and examples in [Protocol - Channels](/docs/protocol/CHANNELS.md#type-chl---channel-list).
 
 ## WPS System and Log Files
 
@@ -129,5 +148,8 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`backup.py`|Run to create a JSON file containing every user, message and post object in the database. Reads `env.json` to determine the database filename from `dbFilename`. Any Sqlite supported backup method would also be valid|
 |`env.py`|Used to create env.json with a default configuration if it doesn't exist, or, check all required keys are present and add any new or that are missing|
 |`env.json`|Environment configuration variables|
+|`channels.json`|Channel groups and channel definitions. Created automatically with a single default "Lounge" channel if it doesn't exist. See [Protocol - Channels](/docs/protocol/CHANNELS.md#type-chl---channel-list)|
+|`bots.json`|Registers channel bots, keyed by bot name with an object holding the channel id (`cid`) they respond on plus any bot-specific config as the value. See the [Bots section in the README](/README.md#bots)|
+|`bots/`|Directory containing bot Python modules, one file per bot named to match its key in `bots.json`|
 |`bpq_queue_monitor.py`|Run this file separately to query the BPQ API for AX.25 queue information. Requires setup and enabling in `env.json`|
 

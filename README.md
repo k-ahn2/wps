@@ -148,17 +148,40 @@ send(`${JSON.stringify(samplePost)}\r\n`)
 
 ## Bots
 
-WPS includes a lightweight bot framework that allows channel bots to be added without modifying the core WPS code. Each bot is a self-contained Python module placed alongside `wps.py`.
+WPS includes a lightweight bot framework that allows channel bots to be added without modifying the core WPS code. Each bot is a self-contained Python module placed in the `bots/` directory.
+
+`bots.json` is the master record of which bots are active. For every key in `bots.json`, WPS expects:
+- A matching `bots/<name>.py` module
+- A channel in `channels.json` with the configured `cid`, flagged `"b": true`
+
+If either is missing, WPS logs an error at startup and skips loading that bot.
 
 ### Built-in Bot: Pacagotchi
 
 Pacagotchi is a Tamagotchi-style pet that lives in a WPS channel and is cared for collectively by everyone on the network.
 
-**Setup:** assign it a channel ID in `env.json`:
+**Setup:** its channel in `channels.json` must be flagged `"b": true`, and it must be registered in `bots.json`, keyed by bot name (the module under `bots/` to import). The `bots.json` value is an object holding at least the channel id (`cid`) it should respond on - the bot also reads its parameters from here:
 
 ```json
-"bots": {
-    "7": "pacagotchi"
+{
+    "pacagotchi": {
+        "cid": 14,
+        "tick_interval": 300,
+        "age_juvenile": 3600,
+        "age_adult": 172800,
+        "hunger_drop_per_tick": 2,
+        "happiness_drop_bored": 2,
+        "health_drop_starving": 4,
+        "health_drop_dirty": 2,
+        "health_drop_ill_late": 8,
+        "sleep_tick_multiplier": 0.25,
+        "auto_sleep_after": 10800,
+        "sleep_min_hours": 6,
+        "sleep_max_hours": 10,
+        "poop_rise_every_n_ticks": 7,
+        "junk_illness_threshold": 3,
+        "ill_death_timeout": 10800
+    }
 }
 ```
 
@@ -180,7 +203,7 @@ The pet ticks every 5 minutes: hunger drops, poop accumulates, and health is aff
 
 ### Adding a New Bot
 
-1. Create a Python file next to `wps.py`, e.g. `mybot.py`, exposing these three functions:
+1. Create a Python file in `bots/`, e.g. `bots/mybot.py`, exposing these three functions:
 
 ```python
 def init(db_connection):
@@ -204,13 +227,26 @@ def handle_command(cursor, post_text, from_callsign):
     return {"text": "Hello from mybot!", "fc": "MYBOT"}
 ```
 
-2. Register it in `env.json` with the channel ID it should respond to:
+2. Flag its channel `"b": true` in `channels.json`:
 
 ```json
-"bots": {
-    "7":  "pacagotchi",
-    "12": "mybot"
+{
+    "cgid": 3,
+    "cid": 12,
+    "cn": "mybot",
+    "cd": "My Bot",
+    "b": true
 }
 ```
 
-3. Restart WPS — the bot is loaded automatically with no other changes required.
+3. Register it in `bots.json`, keyed by bot name, with an object holding at least the channel id (`cid`) it should respond on. Add any other bot-specific config keys your module wants to read from that same object:
+
+```json
+{
+    "mybot": {
+        "cid": 12
+    }
+}
+```
+
+4. Restart WPS — the bot is loaded automatically with no other changes required.

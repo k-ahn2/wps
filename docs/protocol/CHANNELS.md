@@ -469,7 +469,7 @@ Return the latest 50 posts
 
 ## Type chl - Channel List
 
-Fetches the channel list (channel id to name mapping), sourced from the `channels` key in `env.json`. WPS re-reads `env.json` and syncs the `channels` table on every startup and every client connect, so `env.json` can be edited to add, rename or remove channels without restarting WPS - the updated list becomes available within one connect cycle.
+Fetches the channel list, sourced from `channels.json`. The entire contents of `channels.json` are cached in memory on startup, shared by all connections, and re-checked against the file on disk on every new client connect - if it has changed, the cache and the `channels` table are refreshed with a fresh timestamp. This means `channels.json` can be edited to add, rename or remove channel groups and channels without restarting WPS - the updated list becomes available within one connect cycle.
 
 Also supports a count-only mode, letting the client cheaply check whether it needs to download an updated list before requesting the full one.
 
@@ -508,10 +508,21 @@ Check whether an update is available, without downloading the full list
 |Type|`t`|`chl`|String|Always type `chl` for Channel List|
 |Timestamp|`ts`|`1755000100000`|Number|The timestamp the channel list held by the server was last changed, in milliseconds since epoch|
 |Update Available|`u`|`1` or `0`|Boolean|Only present when `co` was set - `1` if `ts` is newer than the client's `lcts`, otherwise `0`|
-|Channels|`cl`|`[]`|Array of Objects|Only present when `co` was not set|
+|Channel Groups|`cg`|`[]`|Array of Objects|Only present when `co` was not set. The entire `cg` contents of `channels.json`|
+|Channels|`c`|`[]`|Array of Objects|Only present when `co` was not set. The entire `c` contents of `channels.json`|
+|**Channel Group Objects**|
+|Channel Group Id|`cgid`|`1`|Number|id of the channel group|
+|Group Name|`gn`|`Packet`|String|The channel group's display name|
 |**Channel Objects**|
+|Channel Group Id|`cgid`|`1`|Number|id of the channel group this channel belongs to. Present when the channel belongs to a group - see `gid` below for the ungrouped case|
 |Channel Id|`cid`|`1`|Number|id of the channel|
-|Name|`n`|`packet-general`|String|The channel's display name|
+|Name|`cn`|`packet-general`|String|The channel's display name|
+|Description|`cd`|`Anything Packet Radio goes here!`|String|The channel's description|
+|**Optional Channel Fields**|
+|Group Id (Ungrouped)|`gid`|`null`|null|Present instead of `cgid`, and always `null`, when the channel doesn't belong to a channel group|
+|Auto Subscribe|`as`|`true`|Boolean|If present and `true`, clients should auto-subscribe users to this channel|
+|Read Only|`ro`|`true`|Boolean|If present and `true`, the channel is read-only - e.g. announcements posted by the server|
+|Bot|`b`|`true`|Boolean|If present and `true`, this channel is bot-managed. `bots.json` is the master record of active bots - for each key there, WPS requires a channel here with the matching `cid` flagged `"b": true`, and a `bots/<name>.py` module. See [Bots in the README](/README.md#bots)|
 
 ### JSON Example
 
@@ -520,10 +531,15 @@ Full channel list response
 {
    "t": "chl",
    "ts": 1755000100000,
-   "cl": [
-      { "cid": 0, "n": "packet-tech" },
-      { "cid": 1, "n": "packet-general" },
-      { "cid": 100, "n": "announcements" }
+   "cg": [
+      { "cgid": 0, "gn": "General" },
+      { "cgid": 1, "gn": "Packet" }
+   ],
+   "c": [
+      { "cgid": 0, "cid": 0, "cn": "packet-tech", "cd": "Packet technical discussion" },
+      { "cgid": 1, "cid": 1, "cn": "packet-general", "cd": "Anything Packet Radio goes here!" },
+      { "gid": null, "cid": 100, "cn": "announcements", "cd": "General news and announcements relevant to the community", "as": true, "ro": true },
+      { "cgid": 3, "cid": 14, "cn": "pacagotchi", "cd": "Pacagotchi", "b": true }
    ]
 }
 ```

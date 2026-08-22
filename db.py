@@ -51,7 +51,7 @@ def dbInit(CONN_DB_CURSOR):
     '''
     CONN_DB_CURSOR.execute(create_posts_table)
 
-    # Single row (id = 1) holding the channel list last loaded from env.json and
+    # Single row (id = 1) holding the channel list last loaded from channels.json and
     # the timestamp it was last changed, so clients can tell whether their copy is stale
     create_channels_table = '''
     CREATE TABLE IF NOT EXISTS channels (
@@ -1085,7 +1085,7 @@ def dbGetChannels(CONN_DB_CURSOR):
 
 def dbSyncChannels(CONN_DB_CURSOR, current_channels):
     '''
-    Compares current_channels (freshly read from env.json) against the copy stored in the
+    Compares current_channels (freshly read from channels.json) against the copy stored in the
     database. If it differs, or nothing has been stored yet, upserts the single channels row
     with a fresh timestamp. Returns the channels and timestamp now current in the database.
     '''

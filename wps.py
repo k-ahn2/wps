@@ -7,6 +7,7 @@ import socket
 import json
 import zlib, base64
 import importlib
+import os
 from events import *
 from stats import *
 
@@ -57,15 +58,18 @@ def connections_snapshot():
 # Bot modules keyed by channel id (int), populated at startup
 BOTS = {}
 
+# In-memory cache of the entire contents of channels.json plus the timestamp it was last
+# changed, shared by all connections. Populated at startup and refreshed on every new connect
+# via sync_channels_from_file, so all connections see updates without a DB round trip.
+CHANNELS_CACHE = {"channels": {"cg": [], "c": []}, "ts": 0}
+CHANNELS_CACHE_LOCK = threading.Lock()
+
 # String to return when someone manually connects and sends unknown text
 invalid_connect_reponse = """Welcome to WPS\r
 I didn't recognise that command and guess you have connected manually.\r
 To use this service you need to connect using the WhatsPac Client - head to http://whatspac.oarc.uk and follow the instructions there.\r
 You'll now be disconnected, thanks!\r
 """
-
-# Channel names for push notifcations
-channel_names = env['channels']
 
 # Compression delimiter as received from the client
 # che(192) is sent, split into two bytes by the encoding and received as chr(195) and chr(128)
@@ -226,23 +230,80 @@ def decompress_bytes(string_to_decompress):
     decompressed = zlib.decompress(string_to_decompress).decode('utf-8')
     return decompressed
 
-def sync_channels_from_env_file(CONN_DB_CURSOR):
+CHANNELS_JSON_DEFAULT = {
+    "cg": [],
+    "c": [
+        {
+            "gid": None,
+            "cid": 0,
+            "cn": "Lounge",
+            "cd": "General discussion"
+        }
+    ]
+}
+
+def sync_channels_from_file(CONN_DB_CURSOR):
     '''
-    Re-reads the "channels" key from env.json (not the copy of env loaded at process start)
-    and, if it has changed since the last sync, updates the channels table with a fresh
-    timestamp. Called on startup and on every connect so env.json can be administered
-    dynamically without needing to restart WPS.
+    Re-reads channels.json and, if it has changed since the last sync, updates the channels
+    table and the shared CHANNELS_CACHE with a fresh timestamp. Called on startup and on every
+    new connect so channels.json can be administered dynamically without needing to restart WPS.
+
+    If channels.json doesn't exist (e.g. on first run), creates it with a single default
+    "Lounge" channel (cid 0, no group) before reading it.
     '''
 
-    env_source = open("env.json")
-    current_env = json.load(env_source)
-    env_source.close()
+    if not os.path.exists("channels.json"):
+        print(f"{timestamp()} channels.json not found, creating default with a single Lounge channel")
+        wps_logger("CHANNELS SYNC", "-----", "channels.json not found, creating default with a single Lounge channel")
+        with open("channels.json", "w") as channels_out:
+            json.dump(CHANNELS_JSON_DEFAULT, channels_out, indent=4)
 
-    sync_response = dbSyncChannels(CONN_DB_CURSOR, current_env.get('channels', {}))
+    channels_source = open("channels.json")
+    current_channels = json.load(channels_source)
+    channels_source.close()
+
+    sync_response = dbSyncChannels(CONN_DB_CURSOR, current_channels)
     if sync_response['result'] == 'failure':
-        wps_logger("CHANNELS SYNC", "-----", f"Failed to sync channels from env.json: {sync_response}", "ERROR")
+        wps_logger("CHANNELS SYNC", "-----", f"Failed to sync channels from channels.json: {sync_response}", "ERROR")
+        return sync_response
+
+    with CHANNELS_CACHE_LOCK:
+        CHANNELS_CACHE['channels'] = sync_response['data']['channels']
+        CHANNELS_CACHE['ts'] = sync_response['data']['ts']
 
     return sync_response
+
+def get_channel(cid):
+    '''
+    Looks up a channel object by cid from CHANNELS_CACHE. Returns None if the channel isn't found.
+    '''
+
+    with CHANNELS_CACHE_LOCK:
+        channels = CHANNELS_CACHE['channels']['c']
+
+    return next((channel for channel in channels if channel['cid'] == cid), None)
+
+def get_channel_name(cid):
+    '''
+    Looks up a channel's display name (cn) by cid from CHANNELS_CACHE. Returns None if the
+    channel isn't found.
+    '''
+
+    channel = get_channel(cid)
+    return channel['cn'] if channel else None
+
+def load_bots_config():
+    '''
+    Reads bots.json - keyed by bot name (the Python module under the bots/ package to import),
+    with an object holding the channel id (cid) the bot operates on plus any bot-specific
+    config as the value. Returns {} if bots.json doesn't exist, since bots are optional.
+    '''
+
+    try:
+        with open("bots.json") as bots_source:
+            return json.load(bots_source)
+    except FileNotFoundError:
+        return {}
 
 def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     '''
@@ -252,7 +313,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     Runs all code required to update the client
     '''
 
-    sync_channels_from_env_file(CONN_DB_CURSOR)
+    sync_channels_from_file(CONN_DB_CURSOR)
 
     last_channels_timestamp = connect_object.get('lcts')
     if last_channels_timestamp is not None:
@@ -1330,7 +1391,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=False):
 
             for playerId in subscriber['enabled_player_ids']:
                 wps_logger("CHANNELS POST HANDLER", callsign, f"Sending push to {playerId}")
-                push_resp = send_push_notification('Channel Post Alert', 'New Post(s) in #' + channel_names[str(post['cid'])], playerId)
+                push_resp = send_push_notification('Channel Post Alert', 'New Post(s) in #' + get_channel_name(post['cid']), playerId)
                 wps_logger("CHANNELS POST HANDLER", callsign, f"Push response: {push_resp}")
 
                 if push_resp['result'] == 'failure':
@@ -1728,12 +1789,9 @@ def channel_list_handler(CONN_DB_CURSOR, request, callsign, CONN, only_if_newer=
     last_channels_timestamp = request.get('lcts', 0)
     count_only = request.get('co', 0) == 1
 
-    channels_response = dbGetChannels(CONN_DB_CURSOR)
-    close_connection(CONN_DB_CURSOR, callsign, CONN) if channels_response['result'] == 'failure' else None
-    channels_data = channels_response['data']
-
-    current_ts = channels_data['ts'] if channels_data else 0
-    current_channels = channels_data['channels'] if channels_data else {}
+    with CHANNELS_CACHE_LOCK:
+        current_ts = CHANNELS_CACHE['ts']
+        current_channels = CHANNELS_CACHE['channels']
 
     if only_if_newer and current_ts <= last_channels_timestamp:
         wps_logger("CHANNEL LIST HANDLER", callsign, f"Client channel list timestamp {last_channels_timestamp} is current, no update to send")
@@ -1747,7 +1805,8 @@ def channel_list_handler(CONN_DB_CURSOR, request, callsign, CONN, only_if_newer=
     if count_only:
         response["u"] = 1 if current_ts > last_channels_timestamp else 0
     else:
-        response["cl"] = [{"cid": int(cid), "n": name} for cid, name in current_channels.items()]
+        response["cg"] = current_channels.get("cg", [])
+        response["c"] = current_channels.get("c", [])
 
     wps_logger("CHANNEL LIST HANDLER", callsign, f"Channel list response: {response}")
     socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
@@ -2266,22 +2325,31 @@ def startup_and_listen():
     # Create the database tables, if they don't exist
     dbInit(global_cursor)
 
-    # Load the channel list from env.json into the database
-    sync_channels_from_env_file(global_cursor)
+    # Load the channel list from channels.json into the database
+    sync_channels_from_file(global_cursor)
 
-    # Load bots from env.json "bots": {"<cid>": "<module_name>", ...}
-    # Also support the legacy pacagotchiChannelId key for backwards compatibility.
-    bots_config = dict(env.get('bots', {}))
-    legacy_cid = env.get('pacagotchiChannelId', 0)
-    if legacy_cid and str(legacy_cid) not in bots_config:
-        bots_config[str(legacy_cid)] = 'pacagotchi'
+    # Load bots from bots.json - keyed by bot name, the Python module under the bots/ package
+    # to import, with an object holding the channel id (cid) the bot operates on plus any
+    # bot-specific config as the value. bots.json is the master: every key must have a matching
+    # bots/<name>.py module and a channels.json channel with that cid flagged "b": true.
+    bots_config = load_bots_config()
 
     global BOTS
     BOTS = {}  # cid (int) -> module
-    for cid_str, module_name in bots_config.items():
+    for bot_name, bot_config in bots_config.items():
         try:
-            mod = importlib.import_module(module_name)
-            cid = int(cid_str)
+            cid = bot_config['cid']
+
+            channel = get_channel(cid)
+            if channel is None:
+                raise Exception(f"no channel with cid {cid} found in channels.json")
+            if not channel.get('b'):
+                raise Exception(f"channel {cid} ('{channel.get('cn')}') is missing \"b\": true in channels.json")
+
+            if not os.path.isfile(os.path.join("bots", f"{bot_name}.py")):
+                raise Exception(f"bots/{bot_name}.py not found")
+
+            mod = importlib.import_module(f"bots.{bot_name}")
             mod.init(global_cursor)
             mod.start_tick_thread(
                 global_cursor,
@@ -2289,9 +2357,9 @@ def startup_and_listen():
                 cid,
             )
             BOTS[cid] = mod
-            print(f"{timestamp()} Bot '{module_name}' enabled on channel {cid}")
+            print(f"{timestamp()} Bot '{bot_name}' enabled on channel {cid}")
         except Exception as bot_init_e:
-            print(f"{timestamp()} ERROR: failed to load bot '{module_name}' on channel {cid_str}: {bot_init_e}")
+            print(f"{timestamp()} ERROR: failed to load bot '{bot_name}': {bot_init_e}")
 
     # Confirm users are subscribed to the default channels
     check_auto_subscriptions(global_cursor)
