@@ -232,10 +232,15 @@ def decompress_bytes(string_to_decompress):
     return decompressed
 
 CHANNELS_JSON_DEFAULT = {
-    "cg": [],
+    "cg": [
+        {
+            "cgid": 0,
+            "gn": "General"
+        }
+    ],
     "c": [
         {
-            "gid": None,
+            "cgid": 0,
             "cid": 0,
             "cn": "Lounge",
             "cd": "General discussion"
@@ -250,12 +255,12 @@ def sync_channels_from_file(CONN_DB_CURSOR):
     new connect so channels.json can be administered dynamically without needing to restart WPS.
 
     If channels.json doesn't exist (e.g. on first run), creates it with a single default
-    "Lounge" channel (cid 0, no group) before reading it.
+    "General" group containing one "Lounge" channel before reading it.
     '''
 
     if not os.path.exists("channels.json"):
-        print(f"{timestamp()} channels.json not found, creating default with a single Lounge channel")
-        wps_logger("CHANNELS SYNC", "-----", "channels.json not found, creating default with a single Lounge channel")
+        print(f"{timestamp()} channels.json not found, creating default with a General group and Lounge channel")
+        wps_logger("CHANNELS SYNC", "-----", "channels.json not found, creating default with a General group and Lounge channel")
         with open("channels.json", "w") as channels_out:
             json.dump(CHANNELS_JSON_DEFAULT, channels_out, indent=4)
 

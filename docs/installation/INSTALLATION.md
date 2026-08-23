@@ -117,18 +117,23 @@ Any new keys should first be added to `env.py`, which will automatically add the
 - `c` - the array of channels. Required
 - `cg` - the array of channel groups, used to organise channels in the client UI. Optional - omit or leave empty if you don't need grouping
 
-If `channels.json` doesn't exist when WPS starts (e.g. on first run), it's created automatically with a single "Lounge" channel (`cid` 0, no group) - the simplest possible setup, shown below. WPS reloads `channels.json` on every client connect, so it can then be edited to add, rename or remove channels and groups without restarting WPS.
+If `channels.json` doesn't exist when WPS starts (e.g. on first run), it's created automatically with a single "General" group containing one "Lounge" channel (`cid` 0) - the simplest possible setup, shown below. WPS reloads `channels.json` on every client connect, so it can then be edited to add, rename or remove channels and groups without restarting WPS.
 
 ### Sample `channels.json`
 
-The default created on first run - a single channel assigned to no group:
+The default created on first run - one group containing one channel:
 
 ```json
 {
-    "cg": [],
+    "cg": [
+        {
+            "cgid": 0,
+            "gn": "General"
+        }
+    ],
     "c": [
         {
-            "gid": null,
+            "cgid": 0,
             "cid": 0,
             "cn": "Lounge",
             "cd": "General discussion"
@@ -150,7 +155,7 @@ For grouping channels, adding auto-subscribed or read-only channels, or linking 
 |`backup.py`|Run to create a JSON file containing every user, message and post object in the database. Reads `env.json` to determine the database filename from `dbFilename`. Any Sqlite supported backup method would also be valid|
 |`env.py`|Used to create env.json with a default configuration if it doesn't exist, or, check all required keys are present and add any new or that are missing|
 |`env.json`|Environment configuration variables|
-|`channels.json`|Channel groups and channel definitions. Created automatically with a single default "Lounge" channel if it doesn't exist. See [Protocol - Channels](/docs/protocol/CHANNELS.md#type-chl---channel-list)|
+|`channels.json`|Channel groups and channel definitions. Created automatically with a default "General" group and "Lounge" channel if it doesn't exist. See [Protocol - Channels](/docs/protocol/CHANNELS.md#type-chl---channel-list)|
 |`bots/bots.json`|Registers channel bots, keyed by bot name with an object holding the channel id (`cid`) they respond on plus any bot-specific config as the value. Only loaded if `enableBots` is `true` in `env.json`. See the [Bots section in the README](/README.md#bots)|
 |`bots/`|Directory containing bot Python modules, one file per bot named to match its key in `bots/bots.json`|
 |`bpq_queue_monitor.py`|Run this file separately to query the BPQ API for AX.25 queue information. Requires setup and enabling in `env.json`|
