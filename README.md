@@ -52,6 +52,7 @@ Links to documentation in the `/docs` directory
 - **Delivery Receipts:** WPS responds to new and edited messages and posts with a delivery receipt, guaranteeing server delivery
 - **Version Control:** Advise the client a new software version is available, configurable within WPS in real-time
 - **User Avatars:** Attach custom avatars / images
+- **BOT Framework:** Build custom BOTs that integrate with channels
 
 ## Server Capabilities
 - **Compression:** WPS compresses every packet before sending, then sends whichever of the compressed or uncompressed version is shorter
