@@ -31,8 +31,9 @@ if env['notificationsEnabled']:
 else:
     print(f"{timestamp()} Push Notifications: Disabled")
 
-print(f"{timestamp()} WPS Event Logging: {'Enabled' if env['events']['enableWpsEvents'] else 'Disabled'}")
-print(f"{timestamp()} BPQ Queue Monitoring: {'Enabled' if env['events']['enableBpqEvents'] else 'Disabled'}")
+print(f"{timestamp()} WPS Event Logging: {'Enabled' if env.get('events', {}).get('enableWpsEvents', False) else 'Disabled'}")
+print(f"{timestamp()} BPQ Queue Monitoring: {'Enabled' if env.get('events', {}).get('enableBpqEvents', False) else 'Disabled'}")
+print(f"{timestamp()} Bots: {'Enabled' if env.get('enableBBots', False) else 'Disabled'}")
 
 # TCP Socket Setup
 HOST = '0.0.0.0'
@@ -2345,9 +2346,7 @@ def startup_and_listen():
     global BOTS
     BOTS = {}  # cid (int) -> module
 
-    if not env.get('enableBots', False):
-        print(f"{timestamp()} Bots: Disabled")
-    else:
+    if env.get('enableBots', False):
         bots_config = load_bots_config()
 
         for bot_name, bot_config in bots_config.items():
