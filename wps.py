@@ -2347,11 +2347,11 @@ def startup_and_listen():
     # package to import, with an object holding the channel id (cid) the bot operates on plus
     # any bot-specific config as the value. bots/bots.json is the master: every key must have a
     # matching bots/<name>.py module and a channels.json channel with that cid flagged "b": true.
-    # Only loaded and processed at all if enableBots is set in env.json.
+    # Only loaded and processed at all if botsEnabled is set in env.json.
     global BOTS
     BOTS = {}  # cid (int) -> module
 
-    if env.get('enableBots', False):
+    if env.get('botsEnabled', False):
         bots_config = load_bots_config()
 
         for bot_name, bot_config in bots_config.items():

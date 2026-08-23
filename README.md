@@ -150,7 +150,7 @@ send(`${JSON.stringify(samplePost)}\r\n`)
 
 WPS includes a lightweight bot framework that allows channel bots to be added without modifying the core WPS code. Each bot is a self-contained Python module placed in the `bots/` directory.
 
-Bots are only loaded if `enableBots` is set to `true` in `env.json` - when `false` (the default), `bots/bots.json` is not read and no bots are started.
+Bots are only loaded if `botsEnabled` is set to `true` in `env.json` - when `false` (the default), `bots/bots.json` is not read and no bots are started.
 
 `bots/bots.json` is the master record of which bots are active. For every key in `bots/bots.json`, WPS expects:
 - A matching `bots/<name>.py` module
@@ -162,7 +162,7 @@ If either is missing, WPS logs an error at startup and skips loading that bot.
 
 Pacagotchi is a Tamagotchi-style pet that lives in a WPS channel and is cared for collectively by everyone on the network.
 
-**Setup:** `enableBots` must be `true` in `env.json`, its channel in `channels.json` must be flagged `"b": true`, and it must be registered in `bots/bots.json`, keyed by bot name (the module under `bots/` to import). The `bots/bots.json` value is an object holding at least the channel id (`cid`) it should respond on - the bot also reads its parameters from here:
+**Setup:** `botsEnabled` must be `true` in `env.json`, its channel in `channels.json` must be flagged `"b": true`, and it must be registered in `bots/bots.json`, keyed by bot name (the module under `bots/` to import). The `bots/bots.json` value is an object holding at least the channel id (`cid`) it should respond on - the bot also reads its parameters from here:
 
 ```json
 {
@@ -251,4 +251,4 @@ def handle_command(cursor, post_text, from_callsign):
 }
 ```
 
-4. Ensure `enableBots` is `true` in `env.json`, then restart WPS — the bot is loaded automatically with no other changes required.
+4. Ensure `botsEnabled` is `true` in `env.json`, then restart WPS — the bot is loaded automatically with no other changes required.

@@ -73,7 +73,7 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`notificationsEnabled`|Boolean|`false`|Set to `true` if `notificationsProdId` and `notificationsProdRestKey` are configured and you want to enable notifications|
 |`notificationsProdId`|String|`""`|Add the Id of your OneSignal Service|
 |`notificationsProdRestKey`|String|`""`|Add the REST API key of your OneSignal Service|
-|`enableBots`|Boolean|`false`|Set to `true` to load and run channel bots from `bots/bots.json` on startup. When `false`, bots are not loaded or processed at all, regardless of `bots/bots.json`'s contents|
+|`botsEnabled`|Boolean|`false`|Set to `true` to load and run channel bots from `bots/bots.json` on startup. When `false`, bots are not loaded or processed at all, regardless of `bots/bots.json`'s contents|
 |`autoSubscribeToChannelIds`|Array|`[]`|Add any channel ids required for auto subscription. WPS will check all users are subscribed to these channels on startup|
 |`maxNewPostsToReturnPerChannelOnConnect`|Number|`100`|During connect, if total number of posts to return to the client for a given channel is more than this number, return paused channel headers only via `pch`
 |`events`|Object|`{}`|Contains the configuration settings for WPS event logging|
@@ -105,7 +105,7 @@ Any new keys should first be added to `env.py`, which will automatically add the
     "notificationsEnabled": false,
     "notificationsProdId": "",
     "notificationsProdRestKey": "",
-    "enableBots": false,
+    "botsEnabled": false,
     "autoSubscribeToChannelIds": [100, 1],
     "maxNewPostsToReturnPerChannelOnConnect": 100
 }
@@ -156,7 +156,7 @@ For grouping channels, adding auto-subscribed or read-only channels, or linking 
 |`env.py`|Used to create env.json with a default configuration if it doesn't exist, or, check all required keys are present and add any new or that are missing|
 |`env.json`|Environment configuration variables|
 |`channels.json`|Channel groups and channel definitions. Created automatically with a default "General" group and "Lounge" channel if it doesn't exist. See [Protocol - Channels](/docs/protocol/CHANNELS.md#type-chl---channel-list)|
-|`bots/bots.json`|Registers channel bots, keyed by bot name with an object holding the channel id (`cid`) they respond on plus any bot-specific config as the value. Only loaded if `enableBots` is `true` in `env.json`. See the [Bots section in the README](/README.md#bots)|
+|`bots/bots.json`|Registers channel bots, keyed by bot name with an object holding the channel id (`cid`) they respond on plus any bot-specific config as the value. Only loaded if `botsEnabled` is `true` in `env.json`. See the [Bots section in the README](/README.md#bots)|
 |`bots/`|Directory containing bot Python modules, one file per bot named to match its key in `bots/bots.json`|
 |`bpq_queue_monitor.py`|Run this file separately to query the BPQ API for AX.25 queue information. Requires setup and enabling in `env.json`|
 

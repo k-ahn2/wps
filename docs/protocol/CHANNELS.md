@@ -522,7 +522,7 @@ Check whether an update is available, without downloading the full list
 |Group Id (Ungrouped)|`gid`|`null`|null|Present instead of `cgid`, and always `null`, when the channel doesn't belong to a channel group|
 |Auto Subscribe|`as`|`true`|Boolean|If present and `true`, clients should auto-subscribe users to this channel|
 |Read Only|`ro`|`true`|Boolean|If present and `true`, the channel is read-only - e.g. announcements posted by the server|
-|Bot|`b`|`true`|Boolean|If present and `true`, this channel is bot-managed. `bots/bots.json` is the master record of active bots - for each key there, WPS requires a channel here with the matching `cid` flagged `"b": true`, and a `bots/<name>.py` module. Bots are only loaded if `enableBots` is `true` in `env.json`. See [Bots in the README](/README.md#bots)|
+|Bot|`b`|`true`|Boolean|If present and `true`, this channel is bot-managed. `bots/bots.json` is the master record of active bots - for each key there, WPS requires a channel here with the matching `cid` flagged `"b": true`, and a `bots/<name>.py` module. Bots are only loaded if `botsEnabled` is `true` in `env.json`. See [Bots in the README](/README.md#bots)|
 
 ### JSON Example
 

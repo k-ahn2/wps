@@ -23,7 +23,7 @@ env_template = {
     "notificationsEnabled": False,
     "notificationsProdId": "",
     "notificationsProdRestKey": "",
-    "enableBots": False,
+    "botsEnabled": False,
     "autoSubscribeToChannelIds": [],
     "maxNewPostsToReturnPerChannelOnConnect": 100,
     "wpsLoggingEnabled": True,
