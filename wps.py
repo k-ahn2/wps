@@ -33,7 +33,7 @@ else:
 
 print(f"{timestamp()} WPS Event Logging: {'Enabled' if env.get('events', {}).get('enableWpsEvents', False) else 'Disabled'}")
 print(f"{timestamp()} BPQ Queue Monitoring: {'Enabled' if env.get('events', {}).get('enableBpqEvents', False) else 'Disabled'}")
-print(f"{timestamp()} Bots: {'Enabled' if env.get('enableBBots', False) else 'Disabled'}")
+print(f"{timestamp()} Bots: {'Enabled' if env.get('botsEnabled', False) else 'Disabled'}")
 
 # TCP Socket Setup
 HOST = '0.0.0.0'
