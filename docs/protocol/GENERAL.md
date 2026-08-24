@@ -464,7 +464,7 @@ Fetch Server Stats, as defined in `stats.py`
 ```json
 {
    "h": { // headers, can include any key / value pair defined
-      "uculsd": 1 // Unique Connecting Users Last Seven Days 
+      "uculsd": 1 // Unique Connecting Users Last Seven Days
    }, 
    "p": [], // post stats
    "m": [], // message stats
@@ -538,6 +538,14 @@ All stats arrays (`p`, `m`, `s`) return objects with two keys:
          {
                "s": "Bytes Sent Previous 30 Days",
                "v": 4210504
+         },
+         {
+               "s": "Max Concurrent Users All Time",
+               "v": "5 on 24-08-2026"
+         },
+         {
+               "s": "Max Concurrent Users Last 7 Days",
+               "v": 3
          }
       ]
     }
