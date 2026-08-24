@@ -229,7 +229,7 @@ def _render(state):
             lines.append("*** HUNGRY - use /feed ***")
         if pp >= 3:
             lines.append("*** DIRTY - use /clean ***")
-    return "\n".join(lines)
+    return "```\n" + "\n".join(lines) + "\n```"
 
 def _bump_caretaker(state, callsign):
     ct = state.get("caretakers", {})
