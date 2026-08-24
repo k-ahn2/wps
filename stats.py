@@ -26,6 +26,39 @@ def dbGetStats():
         CAST(json_extract(user, '$.last_connected') AS INTEGER) >= strftime('%s','now','localtime','-7 days')
         AND CAST(json_extract(user, '$.last_connected') AS INTEGER) < strftime('%s','now','localtime')
     """
+
+    max_concurrent_users_all_time_query = """
+    SELECT
+        GROUP_CONCAT(
+            peak_total || ' on ' || peak_date,
+            ', '
+        ) AS statistic
+    FROM (
+        SELECT
+            json_extract(event, '$.e.total') AS peak_total,
+            strftime(
+                '%d-%m-%Y',
+                ROUND(json_extract(event, '$.ts') / 1000),
+                'unixepoch',
+                'localtime'
+            ) AS peak_date
+        FROM events
+        WHERE json_extract(event, '$.et') = 'USER_CONNECT'
+        ORDER BY
+            json_extract(event, '$.e.total') DESC,
+            json_extract(event, '$.ts') DESC
+        LIMIT 1
+    );"""
+
+    max_concurrent_users_last_7_days_query = """
+        SELECT
+        MAX(json_extract(event, '$.e.total')) AS "Statistic"
+    FROM events
+    WHERE
+        json_extract(event, '$.et') = 'USER_CONNECT'
+        AND CAST(json_extract(event, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-7 days') * 1000
+        AND CAST(json_extract(event, '$.ts') AS INTEGER) < strftime('%s','now','localtime') * 1000
+    """
     
     posts_select_query = f"""
     SELECT  
@@ -266,6 +299,18 @@ def dbGetStats():
             
             for row in cursor:                
                 result["h"]["uculsd"] = row[0]
+
+            cursor.execute(max_concurrent_users_all_time_query)
+            conn.commit()            
+            
+            for row in cursor:                
+                result["h"]["mcuat"] = row[0]
+
+            cursor.execute(max_concurrent_users_last_7_days_query)
+            conn.commit()            
+            
+            for row in cursor:                
+                result["h"]["mcultsd"] = row[0]
             
             cursor.execute(posts_select_query)
             conn.commit()
