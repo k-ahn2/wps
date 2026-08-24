@@ -38,7 +38,7 @@ def _c(key, default):
 TICK_INTERVAL            = _c("tick_interval",           300)
 AGE_JUVENILE             = _c("age_juvenile",            3600)
 AGE_ADULT                = _c("age_adult",               172800)
-HUNGER_DROP_PER_TICK     = _c("hunger_drop_per_tick",    1.67)
+HUNGER_DROP_PER_TICK     = _c("hunger_drop_per_tick",    2)
 HAPPINESS_DROP_BORED     = _c("happiness_drop_bored",    2)
 HEALTH_DROP_STARVING     = _c("health_drop_starving",    4)
 HEALTH_DROP_DIRTY        = _c("health_drop_dirty",       2)
@@ -214,7 +214,7 @@ def _render(state):
     lines = [
         f"=== {name} the {type_name} ===",
         art,
-        f"Stage: {stage_n} | Mood: {mood.upper()}",
+        f"Stage: {stage_n} | Age: {age_m}m | Mood: {mood.upper()}",
         f"Health:    {_bar(hp)} {hp}%",
         f"Hunger:    {_bar(hu)} {hu}%",
         f"Happiness: {_bar(hap)} {hap}%",
@@ -229,7 +229,7 @@ def _render(state):
             lines.append("*** HUNGRY - use /feed ***")
         if pp >= 3:
             lines.append("*** DIRTY - use /clean ***")
-    return "```\n" + "\n".join(lines) + "\n```"
+    return "\n".join(lines)
 
 def _bump_caretaker(state, callsign):
     ct = state.get("caretakers", {})
@@ -285,11 +285,9 @@ def tick(cursor, broadcast_fn, channel_id, fallback_fc="PACBOT"):
     # Poop accumulation (every N ticks; slower asleep)
     tick_ctr = state.get("poop_tick_ctr", 0) + 1
     effective_poop_ticks = round(POOP_RISE_EVERY_N_TICKS / m)  # longer cycle asleep
+    state["poop_tick_ctr"] = tick_ctr % effective_poop_ticks
     if tick_ctr >= effective_poop_ticks:
-        state["poop_tick_ctr"] = 0
         state["poop_level"] = min(5, state["poop_level"] + 1)
-    else:
-        state["poop_tick_ctr"] = tick_ctr
 
     # Poop illness trigger
     if state["poop_level"] >= 4 and state.get("ill_since") is None:
