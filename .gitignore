@@ -8,3 +8,8 @@ test.py
 *.log.*
 *.old
 .vscode/*
+wps.db*
+wps_dev*
+misc/10k.py
+bots/*
+channels.json

@@ -23,28 +23,9 @@ env_template = {
     "notificationsEnabled": False,
     "notificationsProdId": "",
     "notificationsProdRestKey": "",
+    "botsEnabled": False,
     "autoSubscribeToChannelIds": [],
     "maxNewPostsToReturnPerChannelOnConnect": 100,
-    "channels": {},
-    "bots": {},
-    "pacagotchiChannelId": 0,
-    "pacagotchi": {
-        "tick_interval":          300,
-        "age_juvenile":           3600,
-        "age_adult":              172800,
-        "hunger_drop_per_tick":   2,
-        "happiness_drop_bored":   2,
-        "health_drop_starving":   4,
-        "health_drop_dirty":      2,
-        "health_drop_ill_late":   8,
-        "sleep_tick_multiplier":  0.25,
-        "auto_sleep_after":       10800,
-        "sleep_min_hours":        6,
-        "sleep_max_hours":        10,
-        "poop_rise_every_n_ticks": 7,
-        "junk_illness_threshold": 3,
-        "ill_death_timeout":      10800
-    },
     "wpsLoggingEnabled": True,
     "dbLoggingEnabled": True,
     "daysToRetainLogFiles": 5,
@@ -55,7 +36,7 @@ env_template = {
         "telnetUsername": "sysop",
         "telnetPassword": "",
         "enabledCallsignsToReceiveServiceNotifications": []
-    }
+    },
 }
 
 if os.path.exists("env.json"):
@@ -75,6 +56,5 @@ if os.path.exists("env.json"):
             json.dump(env, f, indent=4)
 else:
     print("env.json not found, creating default env.json")
-    env = env_template
     with open("env.json", "w") as f:
         json.dump(env_template, f, indent=4)

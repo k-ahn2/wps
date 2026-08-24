@@ -7,6 +7,7 @@ import socket
 import json
 import zlib, base64
 import importlib
+import os
 from events import *
 from stats import *
 
@@ -30,8 +31,9 @@ if env['notificationsEnabled']:
 else:
     print(f"{timestamp()} Push Notifications: Disabled")
 
-print(f"{timestamp()} WPS Event Logging: {'Enabled' if env['events']['enableWpsEvents'] else 'Disabled'}")
-print(f"{timestamp()} BPQ Queue Monitoring: {'Enabled' if env['events']['enableBpqEvents'] else 'Disabled'}")
+print(f"{timestamp()} WPS Event Logging: {'Enabled' if env.get('events', {}).get('enableWpsEvents', False) else 'Disabled'}")
+print(f"{timestamp()} BPQ Queue Monitoring: {'Enabled' if env.get('events', {}).get('enableBpqEvents', False) else 'Disabled'}")
+print(f"{timestamp()} Bots: {'Enabled' if env.get('botsEnabled', False) else 'Disabled'}")
 
 # TCP Socket Setup
 HOST = '0.0.0.0'
@@ -44,9 +46,24 @@ ALL_THREADS = []
 
 # Global TCP Connections Array
 CONNECTIONS = []
+CONNECTIONS_LOCK = threading.Lock()
+
+def connections_snapshot():
+    '''
+    Returns a shallow copy of CONNECTIONS, safe to iterate without
+    racing concurrent appends/removals from other threads.
+    '''
+    with CONNECTIONS_LOCK:
+        return list(CONNECTIONS)
 
 # Bot modules keyed by channel id (int), populated at startup
 BOTS = {}
+
+# In-memory cache of the entire contents of channels.json plus the timestamp it was last
+# changed, shared by all connections. Populated at startup and refreshed on every new connect
+# via sync_channels_from_file, so all connections see updates without a DB round trip.
+CHANNELS_CACHE = {"channels": {"cg": [], "c": []}, "ts": 0}
+CHANNELS_CACHE_LOCK = threading.Lock()
 
 # String to return when someone manually connects and sends unknown text
 invalid_connect_reponse = """Welcome to WPS\r
@@ -54,9 +71,6 @@ I didn't recognise that command and guess you have connected manually.\r
 To use this service you need to connect using the WhatsPac Client - head to http://whatspac.oarc.uk and follow the instructions there.\r
 You'll now be disconnected, thanks!\r
 """
-
-# Channel names for push notifcations
-channel_names = env['channels']
 
 # Compression delimiter as received from the client
 # che(192) is sent, split into two bytes by the encoding and received as chr(195) and chr(128)
@@ -217,6 +231,87 @@ def decompress_bytes(string_to_decompress):
     decompressed = zlib.decompress(string_to_decompress).decode('utf-8')
     return decompressed
 
+CHANNELS_JSON_DEFAULT = {
+    "cg": [
+        {
+            "cgid": 0,
+            "gn": "General"
+        }
+    ],
+    "c": [
+        {
+            "cgid": 0,
+            "cid": 0,
+            "cn": "Lounge",
+            "cd": "General discussion"
+        }
+    ]
+}
+
+def sync_channels_from_file(CONN_DB_CURSOR):
+    '''
+    Re-reads channels.json and, if it has changed since the last sync, updates the channels
+    table and the shared CHANNELS_CACHE with a fresh timestamp. Called on startup and on every
+    new connect so channels.json can be administered dynamically without needing to restart WPS.
+
+    If channels.json doesn't exist (e.g. on first run), creates it with a single default
+    "General" group containing one "Lounge" channel before reading it.
+    '''
+
+    if not os.path.exists("channels.json"):
+        print(f"{timestamp()} channels.json not found, creating default with a General group and Lounge channel")
+        wps_logger("CHANNELS SYNC", "-----", "channels.json not found, creating default with a General group and Lounge channel")
+        with open("channels.json", "w") as channels_out:
+            json.dump(CHANNELS_JSON_DEFAULT, channels_out, indent=4)
+
+    channels_source = open("channels.json")
+    current_channels = json.load(channels_source)
+    channels_source.close()
+
+    sync_response = dbSyncChannels(CONN_DB_CURSOR, current_channels)
+    if sync_response['result'] == 'failure':
+        wps_logger("CHANNELS SYNC", "-----", f"Failed to sync channels from channels.json: {sync_response}", "ERROR")
+        return sync_response
+
+    with CHANNELS_CACHE_LOCK:
+        CHANNELS_CACHE['channels'] = sync_response['data']['channels']
+        CHANNELS_CACHE['ts'] = sync_response['data']['ts']
+
+    return sync_response
+
+def get_channel(cid):
+    '''
+    Looks up a channel object by cid from CHANNELS_CACHE. Returns None if the channel isn't found.
+    '''
+
+    with CHANNELS_CACHE_LOCK:
+        channels = CHANNELS_CACHE['channels']['c']
+
+    return next((channel for channel in channels if channel['cid'] == cid), None)
+
+def get_channel_name(cid):
+    '''
+    Looks up a channel's display name (cn) by cid from CHANNELS_CACHE. Returns None if the
+    channel isn't found.
+    '''
+
+    channel = get_channel(cid)
+    return channel['cn'] if channel else None
+
+def load_bots_config():
+    '''
+    Reads bots/bots.json - keyed by bot name (the Python module under the bots/ package to
+    import), with an object holding the channel id (cid) the bot operates on plus any
+    bot-specific config as the value. Returns {} if bots/bots.json doesn't exist, since bots
+    are optional.
+    '''
+
+    try:
+        with open(os.path.join("bots", "bots.json")) as bots_source:
+            return json.load(bots_source)
+    except FileNotFoundError:
+        return {}
+
 def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     '''
     Receives type `c` JSON from client
@@ -224,6 +319,12 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     Returns connnect header in response, showing new message and post counts
     Runs all code required to update the client
     '''
+
+    sync_channels_from_file(CONN_DB_CURSOR)
+
+    last_channels_timestamp = connect_object.get('lcts')
+    if last_channels_timestamp is not None:
+        channel_list_handler(CONN_DB_CURSOR, { "lcts": last_channels_timestamp }, callsign, CONN, only_if_newer=True)
 
     event_logger(timestamp_milliseconds(), 'USER_CONNECT', callsign, { "total": len(CONNECTIONS) }, None)
 
@@ -272,7 +373,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
         wps_logger("CONNECT HANDLER", callsign, "Existing user found")         
 
     wps_logger("CONNECT HANDLER", callsign, "All connections:")
-    for c in CONNECTIONS:
+    for c in connections_snapshot():
         wps_logger("CONNECT HANDLER", callsign, f"Connection: {c['callsign']}")
 
     ###
@@ -305,7 +406,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     # Tell all the other connected users about the new connection
     # This is only announced after recieving the connect object from the client
     wps_logger("CONNECT HANDLER", callsign, f"Telling connected users about new connection from {callsign}")
-    for C in CONNECTIONS:
+    for C in connections_snapshot():
         if C['callsign'] == callsign:
             continue
         wps_logger("CONNECT HANDLER", callsign, f"Informing {C['callsign']} that {callsign} has connected")
@@ -322,7 +423,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     wps_logger("CONNECT HANDLER", callsign, f"Telling {callsign} about existing connections")
     online_response = { "t": "o", "o": [] }
 
-    for C in CONNECTIONS:
+    for C in connections_snapshot():
         online_response["o"].append(C['callsign'])
 
     if len(online_response["o"]) > 0:
@@ -999,7 +1100,7 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
             
         sent_in_real_time = False
         # If the recipient is connected, send the message in real-time
-        for C in CONNECTIONS:
+        for C in connections_snapshot():
             wps_logger("MESSAGE HANDLER", callsign, f"Connections {C['callsign']}")
             # Attempt to find the recipient in active connections
             if C['callsign'] == message['tc']:
@@ -1108,7 +1209,7 @@ def message_edit_handler(CONN_DB_CURSOR, msg_update, callsign, CONN):
         "m": msg_update['m']
     }
 
-    for C in CONNECTIONS:
+    for C in connections_snapshot():
         if C['callsign'] == edited_message['tc']:
             wps_logger("MESSAGE HANDLER", callsign, f"{edited_message['tc']} is logged in, sending in real-time")
             wps_logger("MESSAGE HANDLER", callsign, f"Sending to: {C['socket']}")
@@ -1158,7 +1259,7 @@ def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
     
     real_time_resp = { "t": "mem", "_id": emoji_object['_id'], "e": updated_emojis, "ets": emoji_object['ets'] }
 
-    for C in CONNECTIONS:
+    for C in connections_snapshot():
         if C['callsign'] == message_to_update['fc']:
             wps_logger("MESSAGE EMOJI HANDLER", callsign, f"{message_to_update['fc']} is logged in, sending emoji update in real-time")
             # socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, real_time_resp)
@@ -1234,7 +1335,7 @@ def ham_enquiry_handler(CONN_DB_CURSOR, ham_enquiry, callsign, CONN):
     socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
     return  
 
-def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
+def post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=False):
     '''
     Handles when the user sends a new post to a channel
     Either sends in real-time to connected subscribers, or, sends the user a push notification if setup
@@ -1255,7 +1356,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
     try:
         delivery_timestamp = round(time.time()*1000)
         
-        client_response = {
+        delivery_receipt = {
             "t": "cpr",
             "ts": post['ts'],
             "dts": delivery_timestamp
@@ -1263,7 +1364,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
 
         if post_search != None and post_search['p'] == post['p']:
             wps_logger("CHANNELS POST HANDLER", callsign, "Existing post found and posted text the same, not inserting again")
-            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, delivery_receipt) if not suppress_cpr else None
             return
         else:
             wps_logger("CHANNELS POST HANDLER", callsign, "No existing post found, inserting")
@@ -1273,12 +1374,19 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
             post_insert_response = dbInsertPost(CONN_DB_CURSOR, post_to_insert)
             close_connection(CONN_DB_CURSOR, callsign, CONN) if post_insert_response['result'] == 'failure' else None
             wps_logger("CHANNELS POST HANDLER", callsign, f"Post insert acknowledgment is {post_insert_response}")
-            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
-        
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, delivery_receipt) if not suppress_cpr else None
+
+        # Get the channel subscribers
+        # Gets an array of subscriber objects with callsign and push settings
+        subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
+        close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_response['result'] == 'failure' else None
+        subscribers = subscribers_response['data']
+
         # Deliver to connected subscribers and collect push candidates
-        sent_post_in_real_time, subscribers = _broadcast_post_to_channel(
-            CONN_DB_CURSOR, post, exclude_callsign=callsign
+        sent_post_in_real_time = broadcast_post_handler(
+            CONN_DB_CURSOR, subscribers, post, callsign, CONN
         )
+
         wps_logger("CHANNELS POST HANDLER", callsign, f"Sent real-time to: {sent_post_in_real_time}")
 
         # Push notifications for offline subscribers
@@ -1297,7 +1405,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
 
             for playerId in subscriber['enabled_player_ids']:
                 wps_logger("CHANNELS POST HANDLER", callsign, f"Sending push to {playerId}")
-                push_resp = send_push_notification('Channel Post Alert', 'New Post(s) in #' + channel_names[str(post['cid'])], playerId)
+                push_resp = send_push_notification('Channel Post Alert', 'New Post(s) in #' + get_channel_name(post['cid']), playerId)
                 wps_logger("CHANNELS POST HANDLER", callsign, f"Push response: {push_resp}")
 
                 if push_resp['result'] == 'failure':
@@ -1312,7 +1420,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
         bot = BOTS.get(post['cid'])
         if bot and post.get('p', '').startswith('/'):
             try:
-                bot_resp = bot.handle_command(db.cursor(), post['p'], callsign)
+                bot_resp = bot.handle_command(get_db_connection().cursor(), post['p'], callsign)
                 if bot_resp:
                     bot_broadcast_to_channel(CONN_DB_CURSOR, post['cid'], bot_resp['text'], bot_resp['fc'])
             except Exception as bot_e:
@@ -1322,6 +1430,50 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN):
 
     except Exception as e:
         wps_logger("CHANNELS POST HANDLER", callsign, f"Error {e}")
+
+def broadcast_post_handler(CONN_DB_CURSOR, subscribers, post, callsign, CONN):
+    '''
+    Deliver an already-inserted post to all connected, subscribed, non-paused,
+    online users — except exclude_callsign (the sender, who already got a cpr).
+    Returns the list of callsigns sent to in real-time, and the full subscribers list.
+    '''
+
+    # Creates an array of subscriber callsigns only
+    subscribers_callsigns = [s['callsign'] for s in subscribers]
+    wps_logger("CHANNELS POST HANDLER", callsign, f"Channel Subscribers: {subscribers_callsigns}")
+
+    # Get the list of callsigns who have this channel paused
+    # Creates an array of callsigns who have paused the channel
+    paused_callsigns_response = dbPausedCallsignsForChannel(CONN_DB_CURSOR, post['cid'])
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if paused_callsigns_response['result'] == 'failure' else None
+    paused_callsigns = paused_callsigns_response['data']
+    wps_logger("CHANNELS POST HANDLER", callsign, f"Channel Paused Subscribers: {paused_callsigns}")
+
+    sent_post_in_real_time = []
+
+    connections_now = connections_snapshot()
+
+    # Send to connected subscribers in real time
+    wps_logger("CHANNELS POST HANDLER", callsign, f"Connections {[item['callsign'] for item in connections_now]}")
+
+    # Process active connections
+    # If a connected callsign is a subscriber to the channel and doesn't have the channel paused, send the post in real-time
+    for C in connections_now:
+        if C['callsign'] != post['fc'] and C['callsign'] in subscribers_callsigns:
+            if C['callsign'] in paused_callsigns:
+                wps_logger("CHANNELS POST HANDLER", callsign, f"{C['callsign']} has channel paused, skipping real-time send")
+                continue
+            wps_logger("CHANNELS POST HANDLER", callsign, f"Sending real-time to: {C['callsign']}")
+            # socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, post)
+            socket_send_handler_other_connected_user(CONN_DB_CURSOR,
+                                                    sending_callsign=callsign,
+                                                    sending_connection=CONN,
+                                                    receiving_callsign=C['callsign'],
+                                                    receiving_connection=C['socket'],
+                                                    payload=post)
+            sent_post_in_real_time.append(C['callsign'])
+
+    return sent_post_in_real_time
 
 def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
     '''
@@ -1359,7 +1511,7 @@ def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
     channel_subscriber_objects = channel_subscribers_response['data']
     subscribing_callsigns = [s['callsign'] for s in channel_subscriber_objects]
 
-    for C in CONNECTIONS:
+    for C in connections_snapshot():
         if C['callsign'] != callsign and C['callsign'] in subscribing_callsigns:
             wps_logger("MESSAGE HANDLER", callsign, f"Sending to: {C['callsign']}")
             # socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, update_to_connected_clients)
@@ -1435,7 +1587,7 @@ def post_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
 
     emoji_object['fc'] = callsign
     
-    for C in CONNECTIONS:
+    for C in connections_snapshot():
         if C['callsign'] != callsign and C['callsign'] in subscribing_callsigns:
             wps_logger("CHANNELS EMOJI HANDLER", callsign, f"Sending to: {C['callsign']}")
             # socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, emoji_object)
@@ -1632,6 +1784,41 @@ def stats_handler(CONN_DB_CURSOR, callsign, CONN):
 
     socket_send_handler(CONN_DB_CURSOR, CONN, callsign, stats_response)
 
+def channel_list_handler(CONN_DB_CURSOR, request, callsign, CONN, only_if_newer=False):
+    '''
+    Returns the current channel list and its timestamp.
+    If `co` (Count Only) is set, skips the full list and just tells the client whether the
+    server's channel list is newer than the `lcts` timestamp the client already holds.
+    If only_if_newer is True, sends nothing at all unless the server's channel list is newer
+    than `lcts` - used when called unsolicited from connect_handler, so the client only
+    receives a channel list there when it actually needs one.
+    '''
+
+    last_channels_timestamp = request.get('lcts', 0)
+    count_only = request.get('co', 0) == 1
+
+    with CHANNELS_CACHE_LOCK:
+        current_ts = CHANNELS_CACHE['ts']
+        current_channels = CHANNELS_CACHE['channels']
+
+    if only_if_newer and current_ts <= last_channels_timestamp:
+        wps_logger("CHANNEL LIST HANDLER", callsign, f"Client channel list timestamp {last_channels_timestamp} is current, no update to send")
+        return
+
+    response = {
+        "t": "chl",
+        "ts": current_ts
+    }
+
+    if count_only:
+        response["u"] = 1 if current_ts > last_channels_timestamp else 0
+    else:
+        response["cg"] = current_channels.get("cg", [])
+        response["c"] = current_channels.get("c", [])
+
+    wps_logger("CHANNEL LIST HANDLER", callsign, f"Channel list response: {response}")
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
+
 def keep_alive_handler(CONN_DB_CURSOR, callsign, CONN):
     '''
     Handles when the user sends a keep alive packet
@@ -1654,28 +1841,30 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     print(f"{timestamp()} {callsign} disconnected")
     disconnect_timestamp = round(time.time())
 
-    wps_logger("DISCONNECT HANDLER", callsign, f"All connections BEFORE disconnect: {[c['callsign'] for c in CONNECTIONS]}")
+    wps_logger("DISCONNECT HANDLER", callsign, f"All connections BEFORE disconnect: {[c['callsign'] for c in connections_snapshot()]}")
 
-    # Only disconnect/remove the specific socket that triggered this handler.
-    # This prevents a stale thread (from an old socket) from disconnecting a new active socket
-    # that has the same callsign.
-    matching_connection_indexes = [
-        i for i, c in enumerate(CONNECTIONS)
-        if c.get('callsign') == callsign and c.get('socket') is CONN
-    ]
-    had_matching_connection = len(matching_connection_indexes) > 0
-    
     try:
         CONN.shutdown(socket.SHUT_RDWR)
         CONN.close()
     except Exception as e:
         wps_logger("DISCONNECT HANDLER", callsign, f"Socket shutdown exception {e} happened")
 
-    # Remove only this specific connection from the active connections list.
-    for key in reversed(matching_connection_indexes):
-        del CONNECTIONS[key]
+    # Only disconnect/remove the specific socket that triggered this handler.
+    # This prevents a stale thread (from an old socket) from disconnecting a new active socket
+    # that has the same callsign. Locate and remove it, and count any remaining
+    # connections for this callsign, as a single atomic operation so the count
+    # can't be skewed by a concurrent append/removal from another thread.
+    with CONNECTIONS_LOCK:
+        matching_connection_indexes = [
+            i for i, c in enumerate(CONNECTIONS)
+            if c.get('callsign') == callsign and c.get('socket') is CONN
+        ]
+        had_matching_connection = len(matching_connection_indexes) > 0
 
-    remaining_connections_for_callsign = sum(1 for conn in CONNECTIONS if conn.get('callsign') == callsign)
+        for key in reversed(matching_connection_indexes):
+            del CONNECTIONS[key]
+
+        remaining_connections_for_callsign = sum(1 for conn in CONNECTIONS if conn.get('callsign') == callsign)
 
     # If this socket was not in CONNECTIONS, it has already been superseded/removed.
     # Do not update online state or broadcast disconnect in that case.
@@ -1702,14 +1891,14 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
 
     event_logger(timestamp_milliseconds(), 'USER_DISCONNECT', callsign, { "total": len(CONNECTIONS) }, None)
 
-    wps_logger("DISCONNECT HANDLER", callsign, f"All connections AFTER disconnect: {[c['callsign'] for c in CONNECTIONS]}")
+    wps_logger("DISCONNECT HANDLER", callsign, f"All connections AFTER disconnect: {[c['callsign'] for c in connections_snapshot()]}")
 
     if not should_broadcast_disconnect:
         wps_logger("DISCONNECT HANDLER", callsign, "Skipping disconnect broadcast because user still has active connection(s)")
         return
 
-    for C in CONNECTIONS:
-        wps_logger("ONLINE STATUS", callsign, f"Disconnect sent to: {C['callsign']}")       
+    for C in connections_snapshot():
+        wps_logger("ONLINE STATUS", callsign, f"Disconnect sent to: {C['callsign']}")
         
         disconnected_response = {
             "t": "ud",
@@ -1726,7 +1915,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
         
     # Output purely for the console
     rc = []
-    for c in CONNECTIONS:
+    for c in connections_snapshot():
         rc.append(c['callsign'])
 
     print(f"{timestamp()} Connections After Disconnect: {str(rc)}")
@@ -1778,29 +1967,34 @@ def connected_session_handler(CONN, ADDR):
 
     wps_logger("CONNECTED SESSION HANDLER", callsign, "Callsign seems valid, continuing")
 
-    CONN_DB_CURSOR = db.cursor()
-    
+    CONN_DB_CURSOR = get_db_connection().cursor()
+
     # Check if the callsign is already connected, if so silently remove existing connections
     # without triggering the disconnect handler or broadcasting a disconnect notification
-    existing_connections = [C for C in CONNECTIONS if C['callsign'] == callsign]
+    # Find and remove under the lock so this can't race a concurrent append/removal
+    # from another thread's connect/disconnect/reconnect handling.
+    with CONNECTIONS_LOCK:
+        existing_connections = [C for C in CONNECTIONS if C['callsign'] == callsign]
+        for C in existing_connections:
+            # Remove from CONNECTIONS first so that when the old thread's exception handler fires,
+            # close_connection will not find this callsign and will not send a disconnect notification
+            CONNECTIONS[:] = [conn for conn in CONNECTIONS if conn is not C]
+
+        # Now continue and add the new connection
+        CONNECTIONS.append({ "callsign": callsign, "socket": CONN })
+
     for C in existing_connections:
         wps_logger("CONNECTED SESSION HANDLER", callsign, "Callsign already connected, silently removing existing connection")
         print(f"{timestamp()} {callsign} reconnected, silently removing existing connection")
-        # Remove from CONNECTIONS first so that when the old thread's exception handler fires,
-        # close_connection will not find this callsign and will not send a disconnect notification
-        CONNECTIONS[:] = [conn for conn in CONNECTIONS if conn is not C]
         try:
             C['socket'].shutdown(socket.SHUT_RDWR)
             C['socket'].close()
         except Exception as e:
             wps_logger("CONNECTED SESSION HANDLER", callsign, f"Exception closing existing connection socket: {e}")
 
-    # Now continue and add the new connection
-    CONNECTIONS.append({ "callsign": callsign, "socket": CONN })
-    
     # Print the updated connected callsigns to the console
     rc = []
-    for c in CONNECTIONS:
+    for c in connections_snapshot():
         rc.append(c['callsign'])
     print(f"{timestamp()} Connections After Connect: {str(rc)}")
     
@@ -1933,7 +2127,7 @@ def connected_session_handler(CONN, ADDR):
                 
                 ### Message Types
 
-                message_json["t"] == message_json["t"].lower()
+                message_json["t"] = message_json["t"].lower()
 
                 # Message
                 if message_json["t"] == "m":
@@ -1954,7 +2148,7 @@ def connected_session_handler(CONN, ADDR):
 
                 if message_json["t"] == "cp":
                     wps_logger("CONNECTED SESSION HANDLER", callsign, "Invoking channel post handler")
-                    post_handler(CONN_DB_CURSOR, message_json, callsign, CONN)  
+                    post_handler(CONN_DB_CURSOR, message_json, callsign, CONN, suppress_cpr=(message_json.get("r") == 0))
 
                 # Channel Post Edit
                 if message_json["t"] == "cped":
@@ -2022,6 +2216,11 @@ def connected_session_handler(CONN, ADDR):
                 if message_json["t"] == "s":
                     wps_logger("CONNECTED SESSION HANDLER", callsign, "Stats handler")
                     stats_handler(CONN_DB_CURSOR, callsign, CONN)
+
+                # Channel List
+                if message_json["t"] == "chl":
+                    wps_logger("CONNECTED SESSION HANDLER", callsign, "Invoking channel list handler")
+                    channel_list_handler(CONN_DB_CURSOR, message_json, callsign, CONN)
 
         except Exception as e:
             wps_logger("CONNECTED SESSION HANDLER", callsign, f"Exception {e} happened. Disconnecting", "ERROR")
@@ -2098,45 +2297,7 @@ def check_auto_subscriptions(cursor):
         wps_logger("AUTO SUBSCRIBE HANDLER", "-----", f"Error processing auto-subscription: {e}", "ERROR")
         return
 
-def _broadcast_post_to_channel(CONN_DB_CURSOR, post, exclude_callsign):
-    '''
-    Deliver an already-inserted post to all connected, subscribed, non-paused,
-    online users — except exclude_callsign (the sender, who already got a cpr).
-    Returns the list of callsigns sent to in real-time, and the full subscribers list.
-    '''
-    cid = post['cid']
-
-    subscribers_resp = dbChannelSubscribers(CONN_DB_CURSOR, exclude_callsign, cid)
-    if subscribers_resp['result'] == 'failure':
-        return [], []
-    subscribers = subscribers_resp['data']
-    subscriber_callsigns = {s['callsign'] for s in subscribers}
-
-    paused_resp = dbPausedCallsignsForChannel(CONN_DB_CURSOR, cid)
-    paused_callsigns = set(paused_resp['data']) if paused_resp['result'] == 'success' else set()
-
-    send_payload = frame_and_compress_json_object(post)
-    sent_in_real_time = []
-
-    for C in CONNECTIONS:
-        cs = C['callsign']
-        if cs not in subscriber_callsigns or cs in paused_callsigns:
-            continue
-        user_resp = dbUserSearch(CONN_DB_CURSOR, cs)
-        if user_resp['result'] != 'success' or not user_resp['data']:
-            continue
-        if not user_resp['data'].get('is_online'):
-            continue
-        try:
-            C['socket'].send(send_payload.encode())
-            sent_in_real_time.append(cs)
-        except Exception as e:
-            wps_logger("BROADCAST", "-----", f"Send error to {cs}: {e}", "ERROR")
-
-    return sent_in_real_time, subscribers
-
-
-def bot_broadcast_to_channel(CONN_DB_CURSOR, cid, text, from_callsign):
+def bot_broadcast_to_channel(CONN_DB_CURSOR, cid, text, callsign):
     '''
     Post a server-generated (bot) message to a channel and deliver it in
     real-time to all connected, subscribed, and un-paused users.
@@ -2145,7 +2306,7 @@ def bot_broadcast_to_channel(CONN_DB_CURSOR, cid, text, from_callsign):
     post = {
         "t":   "cp",
         "cid": cid,
-        "fc":  from_callsign,
+        "fc":  callsign,
         "ts":  ts,
         "p":   text,
         "dts": ts,
@@ -2155,14 +2316,20 @@ def bot_broadcast_to_channel(CONN_DB_CURSOR, cid, text, from_callsign):
     if insert_resp['result'] == 'failure':
         wps_logger("BOT BROADCAST", "-----", f"Failed to insert bot post: {insert_resp}")
         return
-    _broadcast_post_to_channel(CONN_DB_CURSOR, post, exclude_callsign=from_callsign)
 
+    # Get the channel subscribers
+    # Gets an array of subscriber objects with callsign and push settings
+    subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
+    close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_response['result'] == 'failure' else None
+    subscribers = subscribers_response['data']
+
+    broadcast_post_handler(CONN_DB_CURSOR, subscribers, post, callsign, None)
 
 def startup_and_listen():
     print(f"{timestamp()} Using database {env['dbFilename']}")
     print(f"{timestamp()} Listening on TCP Port {env['socketTcpPort']}")
 
-    global_cursor = db.cursor()
+    global_cursor = get_db_connection().cursor()
 
     # Output the SQLite version to the console
     global_cursor.execute('''select sqlite_version()''')
@@ -2173,29 +2340,44 @@ def startup_and_listen():
     # Create the database tables, if they don't exist
     dbInit(global_cursor)
 
-    # Load bots from env.json "bots": {"<cid>": "<module_name>", ...}
-    # Also support the legacy pacagotchiChannelId key for backwards compatibility.
-    bots_config = dict(env.get('bots', {}))
-    legacy_cid = env.get('pacagotchiChannelId', 0)
-    if legacy_cid and str(legacy_cid) not in bots_config:
-        bots_config[str(legacy_cid)] = 'pacagotchi'
+    # Load the channel list from channels.json into the database
+    sync_channels_from_file(global_cursor)
 
+    # Load bots from bots/bots.json - keyed by bot name, the Python module under the bots/
+    # package to import, with an object holding the channel id (cid) the bot operates on plus
+    # any bot-specific config as the value. bots/bots.json is the master: every key must have a
+    # matching bots/<name>.py module and a channels.json channel with that cid flagged "b": true.
+    # Only loaded and processed at all if botsEnabled is set in env.json.
     global BOTS
     BOTS = {}  # cid (int) -> module
-    for cid_str, module_name in bots_config.items():
-        try:
-            mod = importlib.import_module(module_name)
-            cid = int(cid_str)
-            mod.init(db)
-            mod.start_tick_thread(
-                db,
-                lambda cursor, c, text, fc: bot_broadcast_to_channel(cursor, c, text, fc),
-                cid,
-            )
-            BOTS[cid] = mod
-            print(f"{timestamp()} Bot '{module_name}' enabled on channel {cid}")
-        except Exception as bot_init_e:
-            print(f"{timestamp()} ERROR: failed to load bot '{module_name}' on channel {cid_str}: {bot_init_e}")
+
+    if env.get('botsEnabled', False):
+        bots_config = load_bots_config()
+
+        for bot_name, bot_config in bots_config.items():
+            try:
+                cid = bot_config['cid']
+
+                channel = get_channel(cid)
+                if channel is None:
+                    raise Exception(f"no channel with cid {cid} found in channels.json")
+                if not channel.get('b'):
+                    raise Exception(f"channel {cid} ('{channel.get('cn')}') is missing \"b\": true in channels.json")
+
+                if not os.path.isfile(os.path.join("bots", f"{bot_name}.py")):
+                    raise Exception(f"bots/{bot_name}.py not found")
+
+                mod = importlib.import_module(f"bots.{bot_name}")
+                mod.init(get_db_connection())
+                mod.start_tick_thread(
+                    get_db_connection(),
+                    lambda cursor, c, text, fc: bot_broadcast_to_channel(cursor, c, text, fc),
+                    cid,
+                )
+                BOTS[cid] = mod
+                print(f"{timestamp()} Bot '{bot_name}' enabled on channel {cid}")
+            except Exception as bot_init_e:
+                print(f"{timestamp()} ERROR: failed to load bot '{bot_name}': {bot_init_e}")
 
     # Confirm users are subscribed to the default channels
     check_auto_subscriptions(global_cursor)

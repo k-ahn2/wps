@@ -1,4 +1,4 @@
-import sqlite3, json
+import sqlite3, json, time
 import datetime
 from handlers import *
 
@@ -9,11 +9,17 @@ env_source.close()
 
 DB_FILENAME = env['dbFilename']
 
-# Initialize the SQLite database connection
-# Set threadsafety to 3 to allow multiple threads to share the same connection
-# https://docs.python.org/3/library/sqlite3.html#sqlite3.threadsafety
-sqlite3.threadsafety = 3 
-db = sqlite3.connect(DB_FILENAME, check_same_thread=False)
+def get_db_connection():
+    '''
+    Opens a new SQLite connection. Each thread must call this to get its own
+    connection (and cursor) rather than sharing one across threads - a single
+    shared connection is not safe for concurrent writers even with
+    check_same_thread=False. WAL mode allows concurrent readers alongside a
+    writer.
+    '''
+    conn = sqlite3.connect(DB_FILENAME)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 def dbInit(CONN_DB_CURSOR):
     create_users_table = '''
@@ -45,31 +51,49 @@ def dbInit(CONN_DB_CURSOR):
     '''
     CONN_DB_CURSOR.execute(create_posts_table)
 
-    db.commit()
+    # Single row (id = 1) holding the channel list last loaded from channels.json and
+    # the timestamp it was last changed, so clients can tell whether their copy is stale
+    create_channels_table = '''
+    CREATE TABLE IF NOT EXISTS channels (
+        id INTEGER PRIMARY KEY,
+        channels TEXT,
+        ts INTEGER
+    );
+    '''
+    CONN_DB_CURSOR.execute(create_channels_table)
+
+    CONN_DB_CURSOR.connection.commit()
 
 def sourceValueToJsonValue(value):
-    # Takes a string value from the input json and determines how it needs to be formatted for the query
+    '''
+    Determines the SQL placeholder fragment and the parameter to bind for a
+    value taken from client-supplied JSON. Preserves the prior type handling
+    (numeric passthrough / list-as-json / quoted string) but via parameter
+    binding instead of string interpolation, so a value can never break out
+    of the query text.
+    Returns a tuple of (placeholder_sql, bind_value).
+    '''
+    if isinstance(value, bool):
+        return "?", str(value)
+    if isinstance(value, (int, float)):
+        return "?", value
+    if isinstance(value, str) and value.isnumeric():
+        return "?", int(value)
+    if isinstance(value, list):
+        return "json(?)", json.dumps(value)
+    return "?", str(value)
 
-    if str(value).isnumeric() or isinstance(value, float):
-        # If the value is a number only, or a number with decimal places, return it as is
-        return value
-    if type(value) == list:
-        # If the value is a list, convert it to a JSON string
-        return f"json('{json.dumps(value)}')"
-    else:
-        # Else retrurn the value as a string with quotes
-        return f"'{value}'"
-    
 def dbUserSearch(CONN_DB_CURSOR, callsign):
     try:
-        select_query = f"""
+        select_query = """
         SELECT user
         FROM users
-        WHERE json_extract(user, '$.callsign') = {sourceValueToJsonValue(callsign)}
+        WHERE json_extract(user, '$.callsign') = ?
         """
-        db_logger("dbUserSearch", "Query: " + ' '.join(select_query.split()))
+        params = [callsign]
+        db_logger("dbUserSearch", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [i[0] for i in CONN_DB_CURSOR]
 
         if len(result) > 1:
@@ -91,33 +115,37 @@ def dbUserSearch(CONN_DB_CURSOR, callsign):
             "params": [ callsign ]
         }
         db_logger("dbUserSearch", "Return: " + str(return_error), 'ERROR')
-        return return_error        
+        return return_error
 
 def dbUserUpdate(CONN_DB_CURSOR, callsign, update_object):
-    fieldsToUpdate = "user = json_set(user, "
-    for index, key in enumerate(update_object.keys()):
-        fieldsToUpdate += ", " if index != 0 else ''
-        fieldsToUpdate += "'$." + key + "', " + str(sourceValueToJsonValue(update_object[key]))
-    fieldsToUpdate += ")"
+    set_fragments = []
+    params = []
+    for key in update_object.keys():
+        placeholder, value = sourceValueToJsonValue(update_object[key])
+        set_fragments.append(f"?, {placeholder}")
+        params.append(f"$.{key}")
+        params.append(value)
+    fieldsToUpdate = "user = json_set(user, " + ", ".join(set_fragments) + ")"
 
     try:
         update_query = f"""
         UPDATE users
         SET {fieldsToUpdate}
-        WHERE json_extract(user, '$.callsign') = '{callsign}' 
+        WHERE json_extract(user, '$.callsign') = ?
         """
-        db_logger("dbUserUpdate", "Query: " + ' '.join(update_query.split()))
+        params.append(callsign)
+        db_logger("dbUserUpdate", "Query: " + ' '.join(update_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(update_query)
-        db.commit()
-        
+        CONN_DB_CURSOR.execute(update_query, params)
+        CONN_DB_CURSOR.connection.commit()
+
         user_search = dbUserSearch(CONN_DB_CURSOR, callsign)
         if user_search['result'] == 'failure' or user_search['data'] == None:
             raise Exception(f"Failed to retrieve user {callsign} after update.")
-        
+
         return_success = user_search['data']
         db_logger("dbUserUpdate", "Return: " + str(return_success))
-        
+
         return {
             "result": "success",
             "data": return_success,
@@ -136,7 +164,7 @@ def dbUserUpdate(CONN_DB_CURSOR, callsign, update_object):
 def dbCreateNewUser(CONN_DB_CURSOR, user_object):
     try:
         # Check if the user object contains a callsign
-        if 'callsign' not in user_object:  
+        if 'callsign' not in user_object:
             raise Exception("New user object does not contain callsign")
 
         # Confirm user doesn't already exist
@@ -144,14 +172,12 @@ def dbCreateNewUser(CONN_DB_CURSOR, user_object):
         if (user_search['result'] == 'success' and user_search['data'] != None) or user_search['result'] == 'failure':
             raise Exception(f"User {user_object['callsign']} already exists in the database or other error")
 
-        insert_query = f"""
-        INSERT INTO users (user) 
-        VALUES ('{json.dumps(user_object)}')
-        """
-        db_logger("dbCreateNewUser", "Query: " + ' '.join(insert_query.split()))
+        insert_query = "INSERT INTO users (user) VALUES (?)"
+        params = [json.dumps(user_object)]
+        db_logger("dbCreateNewUser", "Query: " + ' '.join(insert_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(insert_query)
-        db.commit()
+        CONN_DB_CURSOR.execute(insert_query, params)
+        CONN_DB_CURSOR.connection.commit()
 
         return_success = {
             "result": "success",
@@ -169,24 +195,22 @@ def dbCreateNewUser(CONN_DB_CURSOR, user_object):
         }
         db_logger("dbCreateNewUser", "Return: " + str(return_error), 'ERROR')
         return return_error
-    
+
 def dbGetMessages(CONN_DB_CURSOR, callsign, last_message):
     try:
-        select_query = f"""
+        select_query = """
         SELECT message
         FROM messages
-        WHERE 
-            (json_extract(message, '$.fc') = {sourceValueToJsonValue(callsign)} OR json_extract(message, '$.tc') = {sourceValueToJsonValue(callsign)}) AND 
-            json_extract(message, '$.ts') > {last_message}
+        WHERE
+            (json_extract(message, '$.fc') = ? OR json_extract(message, '$.tc') = ?) AND
+            json_extract(message, '$.ts') > ?
         ORDER BY json_extract(message, '$.ts') ASC
         """
-        db_logger("dbGetMessages", "Query: " + ' '.join(select_query.split()))
+        params = [callsign, callsign, last_message]
+        db_logger("dbGetMessages", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [json.loads(i[0]) for i in CONN_DB_CURSOR]
-
-        for message in result:
-            message['m'] = str(message['m']).replace("''", "'")
 
         return_success = {
             "result": "success",
@@ -194,7 +218,7 @@ def dbGetMessages(CONN_DB_CURSOR, callsign, last_message):
         }
         db_logger("dbGetMessages", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -204,22 +228,23 @@ def dbGetMessages(CONN_DB_CURSOR, callsign, last_message):
         }
         db_logger("dbGetMessages", "Return: " + str(return_error), 'ERROR')
         return return_error
-    
+
 def dbGetMessageEdits(CONN_DB_CURSOR, callsign, last_message, last_message_edit):
     # New messages retutned by getMessages already include edits and emojis, so we only need to return edits that were made before
     try:
-        select_query = f"""
+        select_query = """
         SELECT message
         FROM messages
-        WHERE 
-            (json_extract(message, '$.fc') = {sourceValueToJsonValue(callsign)} OR json_extract(message, '$.tc') = {sourceValueToJsonValue(callsign)}) AND 
-            json_extract(message, '$.edts') > {last_message_edit} AND 
-            json_extract(message, '$.ts') <= {last_message}
+        WHERE
+            (json_extract(message, '$.fc') = ? OR json_extract(message, '$.tc') = ?) AND
+            json_extract(message, '$.edts') > ? AND
+            json_extract(message, '$.ts') <= ?
         ORDER BY json_extract(message, '$.ts') ASC
         """
-        db_logger("dbGetMessageEdits", "Query: " + ' '.join(select_query.split()))
+        params = [callsign, callsign, last_message_edit, last_message]
+        db_logger("dbGetMessageEdits", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
@@ -228,7 +253,7 @@ def dbGetMessageEdits(CONN_DB_CURSOR, callsign, last_message, last_message_edit)
         }
         db_logger("dbGetMessageEdits", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -242,18 +267,19 @@ def dbGetMessageEdits(CONN_DB_CURSOR, callsign, last_message, last_message_edit)
 def dbGetMessageEmojis(CONN_DB_CURSOR, callsign, last_message, last_message_emoji):
     # New messages retutned by getMessages already include edits and emojis, so we only need to return edits that were made before
     try:
-        select_query = f"""
+        select_query = """
         SELECT message
         FROM messages
-        WHERE 
-            (json_extract(message, '$.fc') = {sourceValueToJsonValue(callsign)} OR json_extract(message, '$.tc') = {sourceValueToJsonValue(callsign)}) AND 
-            json_extract(message, '$.ets') > {last_message_emoji} AND
-            json_extract(message, '$.ts') <= {last_message}
+        WHERE
+            (json_extract(message, '$.fc') = ? OR json_extract(message, '$.tc') = ?) AND
+            json_extract(message, '$.ets') > ? AND
+            json_extract(message, '$.ts') <= ?
         ORDER BY json_extract(message, '$.ts') ASC
         """
-        db_logger("dbGetMessageEmojis", "Query: " + ' '.join(select_query.split()))
+        params = [callsign, callsign, last_message_emoji, last_message]
+        db_logger("dbGetMessageEmojis", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
@@ -262,7 +288,7 @@ def dbGetMessageEmojis(CONN_DB_CURSOR, callsign, last_message, last_message_emoj
         }
         db_logger("dbGetMessageEmojis", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -275,21 +301,19 @@ def dbGetMessageEmojis(CONN_DB_CURSOR, callsign, last_message, last_message_emoj
 
 def dbGetPosts(CONN_DB_CURSOR, channel_id, last_post):
     try:
-        select_query = f"""
+        select_query = """
         SELECT post
         FROM posts
-        WHERE 
-            json_extract(post, '$.ts') > {last_post} AND 
-            json_extract(post, '$.cid') = {channel_id}
+        WHERE
+            json_extract(post, '$.ts') > ? AND
+            json_extract(post, '$.cid') = ?
         ORDER BY json_extract(post, '$.ts') ASC
         """
-        db_logger("dbGetPosts", "Query: " + ' '.join(select_query.split()))
+        params = [last_post, channel_id]
+        db_logger("dbGetPosts", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [json.loads(i[0]) for i in CONN_DB_CURSOR]
-
-        for post in result:
-            post['p'] = str(post['p']).replace("''", "'")
 
         return_success = {
             "result": "success",
@@ -297,7 +321,7 @@ def dbGetPosts(CONN_DB_CURSOR, channel_id, last_post):
         }
         db_logger("dbGetPosts", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -310,19 +334,20 @@ def dbGetPosts(CONN_DB_CURSOR, channel_id, last_post):
 
 def dbGetPostEdits(CONN_DB_CURSOR, channel_id, last_post_edit, last_post):
     try:
-        select_query = f"""
+        select_query = """
         SELECT post
         FROM posts
-        WHERE 
-            json_extract(post, '$.cid') = {channel_id} AND
-            json_extract(post, '$.edts') > {last_post_edit} AND
-            json_extract(post, '$.ts') <= {last_post}
-        ORDER BY 
+        WHERE
+            json_extract(post, '$.cid') = ? AND
+            json_extract(post, '$.edts') > ? AND
+            json_extract(post, '$.ts') <= ?
+        ORDER BY
             json_extract(post, '$.ts') ASC
         """
-        db_logger("dbGetPostEdits", "Query: " + ' '.join(select_query.split()))
+        params = [channel_id, last_post_edit, last_post]
+        db_logger("dbGetPostEdits", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
@@ -331,7 +356,7 @@ def dbGetPostEdits(CONN_DB_CURSOR, channel_id, last_post_edit, last_post):
         }
         db_logger("dbGetPostEdits", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -344,19 +369,20 @@ def dbGetPostEdits(CONN_DB_CURSOR, channel_id, last_post_edit, last_post):
 
 def dbGetPostEmojis(CONN_DB_CURSOR, channel_id, last_post_emoji, last_post):
     try:
-        select_query = f"""
+        select_query = """
         SELECT post
         FROM posts
-        WHERE 
-            json_extract(post, '$.cid') = {channel_id} AND
-            json_extract(post, '$.ets') > {last_post_emoji} AND
-            json_extract(post, '$.ts') <= {last_post}
-        ORDER BY 
+        WHERE
+            json_extract(post, '$.cid') = ? AND
+            json_extract(post, '$.ets') > ? AND
+            json_extract(post, '$.ts') <= ?
+        ORDER BY
             json_extract(post, '$.ts') ASC
         """
-        db_logger("dbGetPostEmojis", "Query: " + ' '.join(select_query.split()))
+        params = [channel_id, last_post_emoji, last_post]
+        db_logger("dbGetPostEmojis", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
@@ -365,7 +391,7 @@ def dbGetPostEmojis(CONN_DB_CURSOR, channel_id, last_post_emoji, last_post):
         }
         db_logger("dbGetPostEmojis", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -394,7 +420,7 @@ def dbGetOnlineUsers(CONN_DB_CURSOR):
         }
         db_logger("dbGetOnlineUsers", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -408,9 +434,9 @@ def dbGetOnlineUsers(CONN_DB_CURSOR):
 def dbGetMessagedUsers(CONN_DB_CURSOR, callsign):
 
     try:
-        select_query = f"""
-        SELECT 
-            c.callsign, 
+        select_query = """
+        SELECT
+            c.callsign,
             json_extract(u.user, '$.name') as name,
             json_extract(u.user, '$.last_connected') as last_connected,
             json_extract(u.user, '$.last_disconnected') as last_disconnected,
@@ -418,20 +444,21 @@ def dbGetMessagedUsers(CONN_DB_CURSOR, callsign):
             json_extract(u.user, '$.lastseen') as lastseen
         FROM
             (SELECT DISTINCT(json_extract(message, '$.fc')) as callsign
-            FROM messages 
-            WHERE (json_extract(message, '$.fc') = '{callsign}' OR json_extract(message, '$.tc') = '{callsign}') 
+            FROM messages
+            WHERE (json_extract(message, '$.fc') = ? OR json_extract(message, '$.tc') = ?)
             UNION
             SELECT DISTINCT(json_extract(message, '$.tc')) as callsign
-            FROM messages 
-            WHERE (json_extract(message, '$.fc') = '{callsign}' OR json_extract(message, '$.tc') = '{callsign}')) c
+            FROM messages
+            WHERE (json_extract(message, '$.fc') = ? OR json_extract(message, '$.tc') = ?)) c
             INNER JOIN
             users u ON c.callsign = json_extract(user, '$.callsign')
         WHERE
-            callsign != '{callsign}'
+            callsign != ?
         """
-        db_logger("dbGetMessagedUsers", "Query: " + ' '.join(select_query.split()))
-        
-        CONN_DB_CURSOR.execute(select_query)
+        params = [callsign, callsign, callsign, callsign, callsign]
+        db_logger("dbGetMessagedUsers", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
+
+        CONN_DB_CURSOR.execute(select_query, params)
         result = []
         for row in CONN_DB_CURSOR:
             result.append({
@@ -462,16 +489,17 @@ def dbGetMessagedUsers(CONN_DB_CURSOR, callsign):
 
 def dbCleanupDepracatedLastSeenKey(CONN_DB_CURSOR, callsign):
     try:
-        delete_query = f"""
+        delete_query = """
         UPDATE users
         SET user = json_remove(user, '$.lastseen')
         WHERE
-        json_extract(user, '$.callsign') = '{callsign}'
+        json_extract(user, '$.callsign') = ?
         """
-        db_logger("dbCleanupDepracatedLastSeenKey", "Query: " + ' '.join(delete_query.split()))
+        params = [callsign]
+        db_logger("dbCleanupDepracatedLastSeenKey", "Query: " + ' '.join(delete_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(delete_query)
-        db.commit()
+        CONN_DB_CURSOR.execute(delete_query, params)
+        CONN_DB_CURSOR.connection.commit()
 
         return_success = {
             "result": "success",
@@ -479,7 +507,7 @@ def dbCleanupDepracatedLastSeenKey(CONN_DB_CURSOR, callsign):
         }
         db_logger("dbCleanupDepracatedLastSeenKey", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -492,16 +520,12 @@ def dbCleanupDepracatedLastSeenKey(CONN_DB_CURSOR, callsign):
 
 def dbInsertMessage(CONN_DB_CURSOR, message):
     try:
-        message['m'] = str(message['m']).replace("'", "''")
-        
-        insert_query = f"""
-        INSERT INTO messages (message) 
-        VALUES ('{json.dumps(message, separators=(',', ':'))}')
-        """
-        db_logger("dbInsertMessage", "Query: " + ' '.join(insert_query.split()))
+        insert_query = "INSERT INTO messages (message) VALUES (?)"
+        params = [json.dumps(message, separators=(',', ':'))]
+        db_logger("dbInsertMessage", "Query: " + ' '.join(insert_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(insert_query)
-        db.commit()
+        CONN_DB_CURSOR.execute(insert_query, params)
+        CONN_DB_CURSOR.connection.commit()
 
         return_success = {
             "result": "success",
@@ -512,7 +536,7 @@ def dbInsertMessage(CONN_DB_CURSOR, message):
 
     except sqlite3.IntegrityError:
         # Duplicate _id → ignore gracefully
-        # # Could use INSERT OR IGNORE to avoid this, but helpful to know if WPS gets the same message twice. 
+        # # Could use INSERT OR IGNORE to avoid this, but helpful to know if WPS gets the same message twice.
         db_logger("dbInsertMessage", "Duplicate _id encountered, ignored gracefully but shouldn't have happened", 'ERROR')
         return_success = {
             "result": "success",
@@ -533,14 +557,15 @@ def dbInsertMessage(CONN_DB_CURSOR, message):
 
 def dbMessageSearch(CONN_DB_CURSOR, message_id):
     try:
-        select_query = f"""
+        select_query = """
         SELECT message
         FROM messages
-        WHERE json_extract(message, '$._id') = '{message_id}'
+        WHERE json_extract(message, '$._id') = ?
         """
-        db_logger("dbMessageSearch", "Query: " + ' '.join(select_query.split()))
+        params = [message_id]
+        db_logger("dbMessageSearch", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [i[0] for i in CONN_DB_CURSOR]
 
         if len(result) > 1:
@@ -562,29 +587,30 @@ def dbMessageSearch(CONN_DB_CURSOR, message_id):
         }
         db_logger("dbMessageSearch", "Return: " + str(return_error), 'ERROR')
         return return_error
-    
+
 def dbUpdateMessage(CONN_DB_CURSOR, message_id, update):
 
-    if 'm' in update:
-        update['m'] = str(update['m']).replace("'", "''")
-
-    fieldsToUpdate = "message = json_set(message, "
-    for index, key in enumerate(update.keys()):
-        fieldsToUpdate += ", " if index != 0 else ''
-        fieldsToUpdate += "'$." + key + "', " + str(sourceValueToJsonValue(update[key]))
-    fieldsToUpdate += ")"
+    set_fragments = []
+    params = []
+    for key in update.keys():
+        placeholder, value = sourceValueToJsonValue(update[key])
+        set_fragments.append(f"?, {placeholder}")
+        params.append(f"$.{key}")
+        params.append(value)
+    fieldsToUpdate = "message = json_set(message, " + ", ".join(set_fragments) + ")"
 
     try:
         update_query = f"""
         UPDATE messages
         SET {fieldsToUpdate}
-        WHERE json_extract(message, '$._id') = '{message_id}' 
+        WHERE json_extract(message, '$._id') = ?
         """
-        db_logger("dbUpdateMessage", "Query: " + ' '.join(update_query.split()))
+        params.append(message_id)
+        db_logger("dbUpdateMessage", "Query: " + ' '.join(update_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(update_query)
-        db.commit()
-        
+        CONN_DB_CURSOR.execute(update_query, params)
+        CONN_DB_CURSOR.connection.commit()
+
         message_search = dbMessageSearch(CONN_DB_CURSOR, message_id)
         if message_search['result'] == 'failure' or message_search['data'] == None:
             raise Exception(f"Failed to retrieve user {message_id} after update.")
@@ -607,18 +633,14 @@ def dbUpdateMessage(CONN_DB_CURSOR, message_id, update):
         return return_error
 
 def dbInsertPost(CONN_DB_CURSOR, post):
-    
+
     try:
-        post['p'] = str(post['p']).replace("'", "''")
+        insert_query = "INSERT INTO posts (post) VALUES (?)"
+        params = [json.dumps(post, separators=(',', ':'))]
+        db_logger("dbInsertPost", "Query: " + ' '.join(insert_query.split()) + " | Params: " + str(params))
 
-        insert_query = f"""
-        INSERT INTO posts (post) 
-        VALUES ('{json.dumps(post, separators=(',', ':'))}')
-        """
-        db_logger("dbInsertPost", "Query: " + ' '.join(insert_query.split()))
-
-        CONN_DB_CURSOR.execute(insert_query)
-        db.commit()
+        CONN_DB_CURSOR.execute(insert_query, params)
+        CONN_DB_CURSOR.connection.commit()
 
         return_success = {
             "result": "success",
@@ -639,18 +661,19 @@ def dbInsertPost(CONN_DB_CURSOR, post):
 
 def dbPostSearch(CONN_DB_CURSOR, channel_id, post_timestamp):
     try:
-        select_query = f"""
+        select_query = """
         SELECT post
         FROM posts
-        WHERE 
-            json_extract(post, '$.ts') = {sourceValueToJsonValue(post_timestamp)} AND 
-            json_extract(post, '$.cid') = {sourceValueToJsonValue(channel_id)}
+        WHERE
+            json_extract(post, '$.ts') = ? AND
+            json_extract(post, '$.cid') = ?
         """
-        db_logger("dbPostSearch", "Query: " + ' '.join(select_query.split()))
+        params = [post_timestamp, channel_id]
+        db_logger("dbPostSearch", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [i[0] for i in CONN_DB_CURSOR]
-        
+
         if len(result) > 1:
             raise Exception(f"Multiple posts found when searching for {post_timestamp} in channel {channel_id}")
 
@@ -672,29 +695,32 @@ def dbPostSearch(CONN_DB_CURSOR, channel_id, post_timestamp):
         return return_error
 
 def dbUpdatePost(CONN_DB_CURSOR, channel_id, post_timestamp, update):
-    
-    if 'p' in update:
-        update['p'] = str(update['p']).replace("'", "''")
-    
-    fieldsToUpdate = "post = json_set(post, "
-    for index, key in enumerate(update.keys()):
-        fieldsToUpdate += ", " if index != 0 else ''
-        fieldsToUpdate += "'$." + key + "', " + str(sourceValueToJsonValue(update[key]))
-    fieldsToUpdate += ")"
+
+    set_fragments = []
+    params = []
+    for key in update.keys():
+        placeholder, value = sourceValueToJsonValue(update[key])
+        set_fragments.append(f"?, {placeholder}")
+        params.append(f"$.{key}")
+        params.append(value)
+    fieldsToUpdate = "post = json_set(post, " + ", ".join(set_fragments) + ")"
 
     try:
+        ts_placeholder, ts_param = sourceValueToJsonValue(post_timestamp)
+        cid_placeholder, cid_param = sourceValueToJsonValue(channel_id)
         update_query = f"""
         UPDATE posts
         SET {fieldsToUpdate}
-        WHERE 
-            json_extract(post, '$.ts') = {sourceValueToJsonValue(post_timestamp)} AND 
-            json_extract(post, '$.cid') = {sourceValueToJsonValue(channel_id)}
+        WHERE
+            json_extract(post, '$.ts') = {ts_placeholder} AND
+            json_extract(post, '$.cid') = {cid_placeholder}
         """
-        db_logger("dbUpdatePost", "Query: " + ' '.join(update_query.split()))
+        params.extend([ts_param, cid_param])
+        db_logger("dbUpdatePost", "Query: " + ' '.join(update_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(update_query)
-        db.commit()
-        
+        CONN_DB_CURSOR.execute(update_query, params)
+        CONN_DB_CURSOR.connection.commit()
+
         post_search = dbPostSearch(CONN_DB_CURSOR, channel_id, post_timestamp)
         if post_search['result'] == 'failure' or post_search['data'] == None:
             raise Exception(f"Failed to retrieve post {post_timestamp} after update.")
@@ -718,20 +744,21 @@ def dbUpdatePost(CONN_DB_CURSOR, channel_id, post_timestamp, update):
 
 def dbChannelSubscribers(CONN_DB_CURSOR, sending_callsign, channel_id):
     try:
-        select_query = f"""
-        SELECT 
+        select_query = """
+        SELECT
             json_extract(user, '$.callsign'),
             IFNULL(json_extract(user, '$.channel_subscriptions'), '[]'),
             IFNULL(json_extract(user, '$.channel_notifications_since_last_logout'), '[]'),
             IFNULL(json_extract(user, '$.push'), '[]')
-        FROM 
+        FROM
             users
         WHERE
-            json_extract(user, '$.callsign') != '{sending_callsign}'
+            json_extract(user, '$.callsign') != ?
         """
-        db_logger("dbChannelSubscribers", "Query: " + ' '.join(select_query.split()))
+        params = [sending_callsign]
+        db_logger("dbChannelSubscribers", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = []
         for row in CONN_DB_CURSOR:
             callsign = row[0]
@@ -743,7 +770,7 @@ def dbChannelSubscribers(CONN_DB_CURSOR, sending_callsign, channel_id):
                 for x in push_devices
                 if x.get('isPushEnabled') and 'isBadPlayerId' not in x
             ]
-            
+
             if channel_id not in channel_subscriptions:
                 continue
 
@@ -752,7 +779,7 @@ def dbChannelSubscribers(CONN_DB_CURSOR, sending_callsign, channel_id):
                 "channel_notifications_since_last_logout": channel_notifications_since_last_logout,
                 "enabled_player_ids": enabled_player_ids
             })
-        
+
         return_success = {
             "result": "success",
             "data": result
@@ -772,11 +799,11 @@ def dbChannelSubscribers(CONN_DB_CURSOR, sending_callsign, channel_id):
 
 def dbPausedCallsignsForChannel(CONN_DB_CURSOR, channel_id):
     try:
-        select_query = f"""
-        SELECT 
+        select_query = """
+        SELECT
             json_extract(user, '$.callsign'),
             IFNULL(json_extract(user, '$.paused_channels'), '[]')
-        FROM 
+        FROM
             users
         """
         db_logger("dbPausedCallsignsForChannel", "Query: " + ' '.join(select_query.split()))
@@ -786,12 +813,12 @@ def dbPausedCallsignsForChannel(CONN_DB_CURSOR, channel_id):
         for row in CONN_DB_CURSOR:
             callsign = row[0]
             paused_channels = json.loads(row[1]) if row[1] else []
-            
+
             if channel_id not in paused_channels:
                 continue
-            
+
             result.append(callsign)
-        
+
         return_success = {
             "result": "success",
             "data": result
@@ -812,15 +839,16 @@ def dbPausedCallsignsForChannel(CONN_DB_CURSOR, channel_id):
 def dbUpdateUserPushNotifications(CONN_DB_CURSOR, callsign, channel_id):
     # Update the user with the new push devices
     try:
-        update_query = f"""
+        update_query = """
         UPDATE users
-        SET user = json_insert(user, '$.channel_notifications_since_last_logout[#]', {channel_id})
-        WHERE json_extract(user, '$.callsign') = {sourceValueToJsonValue(callsign)}
+        SET user = json_insert(user, '$.channel_notifications_since_last_logout[#]', ?)
+        WHERE json_extract(user, '$.callsign') = ?
         """
-        db_logger("dbUpdateUserPushNotifications", "Query: " + ' '.join(update_query.split()))
+        params = [channel_id, callsign]
+        db_logger("dbUpdateUserPushNotifications", "Query: " + ' '.join(update_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(update_query)
-        db.commit()
+        CONN_DB_CURSOR.execute(update_query, params)
+        CONN_DB_CURSOR.connection.commit()
 
         return_success = {
             "result": "success",
@@ -841,19 +869,20 @@ def dbUpdateUserPushNotifications(CONN_DB_CURSOR, callsign, channel_id):
 
 def dbGetPostsBatch(CONN_DB_CURSOR, channel_id, bach_size):
     try:
-        select_query = f"""
-        SELECT 
-            * 
+        select_query = """
+        SELECT
+            *
         FROM
-            (SELECT * FROM posts 
-            WHERE json_extract(post, '$.cid') = {sourceValueToJsonValue(channel_id)} 
-            ORDER BY json_extract(post, '$.ts') DESC LIMIT {sourceValueToJsonValue(bach_size)})
+            (SELECT * FROM posts
+            WHERE json_extract(post, '$.cid') = ?
+            ORDER BY json_extract(post, '$.ts') DESC LIMIT ?)
         ORDER BY json_extract(post, '$.ts') ASC;
         """
-        db_logger("dbGetPostsBatch", "Query: " + ' '.join(select_query.split()))
+        params = [channel_id, bach_size]
+        db_logger("dbGetPostsBatch", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
         result = []
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         for row in CONN_DB_CURSOR:
             result.append(json.loads(row[1]))
 
@@ -872,7 +901,7 @@ def dbGetPostsBatch(CONN_DB_CURSOR, channel_id, bach_size):
         }
         db_logger("dbGetPostsBatch", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -886,20 +915,21 @@ def dbGetPostsBatch(CONN_DB_CURSOR, channel_id, bach_size):
 def dbGetLastMessages(CONN_DB_CURSOR, callsign, recipient_callsign, message_limit):
 
     try:
-        select_query = f"""
+        select_query = """
         SELECT * FROM
             (SELECT message
             FROM messages
-            WHERE 
-                (json_extract(message, '$.fc') = {sourceValueToJsonValue(callsign)} AND json_extract(message, '$.tc') = {sourceValueToJsonValue(recipient_callsign)}) OR 
-                (json_extract(message, '$.fc') = {sourceValueToJsonValue(recipient_callsign)} AND json_extract(message, '$.tc') = {sourceValueToJsonValue(callsign)})
+            WHERE
+                (json_extract(message, '$.fc') = ? AND json_extract(message, '$.tc') = ?) OR
+                (json_extract(message, '$.fc') = ? AND json_extract(message, '$.tc') = ?)
             ORDER BY json_extract(message, '$.ts') DESC
-            LIMIT {message_limit})
+            LIMIT ?)
         ORDER BY json_extract(message, '$.ts') ASC
         """
-        db_logger("dbGetLastMessages", "Query: " + ' '.join(select_query.split()))
+        params = [callsign, recipient_callsign, recipient_callsign, callsign, message_limit]
+        db_logger("dbGetLastMessages", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [i[0] for i in CONN_DB_CURSOR]
 
         return_success = {
@@ -908,7 +938,7 @@ def dbGetLastMessages(CONN_DB_CURSOR, callsign, recipient_callsign, message_limi
         }
         db_logger("dbGetLastMessages", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -918,20 +948,21 @@ def dbGetLastMessages(CONN_DB_CURSOR, callsign, recipient_callsign, message_limi
         }
         db_logger("dbGetLastMessages", "Return: " + str(return_error), 'ERROR')
         return return_error
-    
+
 def dbMessageCountToRecipient(CONN_DB_CURSOR, callsign, recipient_callsign):
 
     try:
-        select_query = f"""
+        select_query = """
         SELECT COUNT(*)
             FROM messages
-            WHERE 
-                (json_extract(message, '$.fc') = {sourceValueToJsonValue(callsign)} AND json_extract(message, '$.tc') = {sourceValueToJsonValue(recipient_callsign)}) OR 
-                (json_extract(message, '$.fc') = {sourceValueToJsonValue(recipient_callsign)} AND json_extract(message, '$.tc') = {sourceValueToJsonValue(callsign)})
+            WHERE
+                (json_extract(message, '$.fc') = ? AND json_extract(message, '$.tc') = ?) OR
+                (json_extract(message, '$.fc') = ? AND json_extract(message, '$.tc') = ?)
         """
-        db_logger("dbMessageCountToRecipient", "Query: " + ' '.join(select_query.split()))
+        params = [callsign, recipient_callsign, recipient_callsign, callsign]
+        db_logger("dbMessageCountToRecipient", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
         result = [i[0] for i in CONN_DB_CURSOR]
         return_success = {
             "result": "success",
@@ -939,7 +970,7 @@ def dbMessageCountToRecipient(CONN_DB_CURSOR, callsign, recipient_callsign):
         }
         db_logger("dbMessageCountToRecipient", "Return: " + str(return_success))
         return return_success
-    
+
     except Exception as e:
         return_error = {
             "result": "failure",
@@ -949,17 +980,18 @@ def dbMessageCountToRecipient(CONN_DB_CURSOR, callsign, recipient_callsign):
         }
         db_logger("dbMessageCountToRecipient", "Return: " + str(return_error), 'ERROR')
         return return_error
-    
+
 def dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_update_timestamp):
     try:
-        select_query = f"""
+        select_query = """
         SELECT user
         FROM users
-        WHERE json_extract(user, '$.name_last_updated') > {sourceValueToJsonValue(last_ham_update_timestamp)}
+        WHERE json_extract(user, '$.name_last_updated') > ?
         """
-        db_logger("dbGetUpdatedHams", "Query: " + ' '.join(select_query.split()))
+        params = [last_ham_update_timestamp]
+        db_logger("dbGetUpdatedHams", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
 
         return_success = {
             "result": "success",
@@ -978,29 +1010,30 @@ def dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_update_timestamp):
         }
         db_logger("dbGetUpdatedHams", "Return: " + str(return_error), 'ERROR')
         return return_error
-    
+
 def dbGetUpdatedAvatars(CONN_DB_CURSOR, callsign, last_avatar_timestamp):
     try:
-        select_query = f"""
+        select_query = """
         SELECT
             json_extract(user, '$.callsign') as callsign,
             json_extract(user, '$.avatar') as avatar,
             json_extract(user, '$.avatar_last_updated') as avatar_last_updated
         FROM users
-            WHERE json_extract(user, '$.avatar_last_updated') > {sourceValueToJsonValue(last_avatar_timestamp)}
-            AND json_extract(user, '$.callsign') != {sourceValueToJsonValue(callsign)}
+            WHERE json_extract(user, '$.avatar_last_updated') > ?
+            AND json_extract(user, '$.callsign') != ?
         ORDER BY json_extract(user, '$.avatar_last_updated') ASC
         """
 
-        db_logger("dbGetUpdatedAvatars", "Query: " + ' '.join(select_query.split()))
+        params = [last_avatar_timestamp, callsign]
+        db_logger("dbGetUpdatedAvatars", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))
 
-        CONN_DB_CURSOR.execute(select_query)
+        CONN_DB_CURSOR.execute(select_query, params)
 
         return_success = {
             "result": "success",
             "data": []
         }
-        
+
         for row in CONN_DB_CURSOR:
             return_success['data'].append({
                 "callsign": row[0],
@@ -1019,4 +1052,80 @@ def dbGetUpdatedAvatars(CONN_DB_CURSOR, callsign, last_avatar_timestamp):
             "params": [ callsign, last_avatar_timestamp ]
         }
         db_logger("dbGetUpdatedAvatars", "Return: " + str(return_error), 'ERROR')
-        return return_error   
+        return return_error
+
+def dbGetChannels(CONN_DB_CURSOR):
+    try:
+        select_query = """
+        SELECT channels, ts
+        FROM channels
+        WHERE id = 1
+        """
+        db_logger("dbGetChannels", "Query: " + ' '.join(select_query.split()))
+
+        CONN_DB_CURSOR.execute(select_query)
+        result = [row for row in CONN_DB_CURSOR]
+
+        return_success = {
+            "result": "success",
+            "data": { "channels": json.loads(result[0][0]), "ts": result[0][1] } if len(result) == 1 else None,
+        }
+        db_logger("dbGetChannels", "Return: " + str(return_success))
+        return return_success
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbGetChannels",
+            "params": []
+        }
+        db_logger("dbGetChannels", "Return: " + str(return_error), 'ERROR')
+        return return_error
+
+def dbSyncChannels(CONN_DB_CURSOR, current_channels):
+    '''
+    Compares current_channels (freshly read from channels.json) against the copy stored in the
+    database. If it differs, or nothing has been stored yet, upserts the single channels row
+    with a fresh timestamp. Returns the channels and timestamp now current in the database.
+    '''
+    try:
+        existing = dbGetChannels(CONN_DB_CURSOR)
+        if existing['result'] == 'failure':
+            raise Exception(existing['error'])
+
+        existing_data = existing['data']
+
+        if existing_data is not None and existing_data['channels'] == current_channels:
+            return {
+                "result": "success",
+                "data": existing_data,
+            }
+
+        sync_ts = round(time.time() * 1000)
+        upsert_query = """
+        INSERT INTO channels (id, channels, ts) VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET channels = excluded.channels, ts = excluded.ts
+        """
+        params = [json.dumps(current_channels), sync_ts]
+        db_logger("dbSyncChannels", "Query: " + ' '.join(upsert_query.split()) + " | Params: " + str(params))
+
+        CONN_DB_CURSOR.execute(upsert_query, params)
+        CONN_DB_CURSOR.connection.commit()
+
+        return_success = {
+            "result": "success",
+            "data": { "channels": current_channels, "ts": sync_ts },
+        }
+        db_logger("dbSyncChannels", "Return: " + str(return_success))
+        return return_success
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbSyncChannels",
+            "params": [current_channels]
+        }
+        db_logger("dbSyncChannels", "Return: " + str(return_error), 'ERROR')
+        return return_error

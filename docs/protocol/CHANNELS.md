@@ -11,12 +11,17 @@ Singular Types
 5. [Type cs - Channel Subscribe](#type-cs---channel-subscribe)
 6. [Type pch - Paused Channel Headers](#type-pch---paused-channel-headers)
 7. [Type cu - Channel Unpause](#type-cu---channel-unpause)
+8. [Type chl - Channel List](#type-chl---channel-list)
 
 Batch Variants
 
 1. [Type cpb - Channel Post Batch](#type-cpb---channel-post-batch)
 2. [Type cpedb - Channel Post Edit Batch](#type-cpedb---channel-post-edit-batch)
 3. [Type cpemb - Channel Post Emoji Batch](#type-cpemb---channel-post-emoji-batch)
+
+Bots
+
+1. [Bots - Calling the Channel Post Handler Directly](#bots---calling-the-channel-post-handler-directly)
 
 [Return to README](/README.md)
 
@@ -37,6 +42,7 @@ Sends a new Post to a given channel
 |Reply Timestamp|`rts`|`1750804825979`|Number|The timestamp of the post being replied to
 |Reply From Call|`rfc`|`T3EST`|String|The sender of the post being replied to
 |Gap|`g`|`1`|Boolean|If a user doesn't request all outstanding posts for a channel, this flag signifies the first new post after the posts gap
+|Receipt|`r`|`0`|Number|Set to `0` to suppress the `cpr` delivery receipt for this post - see [Bots - Calling the Channel Post Handler Directly](#bots---calling-the-channel-post-handler-directly)
 |**Server Only Fields**|
 |Delivery Timestamp|`dts`|`1750804826875`|Number|The timestamp the server received and processed the message. This is returned to the client in the `cpr` response for the client to calculate the delivery time to server
 
@@ -458,5 +464,116 @@ Return the latest 50 posts
    "t": "cu",
    "cid": 0,
    "pc": 50
+}
+```
+
+## Type chl - Channel List
+
+Fetches the channel list, sourced from `channels.json`. The entire contents of `channels.json` are cached in memory on startup, shared by all connections, and re-checked against the file on disk on every new client connect - if it has changed, the cache and the `channels` table are refreshed with a fresh timestamp. This means `channels.json` can be edited to add, rename or remove channel groups and channels without restarting WPS - the updated list becomes available within one connect cycle.
+
+Also supports a count-only mode, letting the client cheaply check whether it needs to download an updated list before requesting the full one.
+
+### Client to Server
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`chl`|String|Always type `chl` for Channel List|
+|Last Channels Timestamp|`lcts`|`1755000000000`|Number|The timestamp of the channel list already held by the client, in milliseconds since epoch. `0` if none held|
+|**Optional Fields**|
+|Count Only|`co`|`1`|Boolean|If present, the server only returns whether an update is available (and the current timestamp), suppressing the full channel list|
+
+### JSON Example
+
+Fetch the full channel list
+```json
+{
+   "t": "chl",
+   "lcts": 0
+}
+```
+
+Check whether an update is available, without downloading the full list
+```json
+{
+   "t": "chl",
+   "lcts": 1755000000000,
+   "co": 1
+}
+```
+
+### Server to Client
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`chl`|String|Always type `chl` for Channel List|
+|Timestamp|`ts`|`1755000100000`|Number|The timestamp the channel list held by the server was last changed, in milliseconds since epoch|
+|Update Available|`u`|`1` or `0`|Boolean|Only present when `co` was set - `1` if `ts` is newer than the client's `lcts`, otherwise `0`|
+|Channel Groups|`cg`|`[]`|Array of Objects|Only present when `co` was not set. The entire `cg` contents of `channels.json`|
+|Channels|`c`|`[]`|Array of Objects|Only present when `co` was not set. The entire `c` contents of `channels.json`|
+|**Channel Group Objects**|
+|Channel Group Id|`cgid`|`1`|Number|id of the channel group|
+|Group Name|`gn`|`Packet`|String|The channel group's display name|
+|**Channel Objects**|
+|Channel Group Id|`cgid`|`1`|Number|id of the channel group this channel belongs to. Present when the channel belongs to a group - see `gid` below for the ungrouped case|
+|Channel Id|`cid`|`1`|Number|id of the channel|
+|Name|`cn`|`packet-general`|String|The channel's display name|
+|Description|`cd`|`Anything Packet Radio goes here!`|String|The channel's description|
+|**Optional Channel Fields**|
+|Group Id (Ungrouped)|`gid`|`null`|null|Present instead of `cgid`, and always `null`, when the channel doesn't belong to a channel group|
+|Auto Subscribe|`as`|`true`|Boolean|If present and `true`, clients should auto-subscribe users to this channel|
+|Read Only|`ro`|`true`|Boolean|If present and `true`, the channel is read-only - e.g. announcements posted by the server|
+|Bot|`b`|`true`|Boolean|If present and `true`, this channel is bot-managed. `bots/bots.json` is the master record of active bots - for each key there, WPS requires a channel here with the matching `cid` flagged `"b": true`, and a `bots/<name>.py` module. Bots are only loaded if `botsEnabled` is `true` in `env.json`. See [Bots in the README](/README.md#bots)|
+
+### JSON Example
+
+Full channel list response
+```json
+{
+   "t": "chl",
+   "ts": 1755000100000,
+   "cg": [
+      { "cgid": 0, "gn": "General" },
+      { "cgid": 1, "gn": "Packet" }
+   ],
+   "c": [
+      { "cgid": 0, "cid": 0, "cn": "packet-tech", "cd": "Packet technical discussion" },
+      { "cgid": 1, "cid": 1, "cn": "packet-general", "cd": "Anything Packet Radio goes here!" },
+      { "gid": null, "cid": 100, "cn": "announcements", "cd": "General news and announcements relevant to the community", "as": true, "ro": true },
+      { "cgid": 3, "cid": 14, "cn": "pacagotchi", "cd": "Pacagotchi", "b": true }
+   ]
+}
+```
+
+Count-only response
+```json
+{
+   "t": "chl",
+   "ts": 1755000100000,
+   "u": 1
+}
+```
+
+## Bots - Calling the Channel Post Handler Directly
+
+A bot running in-process with WPS (i.e. imported into the same Python process, rather than connecting as a packet client) can skip the socket/packet layer entirely and call `post_handler()` directly.
+
+```python
+post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=True)
+```
+
+`post` is a standard [`cp` object](#type-cp---channel-post). `suppress_cpr` defaults to `False`; set it to `True` so WPS doesn't attempt to deliver a `cpr` back to the bot, since there is no client connection to receive it.
+
+### Bots Posting Over a Packet Connection
+
+A bot that instead connects like a normal client over the packet network doesn't have access to the `suppress_cpr` argument directly. In this case, add `r: 0` to the `cp` object it sends - this tells WPS to suppress the `cpr` for that post.
+
+``` json
+{
+   "t": "cp",
+   "cid": 6,
+   "fc": "BOT1",
+   "ts": 1750804825979,
+   "p": "Testing 123",
+   "r": 0
 }
 ```

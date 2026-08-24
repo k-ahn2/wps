@@ -1,6 +1,11 @@
 from env import *
 import sqlite3
 
+# Environment Variables
+env_source = open("env.json", "r")
+env = json.load(env_source)
+env_source.close()
+
 EVENTS_DB_FILENAME = env['events']['eventsDbFilename']
 
 def events_db_init():
@@ -43,12 +48,9 @@ def event_logger(timestamp, event_type, callsign, event=None, meta=None):
         cursor = conn.cursor()
         
         try:
-            insert_query = f"""
-            INSERT INTO events (event) 
-            VALUES ('{json.dumps(event_to_insert, separators=(',', ':'))}')
-            """
-            
-            cursor.execute(insert_query)
+            insert_query = "INSERT INTO events (event) VALUES (?)"
+
+            cursor.execute(insert_query, [json.dumps(event_to_insert, separators=(',', ':'))])
             conn.commit()
             return
 
