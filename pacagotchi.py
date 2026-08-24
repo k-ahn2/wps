@@ -214,7 +214,7 @@ def _render(state):
     lines = [
         f"=== {name} the {type_name} ===",
         art,
-        f"Stage: {stage_n} | Age: {age_m}m | Mood: {mood.upper()}",
+        f"Stage: {stage_n} | Mood: {mood.upper()}",
         f"Health:    {_bar(hp)} {hp}%",
         f"Hunger:    {_bar(hu)} {hu}%",
         f"Happiness: {_bar(hap)} {hap}%",
