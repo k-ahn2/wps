@@ -258,7 +258,7 @@ def dbGetStats():
         "Server" as "Category",
         "Max Concurrent Users All Time" as "Statistic",
         (
-            SELECT GROUP_CONCAT(peak_total || ' on ' || peak_date, ', ')
+            SELECT GROUP_CONCAT(peak_date || ': ' || peak_total, ', ')
             FROM (
                 SELECT
                     json_extract(event, '$.e.total') AS peak_total,
