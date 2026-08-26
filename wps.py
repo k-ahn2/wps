@@ -297,7 +297,7 @@ def connected_session_handler(CONN, ADDR):
                     message = message[2:-2]
                     wps_logger("CONNECTED SESSION HANDLER", callsign, f"Decompressing {repr(message)}")
                     message_length_before = len(message)
-                    message = decompress(message)
+                    message = handlers.decompress(message)
                     wps_logger("CONNECTED SESSION HANDLER", callsign, f"Decompressed message: {message}")
                     wps_logger("CONNECTED SESSION HANDLER", callsign, f"Message length was {message_length_before} and now is {len(message)}")
 
