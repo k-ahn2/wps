@@ -8,6 +8,7 @@ import json
 import zlib, base64
 import importlib
 import os
+import sys
 from events import *
 from stats import *
 
@@ -297,6 +298,48 @@ def get_channel_name(cid):
 
     channel = get_channel(cid)
     return channel['cn'] if channel else None
+
+def reload_bots():
+    '''
+    Warm-reloads every loaded bot module's code in place via importlib.reload, without
+    restarting the process or dropping connections. Each bot's tick thread looks up
+    functions like tick()/handle_command() by name in the module's own __dict__ at call
+    time, and reload() rewrites that same dict in place, so the tick thread and the command
+    dispatch in channels_post_handler both pick up the new code immediately - no need to
+    re-run init() or restart the thread. Bot state lives in the DB, not the module, so
+    nothing is lost.
+    '''
+    if not BOTS:
+        print(f"{timestamp()} Bot reload requested but no bots are loaded")
+        return
+
+    for cid, mod in BOTS.items():
+        try:
+            importlib.reload(mod)
+            print(f"{timestamp()} Reloaded bot module '{mod.__name__}' (channel {cid})")
+        except Exception as reload_e:
+            print(f"{timestamp()} ERROR: failed to reload bot module '{mod.__name__}': {reload_e}")
+
+def bot_reload_key_listener():
+    '''
+    Background thread: watches the terminal for the 'r' key (no Enter needed) and warm-
+    reloads all bot modules via reload_bots() when pressed. Only meaningful when stdin is an
+    interactive TTY - callers should check sys.stdin.isatty() before starting this thread.
+    '''
+    import sys, select, termios, tty
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], 1)
+            if ready and sys.stdin.read(1).lower() == 'r':
+                reload_bots()
+    except Exception as exc:
+        print(f"{timestamp()} Bot reload key listener stopped: {exc}")
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 def load_bots_config():
     '''
@@ -2378,6 +2421,10 @@ def startup_and_listen():
                 print(f"{timestamp()} Bot '{bot_name}' enabled on channel {cid}")
             except Exception as bot_init_e:
                 print(f"{timestamp()} ERROR: failed to load bot '{bot_name}': {bot_init_e}")
+
+        if BOTS and sys.stdin.isatty():
+            threading.Thread(target=bot_reload_key_listener, daemon=True, name='bot_reload_key_listener').start()
+            print(f"{timestamp()} Press 'r' in this terminal to warm-reload bot code")
 
     # Confirm users are subscribed to the default channels
     check_auto_subscriptions(global_cursor)
