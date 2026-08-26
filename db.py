@@ -1,6 +1,6 @@
 import sqlite3, json, time
 import datetime
-from handlers import *
+from logger import *
 
 # Environment Variables
 env_source = open("env.json")
