@@ -1,7 +1,7 @@
 from env import *
 from logger import *
 from state import *
-from db import *
+import db
 from events import *
 from stats import *
 import uuid, time
@@ -18,6 +18,9 @@ import socket
 # `from handlers import *`) for everything else, so `importlib.reload(handlers)` swaps in new
 # function objects for the *next* call without touching any live socket or thread. Shared state
 # that must survive a reload (CONNECTIONS, BOTS, CHANNELS_CACHE, ...) lives in state.py, not here.
+#
+# Database access is likewise called only via `db.<func>(...)` (`import db`, never
+# `from db import *`), so db.py can be warm-reloaded right alongside this module.
 
 # Push notifications initialisation, if enabled
 if env['notificationsEnabled']:
@@ -73,7 +76,7 @@ def cleanup_bad_push_player_id(CONN_DB_CURSOR, callsign, bad_player_id):
     try:
         wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Updating bad player ID {bad_player_id} for {callsign}")
 
-        callsign_search = dbUserSearch(CONN_DB_CURSOR, callsign)
+        callsign_search = db.dbUserSearch(CONN_DB_CURSOR, callsign)
         close_connection(CONN_DB_CURSOR, callsign) if callsign_search['result'] == 'failure' else None
 
         if callsign_search['data'] == None:
@@ -98,7 +101,7 @@ def cleanup_bad_push_player_id(CONN_DB_CURSOR, callsign, bad_player_id):
                 break
     
         if found_push_record:
-            update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, { "push": user_push_records })
+            update_response = db.dbUserUpdate(CONN_DB_CURSOR, callsign, { "push": user_push_records })
             close_connection(CONN_DB_CURSOR, callsign) if update_response['result'] == 'failure' else None
             wps_logger("CLEANUP PUSH NOTIFICATION", callsign, f"Push entries after: {get_player_ids(update_response.get('data', {}))}")
         else:
@@ -211,7 +214,7 @@ def sync_channels_from_file(CONN_DB_CURSOR):
     current_channels = json.load(channels_source)
     channels_source.close()
 
-    sync_response = dbSyncChannels(CONN_DB_CURSOR, current_channels)
+    sync_response = db.dbSyncChannels(CONN_DB_CURSOR, current_channels)
     if sync_response['result'] == 'failure':
         wps_logger("CHANNELS SYNC", "-----", f"Failed to sync channels from channels.json: {sync_response}", "ERROR")
         return sync_response
@@ -262,7 +265,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     client_version = connect_object.get('v', 0)
     connect_timestamp = round(time.time())
 
-    callsign_search = dbUserSearch(CONN_DB_CURSOR, callsign)
+    callsign_search = db.dbUserSearch(CONN_DB_CURSOR, callsign)
     wps_logger("CONNECT HANDLER", callsign, f"User search result: {callsign_search.get('result', None)}")
     close_connection(CONN_DB_CURSOR, callsign, CONN) if callsign_search['result'] == 'failure' else None
 
@@ -281,7 +284,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
         }
 
         wps_logger("CONNECT HANDLER", callsign, f"New user to create: {new_user_object}")
-        create_user_response = dbCreateNewUser(CONN_DB_CURSOR, new_user_object)
+        create_user_response = db.dbCreateNewUser(CONN_DB_CURSOR, new_user_object)
         wps_logger("CONNECT HANDLER", callsign, f"Create user response: {create_user_response}")
         close_connection(CONN_DB_CURSOR, callsign, CONN) if create_user_response['result'] == 'failure' else None
 
@@ -297,7 +300,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
             else:
                 user_database_record['last_connected'] = connect_timestamp
                 
-            dbCleanupDepracatedLastSeenKey(CONN_DB_CURSOR, callsign)
+            db.dbCleanupDepracatedLastSeenKey(CONN_DB_CURSOR, callsign)
 
         wps_logger("CONNECT HANDLER", callsign, "Existing user found")         
 
@@ -327,7 +330,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
         user_updated_fields['name'] = name_from_client
         user_updated_fields['name_last_updated'] = connect_timestamp
 
-    user_db_update = dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
+    user_db_update = db.dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
     wps_logger("CONNECT HANDLER", callsign, f"User update response: {user_db_update.get('result', None)}")
     close_connection(CONN_DB_CURSOR, callsign, CONN) if user_db_update['result'] == 'failure' else None
     user_db_record = user_db_update['data']
@@ -389,7 +392,7 @@ def first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, i
     # Return the user records
     ###
 
-    messaged_users_result = dbGetMessagedUsers(CONN_DB_CURSOR, callsign)
+    messaged_users_result = db.dbGetMessagedUsers(CONN_DB_CURSOR, callsign)
     close_connection(CONN_DB_CURSOR, callsign, CONN) if messaged_users_result['result'] == 'failure' else None
     wps_logger("FIRST TIME CONNECT HANDLER", callsign, f"Messaged users result: {messaged_users_result}")
     messaged_users = messaged_users_result['data']
@@ -426,7 +429,7 @@ def first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, i
             "m": []
         }
 
-        get_last_messages_response = dbGetLastMessages(CONN_DB_CURSOR, callsign, recipient['callsign'], 10)
+        get_last_messages_response = db.dbGetLastMessages(CONN_DB_CURSOR, callsign, recipient['callsign'], 10)
         close_connection(CONN_DB_CURSOR, callsign, CONN) if get_last_messages_response['result'] == 'failure' else None
         messages = get_last_messages_response['data']
         
@@ -452,7 +455,7 @@ def first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, i
 
     response = { "t": "he", "h": [] }
 
-    updated_hams_result = dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_timestamp)
+    updated_hams_result = db.dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_timestamp)
 
     for ham in updated_hams_result['data']:
         
@@ -502,7 +505,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     # Send connect response
     ###
 
-    new_messages_response = dbGetMessages(CONN_DB_CURSOR, callsign, last_message)
+    new_messages_response = db.dbGetMessages(CONN_DB_CURSOR, callsign, last_message)
     close_connection(CONN_DB_CURSOR, callsign, CONN) if new_messages_response['result'] == 'failure' else None
     new_messages = new_messages_response['data']
     new_messages_count = len(new_messages)
@@ -531,7 +534,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
 
     for channel in channel_subscriptions:
         
-        new_posts = dbGetPosts(CONN_DB_CURSOR, channel['cid'], channel['lp'])
+        new_posts = db.dbGetPosts(CONN_DB_CURSOR, channel['cid'], channel['lp'])
         new_posts_len = len(new_posts['data'])
 
         if new_posts_len <= env['maxNewPostsToReturnPerChannelOnConnect']:
@@ -553,7 +556,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     # Update the user record to include the paused channels
     if len(paused_channels_headers["ch"]) > 0:
         paused_channels = [item['cid'] for item in paused_channels_headers['ch']]
-        paused_channels_update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, { "paused_channels": paused_channels })
+        paused_channels_update_response = db.dbUserUpdate(CONN_DB_CURSOR, callsign, { "paused_channels": paused_channels })
         wps_logger('CONNECT HANDLER', callsign, f"Updated user record with paused channel headers {paused_channels}")
         close_connection(CONN_DB_CURSOR, callsign, CONN) if paused_channels_update_response['result'] == 'failure' else None
 
@@ -624,7 +627,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     wps_logger('CONNECT HANDLER', callsign, "Starting message edit check")
     
     # Returns the whole message
-    new_message_edits = dbGetMessageEdits(CONN_DB_CURSOR, callsign, last_message, last_message_edit)
+    new_message_edits = db.dbGetMessageEdits(CONN_DB_CURSOR, callsign, last_message, last_message_edit)
 
     if len(new_message_edits['data']) > 0:
         
@@ -655,7 +658,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     wps_logger('CONNECT HANDLER', callsign, "Starting emoji check")
     
     # Returns the whole message
-    new_message_emojis = dbGetMessageEmojis(CONN_DB_CURSOR, callsign, last_message, last_message_emoji)
+    new_message_emojis = db.dbGetMessageEmojis(CONN_DB_CURSOR, callsign, last_message, last_message_emoji)
 
     if len(new_message_emojis['data']) > 0:
        
@@ -683,7 +686,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     # Return the user records, so the user has last seen times and name update
     ###
 
-    messaged_users_result = dbGetMessagedUsers(CONN_DB_CURSOR, callsign)
+    messaged_users_result = db.dbGetMessagedUsers(CONN_DB_CURSOR, callsign)
     
     user_response = { 
         "t": "u",
@@ -736,7 +739,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
 
     response = { "t": "he", "h": [] }
 
-    updated_hams_result = dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_timestamp)
+    updated_hams_result = db.dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_timestamp)
 
     for ham in updated_hams_result['data']:
         
@@ -761,7 +764,7 @@ def online_users_connect_handler(CONN_DB_CURSOR, callsign, CONN):
     # Return Online Users
     ###
 
-    online_users = dbGetOnlineUsers(CONN_DB_CURSOR)
+    online_users = db.dbGetOnlineUsers(CONN_DB_CURSOR)
     
     online_response = { 
         "t": "o",
@@ -803,7 +806,7 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
     # Return new channel posts
     ###
     
-    new_channel_posts_response = dbGetPosts(CONN_DB_CURSOR, channel_object['cid'], channel_object['lp'])
+    new_channel_posts_response = db.dbGetPosts(CONN_DB_CURSOR, channel_object['cid'], channel_object['lp'])
     new_channel_posts = new_channel_posts_response['data']
 
     channel_posts_batch_array['m']['pt'] = len(new_channel_posts)
@@ -837,7 +840,7 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
         "e": []
     }
 
-    posts_with_emoji_updates_response = dbGetPostEmojis(CONN_DB_CURSOR, channel_object['cid'], channel_object['le'], channel_object['lp'])
+    posts_with_emoji_updates_response = db.dbGetPostEmojis(CONN_DB_CURSOR, channel_object['cid'], channel_object['le'], channel_object['lp'])
     close_connection(CONN_DB_CURSOR, callsign, CONN) if posts_with_emoji_updates_response['result'] == 'failure' else None
     posts_with_emoji_updates = posts_with_emoji_updates_response['data']
 
@@ -864,7 +867,7 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
     
     wps_logger('CONNECT HANDLER', callsign, "Starting post edit check")
     
-    posts_with_edit_updates_response = dbGetPostEdits(CONN_DB_CURSOR, channel_object['cid'], channel_object['led'], channel_object['lp'])
+    posts_with_edit_updates_response = db.dbGetPostEdits(CONN_DB_CURSOR, channel_object['cid'], channel_object['led'], channel_object['lp'])
     posts_with_edit_updates = posts_with_edit_updates_response['data']
 
     # Create a blank parent return object
@@ -909,7 +912,7 @@ def pairing_handler(CONN_DB_CURSOR, callsign, CONN):
         "pair_start_time": pair_start_time 
     }
 
-    enable_pairing_response = dbUserUpdate(CONN_DB_CURSOR, callsign, enable_pairing_update)
+    enable_pairing_response = db.dbUserUpdate(CONN_DB_CURSOR, callsign, enable_pairing_update)
     wps_logger("CONNECT HANDLER", callsign, f"Enable pairing response: {enable_pairing_response}")
     close_connection(CONN_DB_CURSOR, callsign, CONN) if enable_pairing_response['result'] == 'failure' else None
 
@@ -936,7 +939,7 @@ def avatar_handler(CONN_DB_CURSOR, callsign, CONN, avatar_object):
         "avatar": avatar_object['a']
     }
 
-    avatar_update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, avatar_update)
+    avatar_update_response = db.dbUserUpdate(CONN_DB_CURSOR, callsign, avatar_update)
     wps_logger("AVATAR HANDLER", callsign, f"Avatar update response: {avatar_update_response}")
     close_connection(CONN_DB_CURSOR, callsign, CONN) if avatar_update_response['result'] == 'failure' else None
 
@@ -955,7 +958,7 @@ def avatar_enquiry_handler(CONN_DB_CURSOR, callsign, enquiry_object, CONN):
 
     wps_logger("AVATAR ENQUIRY HANDLER", callsign, "Starting")
 
-    avatar_enquiry_response = dbGetUpdatedAvatars(CONN_DB_CURSOR, callsign, enquiry_object["lats"])
+    avatar_enquiry_response = db.dbGetUpdatedAvatars(CONN_DB_CURSOR, callsign, enquiry_object["lats"])
     close_connection(CONN_DB_CURSOR, callsign, CONN) if avatar_enquiry_response['result'] == 'failure' else None
     
     # If co (count only) is set to 1, only return the count of avatars
@@ -999,7 +1002,7 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
         message['_id'] = f"{message['ts']}-{message['fc']}"
 
     # Check if message already in database. Could have been processed but client didn't receive the acknowledgement
-    message_search = dbMessageSearch(CONN_DB_CURSOR, message['_id'])
+    message_search = db.dbMessageSearch(CONN_DB_CURSOR, message['_id'])
     close_connection(CONN_DB_CURSOR, callsign, CONN) if message_search['result'] == 'failure' else None
     message_search_result = message_search['data']
 
@@ -1015,14 +1018,14 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
         }
 
         # Get the message count to the recipient before inserting, so we can send the user record if this is the first message
-        message_count_to_recipient_result = dbMessageCountToRecipient(CONN_DB_CURSOR, callsign, message['tc'])
+        message_count_to_recipient_result = db.dbMessageCountToRecipient(CONN_DB_CURSOR, callsign, message['tc'])
 
         if message_search_result != None and "_id" in message_search_result.get("_id", {}):
             wps_logger("MESSAGE HANDLER", callsign, "Message already exists, sending client ack and finishing processing")
             socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
             return
         else:
-            message_insert_response = dbInsertMessage(CONN_DB_CURSOR, message_to_write_to_wps_database)
+            message_insert_response = db.dbInsertMessage(CONN_DB_CURSOR, message_to_write_to_wps_database)
             close_connection(CONN_DB_CURSOR, callsign, CONN) if message_insert_response['result'] == 'failure' else None
             wps_logger("MESSAGE HANDLER", callsign, f"Client acknowledgment is {client_response}")
             socket_send_handler(CONN_DB_CURSOR, CONN, callsign, client_response)
@@ -1057,7 +1060,7 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
             return
         
         # User isn't connected so send a push if enabled
-        callsign_search_response = dbUserSearch(CONN_DB_CURSOR, message['tc'])
+        callsign_search_response = db.dbUserSearch(CONN_DB_CURSOR, message['tc'])
         close_connection(CONN_DB_CURSOR, callsign, CONN) if callsign_search_response['result'] == 'failure' else None
 
         callsign_db_record = callsign_search_response['data']
@@ -1095,7 +1098,7 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
 
         if push_counter > 0:
             update = { "notifications_since_last_logout": notifications_since_last_logout }
-            update_response = dbUserUpdate(CONN_DB_CURSOR, message['tc'], update)
+            update_response = db.dbUserUpdate(CONN_DB_CURSOR, message['tc'], update)
             close_connection(CONN_DB_CURSOR, callsign, CONN) if update_response['result'] == 'failure' else None
 
     except Exception as e:
@@ -1115,7 +1118,7 @@ def message_edit_handler(CONN_DB_CURSOR, msg_update, callsign, CONN):
 
     update = { "edts": msg_update['edts'], "m": msg_update['m'], "ed": 1 }
 
-    message_edit_response = dbUpdateMessage(CONN_DB_CURSOR, msg_update['_id'], update)
+    message_edit_response = db.dbUpdateMessage(CONN_DB_CURSOR, msg_update['_id'], update)
     wps_logger("MESSAGE EDIT HANDLER", callsign, f"Message edit response {message_edit_response}")
     if message_edit_response['result'] == 'failure':
         wps_logger("MESSAGE EDIT HANDLER", callsign, f"Failed to update message with ID {msg_update['_id']}", "ERROR")
@@ -1156,7 +1159,7 @@ def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
     Unlike a new message or an edit, they are not guaranteed delivery to the server. No acknowledgement is sent to the client
     '''
 
-    message_to_update_response = dbMessageSearch(CONN_DB_CURSOR, emoji_object['_id'])
+    message_to_update_response = db.dbMessageSearch(CONN_DB_CURSOR, emoji_object['_id'])
     message_to_update = message_to_update_response['data']
 
     if message_to_update is None:
@@ -1181,7 +1184,7 @@ def message_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
 
     update = { "e": updated_emojis, "ets": emoji_object['ets'] }
 
-    message_edit_response = dbUpdateMessage(CONN_DB_CURSOR, emoji_object['_id'], update)
+    message_edit_response = db.dbUpdateMessage(CONN_DB_CURSOR, emoji_object['_id'], update)
     edited_message = message_edit_response['data']
 
     wps_logger("MESSAGE EMOJI HANDLER", callsign, f"Message after updating {edited_message}")
@@ -1205,7 +1208,7 @@ def user_enquiry_handler(CONN_DB_CURSOR, user_enquiry, callsign, CONN):
     DEPRECATED, Ham Enquiry will be evolved to handle this in future
     '''
 
-    user_enquiry_response = dbUserSearch(CONN_DB_CURSOR, user_enquiry['c'])
+    user_enquiry_response = db.dbUserSearch(CONN_DB_CURSOR, user_enquiry['c'])
     wps_logger("USER ENQUIRY HANDLER", callsign, f"User enquiry response: {user_enquiry_response}")
     user_enquiry_response = user_enquiry_response['data']
 
@@ -1248,7 +1251,7 @@ def ham_enquiry_handler(CONN_DB_CURSOR, ham_enquiry, callsign, CONN):
 
     for individual_ham in ham_enquiry["h"]:
     
-        ham_enquiry_response = dbUserSearch(CONN_DB_CURSOR, individual_ham)
+        ham_enquiry_response = db.dbUserSearch(CONN_DB_CURSOR, individual_ham)
         wps_logger("USER ENQUIRY HANDLER", callsign, f"Ham enquiry response: {ham_enquiry_response}")
         ham_enquiry_response = ham_enquiry_response['data']
         
@@ -1278,7 +1281,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=False):
         return None
     
     # Check for existing post, incase this is a resend
-    post_search_result = dbPostSearch(CONN_DB_CURSOR, post['cid'], post['ts'])
+    post_search_result = db.dbPostSearch(CONN_DB_CURSOR, post['cid'], post['ts'])
     close_connection(CONN_DB_CURSOR, callsign, CONN) if post_search_result['result'] == 'failure' else None
     post_search = post_search_result['data']
 
@@ -1300,14 +1303,14 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=False):
             post_to_insert = json.loads(json.dumps(post))
             post_to_insert['dts'] = delivery_timestamp
             wps_logger("CHANNELS POST HANDLER", callsign, f"Post to insert: {post_to_insert}")
-            post_insert_response = dbInsertPost(CONN_DB_CURSOR, post_to_insert)
+            post_insert_response = db.dbInsertPost(CONN_DB_CURSOR, post_to_insert)
             close_connection(CONN_DB_CURSOR, callsign, CONN) if post_insert_response['result'] == 'failure' else None
             wps_logger("CHANNELS POST HANDLER", callsign, f"Post insert acknowledgment is {post_insert_response}")
             socket_send_handler(CONN_DB_CURSOR, CONN, callsign, delivery_receipt) if not suppress_cpr else None
 
         # Get the channel subscribers
         # Gets an array of subscriber objects with callsign and push settings
-        subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
+        subscribers_response = db.dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
         close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_response['result'] == 'failure' else None
         subscribers = subscribers_response['data']
 
@@ -1341,7 +1344,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=False):
                     wps_logger("CHANNELS POST HANDLER", callsign, f"Push notification to {playerId} failed")
                     cleanup_bad_push_player_id(CONN_DB_CURSOR, subscriber['callsign'], playerId)
 
-                post_update_response = dbUpdateUserPushNotifications(CONN_DB_CURSOR, subscriber['callsign'], post['cid'])
+                post_update_response = db.dbUpdateUserPushNotifications(CONN_DB_CURSOR, subscriber['callsign'], post['cid'])
                 close_connection(CONN_DB_CURSOR, callsign, CONN) if post_update_response['result'] == 'failure' else None
                 wps_logger("CHANNELS POST HANDLER", callsign, f"User update response is {post_update_response.get('result', None)}")
 
@@ -1349,7 +1352,7 @@ def post_handler(CONN_DB_CURSOR, post, callsign, CONN, suppress_cpr=False):
         bot = BOTS.get(post['cid'])
         if bot and post.get('p', '').startswith('/'):
             try:
-                bot_resp = bot.handle_command(get_db_connection().cursor(), post['p'], callsign)
+                bot_resp = bot.handle_command(db.get_db_connection().cursor(), post['p'], callsign)
                 if bot_resp:
                     bot_broadcast_to_channel(CONN_DB_CURSOR, post['cid'], bot_resp['text'], bot_resp['fc'])
             except Exception as bot_e:
@@ -1373,7 +1376,7 @@ def broadcast_post_handler(CONN_DB_CURSOR, subscribers, post, callsign, CONN):
 
     # Get the list of callsigns who have this channel paused
     # Creates an array of callsigns who have paused the channel
-    paused_callsigns_response = dbPausedCallsignsForChannel(CONN_DB_CURSOR, post['cid'])
+    paused_callsigns_response = db.dbPausedCallsignsForChannel(CONN_DB_CURSOR, post['cid'])
     close_connection(CONN_DB_CURSOR, callsign, CONN) if paused_callsigns_response['result'] == 'failure' else None
     paused_callsigns = paused_callsigns_response['data']
     wps_logger("CHANNELS POST HANDLER", callsign, f"Channel Paused Subscribers: {paused_callsigns}")
@@ -1417,7 +1420,7 @@ def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
         "ed": 1 
     }
 
-    post_edit_response = dbUpdatePost(CONN_DB_CURSOR, post_update['cid'], post_update['ts'], post_edit_update)
+    post_edit_response = db.dbUpdatePost(CONN_DB_CURSOR, post_update['cid'], post_update['ts'], post_edit_update)
     wps_logger("POST EDIT HANDLER", callsign, f"Message edit response: {post_edit_response}")
     close_connection(CONN_DB_CURSOR, callsign, CONN) if post_edit_response['result'] == 'failure' else None
     
@@ -1435,7 +1438,7 @@ def post_edit_handler(CONN_DB_CURSOR, post_update, callsign, CONN):
         "p": post_update['p']
     }
 
-    channel_subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post_update['cid'])
+    channel_subscribers_response = db.dbChannelSubscribers(CONN_DB_CURSOR, callsign, post_update['cid'])
     close_connection(CONN_DB_CURSOR, callsign, CONN) if channel_subscribers_response['result'] == 'failure' else None
     channel_subscriber_objects = channel_subscribers_response['data']
     subscribing_callsigns = [s['callsign'] for s in channel_subscriber_objects]
@@ -1459,7 +1462,7 @@ def post_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
     
     wps_logger("CHANNELS EMOJI HANDLER", callsign, f"Emoji Update: {emoji_object}")
 
-    post_search_result = dbPostSearch(CONN_DB_CURSOR, emoji_object['cid'], emoji_object['ts'])
+    post_search_result = db.dbPostSearch(CONN_DB_CURSOR, emoji_object['cid'], emoji_object['ts'])
     close_connection(CONN_DB_CURSOR, callsign, CONN) if post_search_result['result'] == 'failure' else None
     post = post_search_result['data']
 
@@ -1502,14 +1505,14 @@ def post_emoji_handler(CONN_DB_CURSOR, emoji_object, callsign, CONN):
 
     wps_logger("CHANNELS EMOJI HANDLER", callsign, f"Post update to write: {post_update}")
 
-    post_emoji_response = dbUpdatePost(CONN_DB_CURSOR, emoji_object['cid'], emoji_object['ts'], post_update)
+    post_emoji_response = db.dbUpdatePost(CONN_DB_CURSOR, emoji_object['cid'], emoji_object['ts'], post_update)
     wps_logger("CHANNELS EMOJI HANDLER", callsign, f"Post Update response {post_emoji_response}")
     close_connection(CONN_DB_CURSOR, callsign, CONN) if post_emoji_response['result'] == 'failure' else None
     updated_post = post_emoji_response['data']    
 
     wps_logger("CHANNELS EMOJI HANDLER", callsign, f"Post after updating: {updated_post}")
 
-    channel_subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, emoji_object['cid'])
+    channel_subscribers_response = db.dbChannelSubscribers(CONN_DB_CURSOR, callsign, emoji_object['cid'])
     close_connection(CONN_DB_CURSOR, callsign, CONN) if channel_subscribers_response['result'] == 'failure' else None
     channel_subscriber_objects = channel_subscribers_response['data']
     subscribing_callsigns = [s['callsign'] for s in channel_subscriber_objects]
@@ -1535,7 +1538,7 @@ def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN)
     
     wps_logger("CHANNELS SUBSCRIBE HANDLER", callsign, f"Received: {subscribe_request}")
 
-    callsign_search = dbUserSearch(CONN_DB_CURSOR, callsign)
+    callsign_search = db.dbUserSearch(CONN_DB_CURSOR, callsign)
     close_connection(CONN_DB_CURSOR, callsign, CONN) if callsign_search['result'] == 'failure' else None
     user_record = callsign_search['data']
 
@@ -1548,11 +1551,11 @@ def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN)
             channel_subscriptions.append(subscribe_request['cid'])
     
         update_object = { "channel_subscriptions": channel_subscriptions }
-        user_update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, update_object)
+        user_update_response = db.dbUserUpdate(CONN_DB_CURSOR, callsign, update_object)
         close_connection(CONN_DB_CURSOR, callsign, CONN) if user_update_response['result'] == 'failure' else None
         wps_logger("CHANNELS SUBSCRIBE HANDLER", callsign, f"User update response: {user_update_response.get('result', None)}")
 
-        new_post_count_reponse = dbGetPosts(CONN_DB_CURSOR, subscribe_request['cid'], subscribe_request['lcp'])
+        new_post_count_reponse = db.dbGetPosts(CONN_DB_CURSOR, subscribe_request['cid'], subscribe_request['lcp'])
         close_connection(CONN_DB_CURSOR, callsign, CONN) if new_post_count_reponse['result'] == 'failure' else None
         new_post_count = len(new_post_count_reponse['data'])
         wps_logger('CONNECT HANDLER', callsign, f"Count is: {new_post_count}")
@@ -1572,7 +1575,7 @@ def channel_subscribe_handler(CONN_DB_CURSOR, subscribe_request, callsign, CONN)
             channel_subscriptions.remove(subscribe_request['cid'])
 
         update_object = { "channel_subscriptions": channel_subscriptions }
-        user_update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, update_object)
+        user_update_response = db.dbUserUpdate(CONN_DB_CURSOR, callsign, update_object)
         close_connection(CONN_DB_CURSOR, callsign, CONN) if user_update_response['result'] == 'failure' else None
         wps_logger("CHANNELS SUBSCRIBE HANDLER", callsign, f"User update response: {user_update_response.get('result', None)}")
 
@@ -1609,7 +1612,7 @@ def post_batch_handler(CONN_DB_CURSOR, post_batch_request, callsign, CONN):
         "p": []
     }
 
-    posts = dbGetPostsBatch(CONN_DB_CURSOR, post_batch_request['cid'], post_batch_request['pc'])
+    posts = db.dbGetPostsBatch(CONN_DB_CURSOR, post_batch_request['cid'], post_batch_request['pc'])
     close_connection(CONN_DB_CURSOR, callsign, CONN) if posts['result'] == 'failure' else None
     posts = posts['data']
 
@@ -1652,10 +1655,10 @@ def unpause_channel_handler(CONN_DB_CURSOR, callsign, unpause_channel_request, C
 
     if "lts" in unpause_channel_request:
         # If lts (last timestamp) is provided, get posts since that timestamp
-        posts_response = dbGetPosts(CONN_DB_CURSOR, unpause_channel_request['cid'], unpause_channel_request['lts'])
+        posts_response = db.dbGetPosts(CONN_DB_CURSOR, unpause_channel_request['cid'], unpause_channel_request['lts'])
     elif "pc" in unpause_channel_request:
         # If pc (post count) is provided, get the last pc posts
-        posts_response = dbGetPostsBatch(CONN_DB_CURSOR, unpause_channel_request['cid'], unpause_channel_request['pc'])
+        posts_response = db.dbGetPostsBatch(CONN_DB_CURSOR, unpause_channel_request['cid'], unpause_channel_request['pc'])
 
     close_connection(CONN_DB_CURSOR, callsign, CONN) if posts_response['result'] == 'failure' else None
     posts = posts_response['data']
@@ -1686,14 +1689,14 @@ def unpause_channel_handler(CONN_DB_CURSOR, callsign, unpause_channel_request, C
         wps_logger('UNPAUSE CHANNEL HANDLER', callsign, f"Unpause Channel response batch count: {channel_posts_batch_array['m']['pc']}")
         socket_send_handler(CONN_DB_CURSOR, CONN, callsign, channel_posts_batch_array)
 
-    callsign_search = dbUserSearch(CONN_DB_CURSOR, callsign)
+    callsign_search = db.dbUserSearch(CONN_DB_CURSOR, callsign)
     close_connection(CONN_DB_CURSOR, callsign, CONN) if callsign_search['result'] == 'failure' else None
     user_record = callsign_search['data']
 
     wps_logger('UNPAUSE CHANNEL HANDLER', callsign, f"Blocked channels before: {user_record.get('paused_channels', [])}")    
 
     update_object = { "paused_channels": [id for id in user_record.get('paused_channels', []) if id != unpause_channel_request['cid']] }
-    user_update_response = dbUserUpdate(CONN_DB_CURSOR, callsign, update_object)
+    user_update_response = db.dbUserUpdate(CONN_DB_CURSOR, callsign, update_object)
     close_connection(CONN_DB_CURSOR, callsign, CONN) if user_update_response['result'] == 'failure' else None
     wps_logger('UNPAUSE CHANNEL HANDLER', callsign, f"Blocked channels after: {user_update_response['data'].get('paused_channels', [])}")
 
@@ -1815,7 +1818,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     else:
         wps_logger("DISCONNECT HANDLER", callsign, f"{remaining_connections_for_callsign} active connection(s) remain, keeping user marked online")
 
-    user_db_record = dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
+    user_db_record = db.dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
     wps_logger("DISCONNECT HANDLER", callsign, f"User update response: {user_db_record.get('result', None)}")
 
     event_logger(timestamp_milliseconds(), 'USER_DISCONNECT', callsign, { "total": len(CONNECTIONS) }, None)
@@ -1873,7 +1876,7 @@ def socket_send_handler_other_connected_user(CONN_DB_CURSOR, sending_callsign, s
 
     wps_logger("SOCKET SEND HANDLER OTHER CONNECTED USER", sending_callsign, f"Sending {payload} from {sending_callsign} to {receiving_callsign}")
     
-    user_enquiry_response = dbUserSearch(CONN_DB_CURSOR, receiving_callsign)
+    user_enquiry_response = db.dbUserSearch(CONN_DB_CURSOR, receiving_callsign)
     if user_enquiry_response['result'] == 'failure':
         close_connection(CONN_DB_CURSOR, sending_callsign, sending_connection)
         return
@@ -1915,7 +1918,7 @@ def check_auto_subscriptions(cursor):
                 channel_subscriptions.append(default_subscription) if default_subscription not in channel_subscriptions else None
             
             if len(channel_subscriptions) > original_length:
-                user_update_response = dbUserUpdate(cursor, callsign, { "channel_subscriptions": channel_subscriptions })
+                user_update_response = db.dbUserUpdate(cursor, callsign, { "channel_subscriptions": channel_subscriptions })
                 if user_update_response['result'] == 'failure':
                     wps_logger("AUTO SUBSCRIBE HANDLER", row[0], f"Failed to update user subscriptions for {row[0]}", "ERROR")
 
@@ -1938,14 +1941,14 @@ def bot_broadcast_to_channel(CONN_DB_CURSOR, cid, text, callsign):
         "dts": ts,
     }
     post_for_db = json.loads(json.dumps(post))
-    insert_resp = dbInsertPost(CONN_DB_CURSOR, post_for_db)
+    insert_resp = db.dbInsertPost(CONN_DB_CURSOR, post_for_db)
     if insert_resp['result'] == 'failure':
         wps_logger("BOT BROADCAST", "-----", f"Failed to insert bot post: {insert_resp}")
         return
 
     # Get the channel subscribers
     # Gets an array of subscriber objects with callsign and push settings
-    subscribers_response = dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
+    subscribers_response = db.dbChannelSubscribers(CONN_DB_CURSOR, callsign, post['cid'])
     close_connection(CONN_DB_CURSOR, callsign, CONN) if subscribers_response['result'] == 'failure' else None
     subscribers = subscribers_response['data']
 

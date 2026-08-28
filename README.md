@@ -6,7 +6,7 @@ WPS was built specifically to enable the functionality in the WhatsPac front end
 
 WPS is capable of operating effectively without any internet dependency over link speeds of 1200 baud, albeit the latest 2400 and 3600 baud speeds offered by the NinoTNC are typically used and are the recommended minimum.
 
-WPS runs entirely in Python, starts with just three files, has minimal dependencies, minimal setup and runs with single command. It can be run manually or as a service.
+WPS runs entirely in Python, has minimal dependencies, minimal setup and runs with a single command. It can be run manually or as a service.
 
 > [!IMPORTANT]
 > WPS is in active development and is changing on a regular basis - please remember to watch the repo to be alerted when there are new versions
@@ -21,6 +21,7 @@ WPS runs entirely in Python, starts with just three files, has minimal dependenc
 7. [How WPS handles JSON](#how-wps-handles-json)
 8. [Sending a JSON object to WPS (Javascript Example)](#sending-a-json-object-to-wps---a-javascript-example)
 9. [Bots](#bots)
+10. [Warm Reloading Code](#warm-reloading-code)
 
 
 ### WPS Installation and Protocol Documentation
@@ -59,6 +60,7 @@ Links to documentation in the `/docs` directory
 - **Data Batching:** WPS batches bulk post and message downloads, optimising compression and delivery
 - **Logging:** WPS includes error logging by default, with extensive info logging configurable if required
 - **Run as Service:** WPS runs as a standard linux service (and assume could on Windows too)
+- **Warm Reload:** Deploy new message-processing and bot code to a running WPS instance without dropping any connected user - see [Warm Reloading Code](#warm-reloading-code)
 
 ## Future
 - **Replication:** Supporting the ability to replicate to other WPS instances hosted on the Packet Network
@@ -159,6 +161,9 @@ Bots are only loaded if `botsEnabled` is set to `true` in `env.json` - when `fal
 
 If either is missing, WPS logs an error at startup and skips loading that bot.
 
+> [!TIP]
+> A bot's code can be updated in place on a running server without disconnecting users or restarting WPS - see [Warm Reloading Code](#warm-reloading-code)
+
 ### Built-in Bot: Pacagotchi
 
 Pacagotchi is a Tamagotchi-style pet that lives in a WPS channel and is cared for collectively by everyone on the network.
@@ -253,3 +258,27 @@ def handle_command(cursor, post_text, from_callsign):
 ```
 
 4. Ensure `botsEnabled` is `true` in `env.json`, then restart WPS — the bot is loaded automatically with no other changes required.
+
+## Warm Reloading Code
+
+WPS separates the TCP layer from the message-processing/business logic specifically so the latter can be updated on a running server without dropping a single connected user - important for a service reached over AX.25, where reconnecting isn't instant and mid-transfer state would otherwise be lost.
+
+**How it works:** `wps.py` owns the listening socket, the accept loop, and every open connection's raw receive/buffer/framing loop - it never contains processing or database logic itself. All message handling (connect, messages, posts, channels, avatars, stats, dispatch/routing, bot broadcast, etc.) lives in `handlers.py`, and every database interaction lives in `db.py`. `wps.py` and `handlers.py` only ever call these via `handlers.<function>(...)` / `db.<function>(...)`. Every open connection's read loop looks the function up on the module fresh for each incoming packet, so swapping `handlers.py`'s or `db.py`'s code in place (`importlib.reload`) is picked up by every connection's *next* message - no restart, no dropped socket. `get_db_connection()` opens a fresh SQLite connection per call rather than caching one at module level, so there's no stale connection to worry about across a `db.py` reload. Loaded bot modules in `bots/` work the same way and are reloaded alongside `handlers.py` and `db.py`. State that must survive a reload (open connections, loaded bots, the channel cache) lives in `state.py`, which is never itself reloaded.
+
+**To trigger it:** with WPS running attached to an interactive terminal (`python3 wps.py`), press `r` in that terminal - no Enter needed. This warm-reloads `db.py`, `handlers.py`, and every currently loaded bot module in one go (in that order) and prints a confirmation for each.
+
+> [!WARNING]
+> The `r` key listener only starts when WPS's stdin is an interactive TTY. **It is not available when WPS is run as a service** (e.g. via systemd with no attached terminal) or with stdin redirected/piped - in those setups, deploying a `db.py`, `handlers.py` or bot change requires a normal restart.
+
+### What is included (reloadable via `r`, no restart, no disconnect)
+- Everything in `handlers.py` - all message type handlers, the `t`-keyed dispatch logic, push notification logic, compression helpers, and channel cache sync logic
+- Everything in `db.py` - every database query and schema-touching function (`dbUserSearch`, `dbInsertPost`, `dbInit`, etc.)
+- Every bot module already loaded at startup (e.g. `bots/pacagotchi.py`) - both its tick/background behaviour and its slash-command handling. Bot state lives in the database, not the module, so nothing is lost on reload
+
+### What is excluded (requires stopping and restarting `python3 wps.py`)
+- **`wps.py` itself** - the TCP socket, accept loop, per-connection receive/buffer/framing loop and connection lifecycle. This is the part that must keep running uninterrupted, so it's deliberately never reloaded
+- **`state.py`, `logger.py`, `env.py`** - none of these are reloaded; changes to shared state shape, logging setup, or environment loading need a restart
+- **`env.json` changes that affect startup only** - e.g. `socketTcpPort` (the socket is already bound), `dbFilename`, `botsEnabled`, or logging levels set up once at startup
+- **A brand new bot** added to `bots/bots.json` - bots are only imported and started once, during `startup_and_listen()` at process start. Reloading only re-executes bot modules already present in the running bot registry; a bot that wasn't loaded at startup needs a restart to be picked up (`channels.json` itself is still re-read on every client connect, independent of warm reload, so channel/group edits don't need either a reload or a restart)
+- **A schema change that isn't purely additive** - e.g. reloading a `db.py` change that renames or drops a column read by code that hasn't been reloaded yet, or that requires a one-off migration `dbInit()` won't apply to an already-open database. Purely additive changes (a new function, a new `CREATE TABLE IF NOT EXISTS`) are safe; anything that changes what existing rows or connections look like is safest applied with a restart
+- **Any syntax or import error in `db.py` or `handlers.py`** at reload time - the reload is caught and logged as an `ERROR` without crashing the server, but leaves the previous, still-working code in place until a valid reload succeeds. Always check a change parses cleanly (e.g. `python3 -c "import handlers"`) before reloading a live node

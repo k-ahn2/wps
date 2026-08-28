@@ -23,6 +23,9 @@ This will start WPS with a default configuration. When running for the first tim
 
 Check for errors in the console. Confirmation of the TCP Port is shown - check this matches the port in BPQ or Xrouter.
 
+> [!TIP]
+> When run this way, attached to an interactive terminal, press `r` at any time to warm-reload database, message-processing and bot code changes into the running server without disconnecting any connected user. This only works with an attached TTY - not when WPS is run as a service. See [Warm Reloading Code](/README.md#warm-reloading-code) for what is and isn't covered.
+
 ## Node Integration - Interfacing with BPQ or Xrouter
 
 > [!NOTE]
@@ -148,8 +151,11 @@ For grouping channels, adding auto-subscribed or read-only channels, or linking 
 
 | File | Overview |
 | - | :- |
-|`wps.py`|The main WPS application - includes all application logic, thread handling and TCP listener|
-|`db.py`|Contains functions to handle every interaction between the WPS application and the database - e.g. `dbUserSearch`, `dbUserUpdate` or `dbGetOnlineUsers`|
+|`wps.py`|The TCP layer - listens for connections, handles the accept loop and each connection's raw receive/buffer/framing/thread handling. Contains no message-processing logic itself, so it never needs restarting just to deploy a processing change - see [Warm Reloading Code](/README.md#warm-reloading-code)|
+|`handlers.py`|All message-processing/business logic - every message type handler, dispatch/routing, push notifications and channel cache sync. Called from `wps.py` and warm-reloadable without disconnecting users - see [Warm Reloading Code](/README.md#warm-reloading-code)|
+|`state.py`|Shared in-memory state used by both `wps.py` and `handlers.py` (open connections, loaded bots, the channel cache). Deliberately never reloaded, so this state survives a warm reload|
+|`logger.py`|Application and database logging helpers (`wps_logger`, `db_logger`) shared by `db.py` and `handlers.py`|
+|`db.py`|Contains functions to handle every interaction between the WPS application and the database - e.g. `dbUserSearch`, `dbUserUpdate` or `dbGetOnlineUsers`. Called from `wps.py` and `handlers.py` and warm-reloadable without disconnecting users - see [Warm Reloading Code](/README.md#warm-reloading-code)|
 |`wps.log`|Application logging, default ERROR only|
 |`db.log`|Database logging, default ERROR only|
 |`backup.py`|Run to create a JSON file containing every user, message and post object in the database. Reads `env.json` to determine the database filename from `dbFilename`. Any Sqlite supported backup method would also be valid|

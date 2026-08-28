@@ -1,6 +1,7 @@
 from env import *
-from db import *
+from logger import *
 from state import *
+import db
 import handlers
 import threading
 import socket
@@ -12,12 +13,13 @@ import sys
 
 # wps.py is the TCP layer: it owns the listening socket and every open connection's raw
 # recv/buffer/framing loop. It never contains message-processing/business logic itself - that
-# all lives in handlers.py, called only via `handlers.<func>(...)` (module-attribute lookup at
-# call time, never `from handlers import *`) so that a warm reload of handlers.py
+# all lives in handlers.py, and every database interaction lives in db.py. Both are called only
+# via `handlers.<func>(...)` / `db.<func>(...)` (module-attribute lookup at call time, never
+# `from handlers import *` / `from db import *`) so that a warm reload of either
 # (importlib.reload, triggered by pressing 'r' - see code_reload_key_listener below) swaps in
-# new processing code for every open connection without ever touching this file's socket, accept
-# loop, or per-connection threads. Shared state that must survive that reload (CONNECTIONS,
-# BOTS, CHANNELS_CACHE, ...) lives in state.py, imported by both this module and handlers.py.
+# new code for every open connection without ever touching this file's socket, accept loop, or
+# per-connection threads. Shared state that must survive that reload (CONNECTIONS, BOTS,
+# CHANNELS_CACHE, ...) lives in state.py, imported by both this module and handlers.py.
 
 print(f"{timestamp()} ### WPS Starting ###")
 
@@ -53,6 +55,21 @@ def reload_handlers():
     except Exception as reload_e:
         print(f"{timestamp()} ERROR: failed to reload handlers module: {reload_e}")
 
+def reload_db():
+    '''
+    Warm-reloads the db module - every database interaction - in place via importlib.reload,
+    without restarting the process or dropping any TCP connection. handlers.py only ever calls
+    into db.<func>(...), looking the function up on the module at call time, so reload()
+    rewriting db.__dict__ in place is picked up by the very next call. get_db_connection() opens
+    a fresh sqlite3 connection per call rather than caching one at module level, so there's no
+    stale connection to worry about across a reload.
+    '''
+    try:
+        importlib.reload(db)
+        print(f"{timestamp()} Reloaded db module (database logic)")
+    except Exception as reload_e:
+        print(f"{timestamp()} ERROR: failed to reload db module: {reload_e}")
+
 def reload_bots():
     '''
     Warm-reloads every loaded bot module's code in place via importlib.reload, without
@@ -75,17 +92,19 @@ def reload_bots():
 
 def reload_code():
     '''
-    Warm-reloads all reloadable code - handlers.py plus any loaded bot modules - in one go.
+    Warm-reloads all reloadable code - db.py, handlers.py, and any loaded bot modules - in one
+    go. db.py is reloaded first since handlers.py (and bots, indirectly) depend on it.
     '''
+    reload_db()
     reload_handlers()
     reload_bots()
 
 def code_reload_key_listener():
     '''
     Background thread: watches the terminal for the 'r' key (no Enter needed) and warm-
-    reloads handlers.py and all bot modules via reload_code() when pressed. Only meaningful
-    when stdin is an interactive TTY - callers should check sys.stdin.isatty() before starting
-    this thread.
+    reloads db.py, handlers.py and all bot modules via reload_code() when pressed. Only
+    meaningful when stdin is an interactive TTY - callers should check sys.stdin.isatty()
+    before starting this thread.
     '''
     import select, termios, tty
 
@@ -157,7 +176,7 @@ def connected_session_handler(CONN, ADDR):
 
     wps_logger("CONNECTED SESSION HANDLER", callsign, "Callsign seems valid, continuing")
 
-    CONN_DB_CURSOR = get_db_connection().cursor()
+    CONN_DB_CURSOR = db.get_db_connection().cursor()
 
     # Check if the callsign is already connected, if so silently remove existing connections
     # without triggering the disconnect handler or broadcasting a disconnect notification
@@ -326,7 +345,7 @@ def startup_and_listen():
     print(f"{timestamp()} Using database {env['dbFilename']}")
     print(f"{timestamp()} Listening on TCP Port {env['socketTcpPort']}")
 
-    global_cursor = get_db_connection().cursor()
+    global_cursor = db.get_db_connection().cursor()
 
     # Output the SQLite version to the console
     global_cursor.execute('''select sqlite_version()''')
@@ -335,7 +354,7 @@ def startup_and_listen():
     print(f"{timestamp()} ### WPS Started ###")
 
     # Create the database tables, if they don't exist
-    dbInit(global_cursor)
+    db.dbInit(global_cursor)
 
     # Load the channel list from channels.json into the database
     handlers.sync_channels_from_file(global_cursor)
@@ -366,9 +385,9 @@ def startup_and_listen():
                     raise Exception(f"bots/{bot_name}.py not found")
 
                 mod = importlib.import_module(f"bots.{bot_name}")
-                mod.init(get_db_connection())
+                mod.init(db.get_db_connection())
                 mod.start_tick_thread(
-                    get_db_connection(),
+                    db.get_db_connection(),
                     lambda cursor, c, text, fc: handlers.bot_broadcast_to_channel(cursor, c, text, fc),
                     cid,
                 )
@@ -379,13 +398,13 @@ def startup_and_listen():
 
     if sys.stdin.isatty():
         threading.Thread(target=code_reload_key_listener, daemon=True, name='code_reload_key_listener').start()
-        print(f"{timestamp()} Press 'r' in this terminal to warm-reload processing code{' and bots' if BOTS else ''} without disconnecting users")
+        print(f"{timestamp()} Press 'r' in this terminal to warm-reload db and processing code{' and bots' if BOTS else ''} without disconnecting users")
 
     # Confirm users are subscribed to the default channels
     handlers.check_auto_subscriptions(global_cursor)
 
     # Update all users as offline in the database
-    online_users_response = dbGetOnlineUsers(global_cursor)
+    online_users_response = db.dbGetOnlineUsers(global_cursor)
     if online_users_response['result'] == 'failure':
         wps_logger("HANDLER", "-----", "Failed to get online users, something is wrong, exiting")
         print(f"{timestamp()} Failed to get online users, something is wrong, exiting")
@@ -393,7 +412,7 @@ def startup_and_listen():
 
     online_users = online_users_response['data']
     for online_user in online_users:
-        dbUserUpdate(global_cursor, online_user['callsign'], { "is_online": 0 })
+        db.dbUserUpdate(global_cursor, online_user['callsign'], { "is_online": 0 })
 
     try:
         while True:
