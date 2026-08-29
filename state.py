@@ -1,6 +1,7 @@
 import threading
 import datetime
 import time
+import json
 
 # Shared, process-lifetime state used by both the TCP layer (wps.py) and the warm-reloadable
 # processing layer (handlers.py). This module is never reloaded via importlib.reload, so
@@ -36,17 +37,46 @@ BOTS = {}
 CHANNELS_CACHE = {"channels": {"cg": [], "c": []}, "ts": 0}
 CHANNELS_CACHE_LOCK = threading.Lock()
 
-# String to return when someone manually connects and sends unknown text
-invalid_connect_response = (
-    "Welcome to WPS\r"
-    "I didn't recognise that command and guess you have connected manually.\r\r"
-    "To use this service you need to connect using a compatible WPS client - checkout:\r"
-    "- Frames: http://frames.oarc.uk\r"
-    "- WhatsPyc: [Link]\r"
-    "- Pacord: [Link]\r"
-    "\r"
-    "You'll now be disconnected, thanks!\r"
-)
+# Fallback list of compatible WPS clients advertised to users who connect manually,
+# used only if env.json has no (valid) wpsClients array.
+WPS_CLIENTS = [
+    "Frames: http://frames.oarc.uk",
+    "WhatsPyc: [Link]",
+    "Pacord: [Link]",
+]
+
+def get_wps_clients():
+    '''
+    Read the wpsClients array from env.json on every call so the list can be
+    maintained without restarting the service. Falls back to WPS_CLIENTS if the
+    file is missing/unreadable or the key is absent or not a non-empty list.
+    '''
+    try:
+        with open("env.json", "r") as f:
+            clients = json.load(f).get("wpsClients")
+        if isinstance(clients, list) and clients:
+            return [str(c) for c in clients]
+    except (OSError, ValueError):
+        pass
+    return WPS_CLIENTS
+
+def build_invalid_connect_response(clients=None):
+    '''
+    String to return when someone manually connects and sends unknown text.
+    Each line is CR-terminated (never LF) or the BPQ node drops it.
+    '''
+    if clients is None:
+        clients = get_wps_clients()
+    lines = [
+        "Welcome to WPS",
+        "I didn't recognise that command and guess you have connected manually.",
+        "",
+        "To use this service you need to connect using a compatible WPS client - checkout:",
+        *(f"- {client}" for client in clients),
+        "",
+        "You'll now be disconnected, thanks!",
+    ]
+    return "".join(f"{line}\r" for line in lines)
 
 # Compression delimiter as received from the client
 # che(192) is sent, split into two bytes by the encoding and received as chr(195) and chr(128)

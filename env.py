@@ -24,6 +24,11 @@ env_template = {
     "notificationsProdId": "",
     "notificationsProdRestKey": "",
     "botsEnabled": False,
+    "wpsClients": [
+        "Frames: http://frames.oarc.uk",
+        "WhatsPyc: [Link]",
+        "Pacord: [Link]"
+    ],
     "autoSubscribeToChannelIds": [],
     "maxNewPostsToReturnPerChannelOnConnect": 100,
     "wpsLoggingEnabled": True,

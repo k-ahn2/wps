@@ -245,7 +245,7 @@ def connected_session_handler(CONN, ADDR):
 
                 if socket_rx[:1] != '{' and socket_rx[:1] != chr(195):
                     wps_logger("CONNECTED SESSION HANDLER", callsign, "First RX not JSON or a Compressed Packet, disconnecting", 'ERROR') 
-                    CONN.sendall((invalid_connect_response+'\r').encode())
+                    CONN.sendall((build_invalid_connect_response()+'\r').encode())
                     time.sleep(10)
                     handlers.close_connection(CONN_DB_CURSOR, callsign, CONN)
                     break
