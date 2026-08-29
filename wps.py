@@ -245,24 +245,8 @@ def connected_session_handler(CONN, ADDR):
 
                 if socket_rx[:1] != '{' and socket_rx[:1] != chr(195):
                     wps_logger("CONNECTED SESSION HANDLER", callsign, "First RX not JSON or a Compressed Packet, disconnecting", 'ERROR') 
-                    wps_logger("CONNECTED SESSION HANDLER", callsign, f"Sending {repr(invalid_connect_response)}")
-                    try:
-                        CONN.sendall((invalid_connect_response+'\r').encode())
-                        # Half-close: send FIN now we've said everything, but keep reading.
-                        # Draining until the peer closes (or we time out) lets the reply
-                        # actually flush - a shutdown(SHUT_RDWR)/close with unread data
-                        # queued makes the kernel send a RST, which discards the reply.
-                        CONN.shutdown(socket.SHUT_WR)
-                        CONN.settimeout(10)
-                        while CONN.recv(1024):
-                            pass
-                    except Exception as e:
-                        wps_logger("CONNECTED SESSION HANDLER", callsign, f"Exception flushing invalid-connect reply: {e}")
-                    finally:
-                        try:
-                            CONN.close()
-                        except Exception:
-                            pass
+                    CONN.sendall((invalid_connect_response+'\r').encode())
+                    time.sleep(10)
                     handlers.close_connection(CONN_DB_CURSOR, callsign, CONN)
                     break
             
