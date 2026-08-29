@@ -37,7 +37,7 @@ CHANNELS_CACHE = {"channels": {"cg": [], "c": []}, "ts": 0}
 CHANNELS_CACHE_LOCK = threading.Lock()
 
 # String to return when someone manually connects and sends unknown text
-invalid_connect_reponse = """Welcome to WPS\r
+invalid_connect_response = """Welcome to WPS\r
 I didn't recognise that command and guess you have connected manually.\r
 To use this service you need to connect using the WhatsPac Client - head to http://whatspac.oarc.uk and follow the instructions there.\r
 You'll now be disconnected, thanks!\r
