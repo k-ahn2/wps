@@ -39,7 +39,7 @@ ___
 |Last Edit|`led`|`1739318078`|Number|Timestamp of last message edit - seconds since epoch|
 |Last Ham Timestamp|`lhts`|`1739318078`|Number|Timestamp of last Ham (i.e. User) update. Currently only changes on Name change|
 |Last Channels Timestamp|`lcts`|`1755000000000`|Number|Optional - Timestamp of the channel list already held by the client, in milliseconds since epoch. If supplied and older than the server's channel list, WPS returns a `chl` object - see [Type chl - Channel List](/docs/protocol/CHANNELS.md#type-chl---channel-list)|
-|Version|`v`|`0.44`|Number|Version of client|
+|Version|`v`|`0.94.13`|String|3-tier `major.minor.patch` version of the client. Legacy 2-tier / numeric values (e.g. `0.44`) are still accepted and compared component-wise|
 |Channel Connect|`cc`|`[]`|Array of Objects|Contains one JSON object per channel subscribed|
 |**Channel Connect Objects**|
 |Channel Id|`cid`|`2`|Number|The Channel Id|
@@ -59,7 +59,7 @@ ___
    "led": 1739318078,
    "lhts": 1740292240,
    "lcts": 1755000000000,
-   "v": 0.44,
+   "v": "0.94.13",
    "cc":[
       {
          "cid": 3,
@@ -85,7 +85,7 @@ ___
 |Type|`t`|`c`|String|Always type ‘c’
 |New Message Count|`mc`|`5`|Number|Number of new messages pending download
 |Welcome|`w`|`1`|Boolean|Set to 1 if the connect if from a new user, used to display welcome message. Only sent if True
-|Version|`v`|`0.44`|Number|Set to the latest recommended or minimum client version. The client can use this to prompt for upgrade if this value is higher than the currently used client version
+|Version|`v`|`0.94.13`|String|Set to the recommended client version (3-tier `major.minor.patch`), sent only when the connecting client is behind it. The client can use this to prompt for upgrade
 |New Post Count|`pc`|`35`|Number|Number of new posts pending download
 
 ### JSON Example
@@ -95,7 +95,7 @@ ___
    "t": "c",
    "w": 1,
    "mc": 25,
-   "v": 0.44,
+   "v": "0.94.13",
    "pc": 35
 }
 ```

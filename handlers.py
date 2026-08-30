@@ -30,6 +30,34 @@ if env['notificationsEnabled']:
     ONESIGNAL_PROD_ID = env['notificationsProdId']
     ONESIGNAL_PROD_REST_KEY = env['notificationsProdRestKey']
 
+def parse_client_version(value):
+    '''
+    Normalise a client/server version into a comparable (major, minor, patch) tuple.
+
+    Accepts the 3-tier scheme and every legacy form seen on the wire:
+      "0.94.13" -> (0, 94, 13)   3-tier string
+      "0.94"    -> (0, 94, 0)    2-tier string
+      0.44      -> (0, 44, 0)    legacy float
+      44        -> (44, 0, 0)    legacy int
+      0 / None / "" / junk -> (0, 0, 0)
+
+    Missing or unparseable components become 0 so an old or malformed client
+    always sorts below a well-formed one. Compare the returned tuples directly
+    (t1 < t2, t1 >= t2, ...).
+    '''
+    if value is None:
+        return (0, 0, 0)
+
+    parts = str(value).strip().split('.')
+    normalised = []
+    for i in range(3):
+        part = parts[i] if i < len(parts) else ''
+        try:
+            normalised.append(int(part))
+        except (ValueError, TypeError):
+            normalised.append(0)
+    return tuple(normalised)
+
 def send_push_notification(heading, message, player_id):
     '''
     Send a OneSignal push notification
@@ -498,8 +526,16 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     min_client_version = version['minClientVersion']
     recommended_client_version = version['recommendedClientVersion']
     version_source.close()
-    wps_logger('CONNECT HANDLER', callsign, f"Minimum client version is {min_client_version}")
-    wps_logger('CONNECT HANDLER', callsign, f"Recommended client version is {recommended_client_version}")
+
+    # Parse into comparable (major, minor, patch) tuples so the 3-tier scheme
+    # (e.g. 0.94.13) sorts correctly alongside any legacy 2-tier / float values
+    client_version_parts = parse_client_version(client_version)
+    min_client_version_parts = parse_client_version(min_client_version)
+    recommended_client_version_parts = parse_client_version(recommended_client_version)
+
+    wps_logger('CONNECT HANDLER', callsign, f"Client version is {client_version} {client_version_parts}")
+    wps_logger('CONNECT HANDLER', callsign, f"Minimum client version is {min_client_version} {min_client_version_parts}")
+    wps_logger('CONNECT HANDLER', callsign, f"Recommended client version is {recommended_client_version} {recommended_client_version_parts}")
     
     ###
     # Send connect response
@@ -516,9 +552,12 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
         "pc": 0
     }
 
-    # Only return if there is a newer min version
-    # if client_version < recommended_client_version:
-    #    connect_response['v'] = recommended_client_version
+    # Advise the client of an upgrade if it is behind the recommended version.
+    # The raw configured value is sent (string or number) so the client can
+    # display it verbatim.
+    if client_version_parts < recommended_client_version_parts:
+        wps_logger('CONNECT HANDLER', callsign, f"Client version {client_version} behind recommended version {recommended_client_version}, advising upgrade")
+        connect_response['v'] = recommended_client_version
 
     wps_logger('CONNECT HANDLER', callsign, f"Channel subscriptions {channel_subscriptions}")
 
@@ -572,11 +611,11 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     # Runs after the connect response so the client can see the upgrade prompt
     ###
 
-    # if client_version < min_client_version:
-    #     time.sleep(5)
-    #     wps_logger('CONNECT HANDLER', callsign, f"Client version {client_version} less than minimum version {min_client_version}", 'ERROR')
-    #     close_connection(CONN_DB_CURSOR, callsign, CONN)
-    #     return
+    if client_version_parts < min_client_version_parts:
+        time.sleep(5)
+        wps_logger('CONNECT HANDLER', callsign, f"Client version {client_version} less than minimum version {min_client_version}", 'ERROR')
+        close_connection(CONN_DB_CURSOR, callsign, CONN)
+        return
 
     ###
     # Return users currently online

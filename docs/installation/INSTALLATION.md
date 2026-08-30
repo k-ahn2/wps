@@ -67,8 +67,8 @@ Any new keys should first be added to `env.py`, which will automatically add the
 | Parameter | Data Type | Default | Notes |
 | - | :-: | :-: | :- |
 |`environment`|String|`Dev`|Historically used to suppress certain functions outside Production, but currently unused|
-|`minClientVersion`|Number|`0.1`|If a client connects with a version lower than this, the server sends the connect header (to advise of an upgrade) and then disconnects them|
-|`recommendedClientVersion`|Number|`0.1`|Server configurable number that is used by client side code to prompt the user to upgrade. WPS reloads this value from env.json on every connect, meaning the value can be updated and used at runtime. Must be greater than or equal to minClientVersion|
+|`minClientVersion`|String|`0.1.0`|3-tier `major.minor.patch` version (e.g. `0.94.13`). If a client connects with a version lower than this, the server sends the connect header (to advise of an upgrade) and then disconnects them. Legacy 2-tier / numeric values (e.g. `0.44`) are still accepted and compared component-wise|
+|`recommendedClientVersion`|String|`0.1.0`|3-tier `major.minor.patch` version used by client side code to prompt the user to upgrade. WPS reloads this value from env.json on every connect, meaning the value can be updated and used at runtime. Must be greater than or equal to minClientVersion|
 |`socketTcpPort`|Number|`63001`|TCP Port that WPS listens on. Needs to match the APPLICATION port setup in BPQ or Xrouter|
 |`dbFilename`|String|`wps.db`|The filename to use for the Sqlite database. Enables a different filename to be used to differentiate between development and production, for example|
 |`minWpsLogLevel`|String|`ERROR`|For application logging in `wps.log`, either `ERROR` for errors only, or `INFO` for everything. WPS contains a lot of INFO logging and could be optimised - beware of `wps.log` file size|
@@ -92,8 +92,8 @@ Any new keys should first be added to `env.py`, which will automatically add the
 ```json
 {
     "environment": "Dev",
-    "minClientVersion": 0.1,
-    "recommendedClientVersion": 0.1,
+    "minClientVersion": "0.1.0",
+    "recommendedClientVersion": "0.1.0",
     "socketTcpPort": 63001,
     "dbFilename": "wps.db",
     "events": {

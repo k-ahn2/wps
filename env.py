@@ -7,8 +7,8 @@ import json, os
 
 env_template = {
     "environment": "Dev",
-    "minClientVersion": 0.1,
-    "recommendedClientVersion": 0.1,
+    "minClientVersion": "0.1.0",
+    "recommendedClientVersion": "0.1.0",
     "socketTcpPort": 63001,
     "dbFilename": "wps.db",
     "events": {
