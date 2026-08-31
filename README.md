@@ -3,9 +3,9 @@
 WPS is a backend service and Layer 7 application protocol that provides messaging services over Packet Radio. Currently built to be published via a BPQ or Xrouter node, WPS is directly exposed to the AX.25 packet network and can be systematically accessed by end user applications. 
 
 WPS can be used by any Packet Radio messaging application that implements its protocol - current clients include:
-- "Frames: http://frames.oarc.uk"
-- "WhatsPyc: https://wiki.oarc.uk/packet:whatspyc"
-- "Pacord: https://github.com/kghunt/pacord"
+- Frames: http://frames.oarc.uk
+- WhatsPyc: https://wiki.oarc.uk/packet:whatspyc
+- Pacord: https://github.com/kghunt/pacord
 
 
 WPS is capable of operating effectively without any internet dependency over link speeds of 1200 baud, albeit the latest 2400 and 3600 baud speeds offered by the NinoTNC are typically used and are the recommended minimum.
