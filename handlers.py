@@ -1120,6 +1120,7 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
         if len(push) > 0 and callsign not in notifications_since_last_logout:
             notifications_since_last_logout.append(callsign)
             wps_logger("MESSAGE HANDLER", callsign, "Found push entries and no notification since last logout")
+            wps_logger("MESSAGE HANDLER", callsign, "Push entries: " + str(push))
             for p in push:
                 if p['isPushEnabled'] and 'isBadPlayerId' not in p:
                     wps_logger("MESSAGE HANDLER", callsign, f"Sending to push to: {p['playerId']}")
