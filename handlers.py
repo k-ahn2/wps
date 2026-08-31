@@ -514,6 +514,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     last_ham_timestamp = connect_object.get('lhts', 0)
     channel_subscriptions = connect_object.get('cc', [])
     client_version = connect_object.get('v', 0)
+    app_code = connect_object.get('a')
 
     # TODO: Convert to seconds if led or le is in milliseconds
     if last_message_emoji > 9999999999:
@@ -524,24 +525,50 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
         wps_logger('CONNECT HANDLER', callsign, f"Last message edit timestamp appears to be in milliseconds, adjusted to seconds. Now {last_message_edit}", "WARN")
 
     ###
-    # Get the minimum client version number held in env.json
+    # Resolve the app's minimum and recommended version requirements from env.json
+    #
+    # The client identifies its app with a 3-character code in the connect
+    # object's `a` key. That code is looked up in env.json's `apps` array to find
+    # the matching app's `minClientVersion` and `recommendedClientVersion`.
+    # env.json is re-read on every connect so requirements can be changed without
+    # restarting WPS.
+    #
+    # If the client sends no app code (e.g. a legacy client), or the code isn't
+    # found in `apps`, the minimum and recommended version checks are skipped.
     ###
 
-    version_source = open("env.json")
-    version = json.load(version_source)
-    min_client_version = version['minClientVersion']
-    recommended_client_version = version['recommendedClientVersion']
-    version_source.close()
-
-    # Parse into comparable (major, minor, patch) tuples so the 3-tier scheme
-    # (e.g. 0.94.13) sorts correctly alongside any legacy 2-tier / float values
     client_version_parts = parse_client_version(client_version)
-    min_client_version_parts = parse_client_version(min_client_version)
-    recommended_client_version_parts = parse_client_version(recommended_client_version)
 
-    wps_logger('CONNECT HANDLER', callsign, f"Client version is {client_version} {client_version_parts}")
-    wps_logger('CONNECT HANDLER', callsign, f"Minimum client version is {min_client_version} {min_client_version_parts}")
-    wps_logger('CONNECT HANDLER', callsign, f"Recommended client version is {recommended_client_version} {recommended_client_version_parts}")
+    app_version_requirements = None
+
+    if app_code is None or app_code == '':
+        wps_logger('CONNECT HANDLER', callsign, "No app code sent by client, skipping minimum and recommended version checks")
+    else:
+        version_source = open("env.json")
+        version = json.load(version_source)
+        version_source.close()
+
+        for app in version.get('apps', []):
+            if str(app.get('appCode')) == str(app_code):
+                app_version_requirements = app
+                break
+
+        if app_version_requirements is None:
+            wps_logger('CONNECT HANDLER', callsign, f"App code {app_code} not found in env.json apps, skipping minimum and recommended version checks", 'WARN')
+
+    if app_version_requirements is not None:
+        min_client_version = app_version_requirements['minClientVersion']
+        recommended_client_version = app_version_requirements['recommendedClientVersion']
+
+        # Parse into comparable (major, minor, patch) tuples so the 3-tier scheme
+        # (e.g. 0.94.13) sorts correctly alongside any legacy 2-tier / float values
+        min_client_version_parts = parse_client_version(min_client_version)
+        recommended_client_version_parts = parse_client_version(recommended_client_version)
+
+        wps_logger('CONNECT HANDLER', callsign, f"App code {app_code} ({app_version_requirements.get('appName', '-')})")
+        wps_logger('CONNECT HANDLER', callsign, f"Client version is {client_version} {client_version_parts}")
+        wps_logger('CONNECT HANDLER', callsign, f"Minimum client version is {min_client_version} {min_client_version_parts}")
+        wps_logger('CONNECT HANDLER', callsign, f"Recommended client version is {recommended_client_version} {recommended_client_version_parts}")
     
     ###
     # Send connect response
@@ -561,7 +588,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     # Advise the client of an upgrade if it is behind the recommended version.
     # The raw configured value is sent (string or number) so the client can
     # display it verbatim.
-    if client_version_parts < recommended_client_version_parts:
+    if app_version_requirements is not None and client_version_parts < recommended_client_version_parts:
         wps_logger('CONNECT HANDLER', callsign, f"Client version {client_version} behind recommended version {recommended_client_version}, advising upgrade")
         connect_response['v'] = recommended_client_version
 
@@ -617,7 +644,7 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     # Runs after the connect response so the client can see the upgrade prompt
     ###
 
-    if client_version_parts < min_client_version_parts:
+    if app_version_requirements is not None and client_version_parts < min_client_version_parts:
         time.sleep(5)
         wps_logger('CONNECT HANDLER', callsign, f"Client version {client_version} less than minimum version {min_client_version}", 'ERROR')
         close_connection(CONN_DB_CURSOR, callsign, CONN)

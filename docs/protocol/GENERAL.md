@@ -40,6 +40,7 @@ ___
 |Last Ham Timestamp|`lhts`|`1739318078`|Number|Timestamp of last Ham (i.e. User) update. Currently only changes on Name change|
 |Last Channels Timestamp|`lcts`|`1755000000000`|Number|Optional - Timestamp of the channel list already held by the client, in milliseconds since epoch. If supplied and older than the server's channel list, WPS returns a `chl` object - see [Type chl - Channel List](/docs/protocol/CHANNELS.md#type-chl---channel-list)|
 |Version|`v`|`0.94.13`|String|3-tier `major.minor.patch` version of the client. Legacy 2-tier / numeric values (e.g. `0.44`) are still accepted and compared component-wise|
+|App Code|`a`|`FRM`|String|Optional - 3-character code identifying the client app, matched against an `appCode` in env.json's `apps` array to determine the minimum and recommended versions to check against. If omitted (or unknown), the minimum and recommended version checks are skipped|
 |Channel Connect|`cc`|`[]`|Array of Objects|Contains one JSON object per channel subscribed|
 |**Channel Connect Objects**|
 |Channel Id|`cid`|`2`|Number|The Channel Id|
@@ -60,6 +61,7 @@ ___
    "lhts": 1740292240,
    "lcts": 1755000000000,
    "v": "0.94.13",
+   "a": "FRM",
    "cc":[
       {
          "cid": 3,

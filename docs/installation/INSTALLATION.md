@@ -67,8 +67,12 @@ Any new keys should first be added to `env.py`, which will automatically add the
 | Parameter | Data Type | Default | Notes |
 | - | :-: | :-: | :- |
 |`environment`|String|`Dev`|Historically used to suppress certain functions outside Production, but currently unused|
-|`minClientVersion`|String|`0.1.0`|3-tier `major.minor.patch` version (e.g. `0.94.13`). If a client connects with a version lower than this, the server sends the connect header (to advise of an upgrade) and then disconnects them. Legacy 2-tier / numeric values (e.g. `0.44`) are still accepted and compared component-wise|
-|`recommendedClientVersion`|String|`0.1.0`|3-tier `major.minor.patch` version used by client side code to prompt the user to upgrade. WPS reloads this value from env.json on every connect, meaning the value can be updated and used at runtime. Must be greater than or equal to minClientVersion|
+|`apps`|Array|see below|One object per supported client app, each with `appCode`, `appName`, `recommendedClientVersion` and `minClientVersion`. On connect, the client sends its 3-character app code in the connect object's `a` key; WPS looks that code up here (re-reading env.json on every connect) to find the versions to check against. If the client sends no `a` key, or the code isn't in this array, the minimum and recommended version checks are skipped|
+|**Apps Fields**|
+|`appCode`|String|-|3-character code identifying the app (e.g. `FRM`), matched against the connect object's `a` key|
+|`appName`|String|-|Human-readable app name, used in logging only|
+|`recommendedClientVersion`|String|`0.0.0`|3-tier `major.minor.patch` version. If the client is behind this, the connect header advises an upgrade (via `v`). Must be greater than or equal to `minClientVersion`. Legacy 2-tier / numeric values (e.g. `0.44`) are still accepted and compared component-wise|
+|`minClientVersion`|String|`0.0.0`|3-tier `major.minor.patch` version. If the client is behind this, the server sends the connect header (to advise of an upgrade) and then disconnects them|
 |`socketTcpPort`|Number|`63001`|TCP Port that WPS listens on. Needs to match the APPLICATION port setup in BPQ or Xrouter|
 |`dbFilename`|String|`wps.db`|The filename to use for the Sqlite database. Enables a different filename to be used to differentiate between development and production, for example|
 |`minWpsLogLevel`|String|`ERROR`|For application logging in `wps.log`, either `ERROR` for errors only, or `INFO` for everything. WPS contains a lot of INFO logging and could be optimised - beware of `wps.log` file size|
@@ -92,8 +96,14 @@ Any new keys should first be added to `env.py`, which will automatically add the
 ```json
 {
     "environment": "Dev",
-    "minClientVersion": "0.1.0",
-    "recommendedClientVersion": "0.1.0",
+    "apps": [
+        {
+            "appCode": "FRM",
+            "appName": "Frames",
+            "recommendedClientVersion": "0.0.0",
+            "minClientVersion": "0.95"
+        }
+    ],
     "socketTcpPort": 63001,
     "dbFilename": "wps.db",
     "events": {
