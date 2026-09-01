@@ -64,25 +64,28 @@ So `pair_enabled` is stored as the string `"True"`, and a version string like
 
 ## User object field reference
 
-| Key | Stored type | Written by | Notes |
-| - | :-: | - | - |
-| `callsign` | string | [`dbCreateNewUser`](/handlers.py#L312) on first connect | Identity / lookup key. Never updated after creation |
-| `name` | string | [`dbCreateNewUser`](/handlers.py#L312); [`dbUserUpdate`](/handlers.py#L364) in `connect_handler` when the client's `n` differs | Display name. Source: connect object `n` (default `-`) |
-| `name_last_updated` | number (epoch s) | [`dbCreateNewUser`](/handlers.py#L316); [`connect_handler`](/handlers.py#L365) when the name changes | Drives Ham Enquiry - [`dbGetUpdatedHams`](/db.py#L984) |
-| `last_connected` | number (epoch s) | [`dbCreateNewUser`](/handlers.py#L315); every [`connect_handler`](/handlers.py#L352) | Timestamp of the most recent connect |
-| `last_disconnected` | number (epoch s) | [`close_connection`](/handlers.py#L1883) | Timestamp of the most recent socket close |
-| `is_online` | number (`0` / `1`) | [`connect_handler`](/handlers.py#L355) sets `1`; [`close_connection`](/handlers.py#L1891) sets `0` (last socket only); [`wps.py` startup](/wps.py#L425) sets `0` | `1` while at least one socket for the callsign is open |
-| `last_client_version` | string (or number `0`) | [`connect_handler`](/handlers.py#L356) | Connect object `v`, e.g. `0.94.13`. `0` if the client omits it |
-| `channel_subscriptions` | array of channel ids | [`dbCreateNewUser`](/handlers.py#L317) (env defaults); [`channel_subscribe_handler`](/handlers.py#L1629) add / [remove](/handlers.py#L1653); [`check_auto_subscriptions`](/handlers.py#L1996) | Channels the user is subscribed to |
-| `paused_channels` | array of channel ids | [`existing_connect_handler`](/handlers.py#L631) sets the list; [`unpause_channel_handler`](/handlers.py#L1773) removes one; [`close_connection`](/handlers.py#L1884) resets to `[]` | Channels with a backlog larger than `maxNewPostsToReturnPerChannelOnConnect`, held until the client asks for them |
-| `notifications_since_last_logout` | array of callsigns | [`connect_handler`](/handlers.py#L353) resets to `[]`; [`message_send_handler`](/handlers.py#L1175) appends the sender's callsign after a push | Stops repeat message-push spam from the same sender between logins |
-| `channel_notifications_since_last_logout` | array of channel ids | [`connect_handler`](/handlers.py#L354) resets to `[]`; [`dbUpdateUserPushNotifications`](/handlers.py#L1422) appends `post['cid']` | Stops repeat channel-post-push spam per channel between logins |
-| `avatar` | string (base64 data URI) | [`avatar_handler`](/handlers.py#L1011) | Set via protocol type `a` |
-| `avatar_last_updated` | number (epoch s) | [`avatar_handler`](/handlers.py#L1010) | Drives Avatar Enquiry - [`dbGetUpdatedAvatars`](/db.py#L1014) |
-| `pair_enabled` | string `"True"` | [`pairing_handler`](/handlers.py#L983) | Boolean coerced to a string (see [Value typing](#value-typing)). Set via protocol type `p`. Not cleared anywhere in code |
-| `pair_start_time` | number (epoch s) | [`pairing_handler`](/handlers.py#L984) | When the user entered Packet Alerts pairing mode |
-| `push` | array of objects | [`cleanup_bad_push_player_id`](/handlers.py#L138) writes the whole array back with one entry flagged | See [The push sub-object](#the-push-sub-object). New entries are **not** created by any handler in this repo |
-| `lastseen` | number (epoch s) | *(deprecated - never written)* | Legacy. Removed on next connect by [`dbCleanupDepracatedLastSeenKey`](/handlers.py#L337). Replaced by `last_connected` / `last_disconnected` |
+Which code writes each key is listed in [Every write path](#every-write-path); this
+table is just the keys and what they mean.
+
+| Key | Stored type | Description |
+| - | - | - |
+| `callsign` | string | Identity / lookup key. Never updated after creation |
+| `name` | string | Display name. Source: connect object `n` (default `-`). Updated on connect when it changes |
+| `name_last_updated` | number (epoch s) | When `name` last changed. Drives Ham Enquiry (`dbGetUpdatedHams`) |
+| `last_connected` | number (epoch s) | Most recent connect. Set on every connect |
+| `last_disconnected` | number (epoch s) | Most recent socket close |
+| `is_online` | number (`0` / `1`) | `1` while at least one socket for the callsign is open. Forced to `0` on server startup |
+| `last_client_version` | string (or number `0`) | Connect object `v`, e.g. `0.94.13`. `0` if the client omits it. Stored only - nothing reads it |
+| `channel_subscriptions` | array of channel ids | Channels the user is subscribed to |
+| `paused_channels` | array of channel ids | Channels whose backlog exceeds `maxNewPostsToReturnPerChannelOnConnect`, held until the client asks for them. Reset to `[]` on disconnect |
+| `notifications_since_last_logout` | array of callsigns | Senders who have already triggered a message push this session. Reset to `[]` on connect |
+| `channel_notifications_since_last_logout` | array of channel ids | Channels that have already triggered a post push this session. Reset to `[]` on connect |
+| `avatar` | string (base64 data URI) | Set via protocol type `a` |
+| `avatar_last_updated` | number (epoch s) | When `avatar` last changed. Drives Avatar Enquiry (`dbGetUpdatedAvatars`) |
+| `pair_enabled` | string `"True"` | Boolean coerced to a string (see [Value typing](#value-typing)). Set via protocol type `p`. Never cleared in code |
+| `pair_start_time` | number (epoch s) | When the user entered Packet Alerts pairing mode |
+| `push` | array of objects | See [The push sub-object](#the-push-sub-object). New entries are **not** created by any handler in this repo |
+| `lastseen` | number (epoch s) | Deprecated, never written. Removed on next connect. Replaced by `last_connected` / `last_disconnected` |
 
 ## The push sub-object
 
