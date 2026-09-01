@@ -76,7 +76,7 @@ table is just the keys and what they mean.
 | `last_disconnected` | number (epoch s) | Most recent socket close |
 | `is_online` | number (`0` / `1`) | `1` while at least one socket for the callsign is open. Only set after the receipt of the user's connect string. Reset to `0` on server startup incase of ungraceful WPS close |
 | `last_client_version` | string (or number `0`) | Connect object `v`, e.g. `0.94.13`. `0` if the client omits it. Stored only - nothing reads it |
-| `channel_subscriptions` | array of channel ids | Channels the user is subscribed to. WPS uses this to determine whether a user should receive a) updates when connected, b) push notifications when not connected (if enabled) |
+| `channel_subscriptions` | array of channel ids | Channels the user is subscribed to. WPS uses this to determine whether a user should receive a) channel updates when connected, b) push notifications when not connected (if enabled) |
 | `paused_channels` | array of channel ids | Channels whose backlog exceeds `maxNewPostsToReturnPerChannelOnConnect`, held until the client asks for them. Reset to `[]` on disconnect |
 | `notifications_since_last_logout` | array of callsigns | Senders who have already triggered a message push this session. Reset to `[]` on connect |
 | `channel_notifications_since_last_logout` | array of channel ids | Channels that have already triggered a post push this session. Reset to `[]` on connect |
