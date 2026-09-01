@@ -106,10 +106,20 @@ def code_reload_key_listener():
     meaningful when stdin is an interactive TTY - callers should check sys.stdin.isatty()
     before starting this thread.
     '''
-    import select, termios, tty
+    import atexit, select, termios, tty
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
+
+    def restore_terminal():
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    # This runs as a daemon thread, so on interpreter shutdown (e.g. after Ctrl+C is caught
+    # in startup_and_listen) it is killed abruptly and the finally: below never runs, leaving
+    # the terminal stuck in cbreak mode with no echo. Registering the restore as an atexit
+    # hook makes the main thread put the terminal back on the way out. Restoring twice is safe.
+    atexit.register(restore_terminal)
+
     try:
         tty.setcbreak(fd)
         while True:
@@ -119,7 +129,7 @@ def code_reload_key_listener():
     except Exception as exc:
         print(f"{timestamp()} Code reload key listener stopped: {exc}")
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        restore_terminal()
 
 def load_bots_config():
     '''
