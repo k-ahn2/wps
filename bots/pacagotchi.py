@@ -16,7 +16,7 @@ State is stored in the 'pacagotchi' table in the WPS SQLite database.
 The background tick thread updates pet state every TICK_INTERVAL seconds.
 """
 
-import json, time, random, threading
+import json, time, random, threading, sqlite3
 from handlers import db_logger
 
 # ---------------------------------------------------------------------------
@@ -579,11 +579,17 @@ def start_tick_thread(db_connection, broadcast_fn, channel_id):
     Start the background state-update thread.
     broadcast_fn(cursor, cid, text, fc) — provided by wps.py.
     """
+    # Extract filename so the tick thread can open its own connection.
+    # sqlite3 requires each thread to use a connection it opened itself.
+    db_filename = db_connection.execute("PRAGMA database_list").fetchone()[2]
+
     def _loop():
+        conn = sqlite3.connect(db_filename)
+        conn.execute("PRAGMA journal_mode=WAL")
         while True:
             time.sleep(TICK_INTERVAL)
             try:
-                cursor = db_connection.cursor()
+                cursor = conn.cursor()
                 state  = _load(cursor)
                 fc     = state.get("name", "PACBOT") if state else "PACBOT"
                 tick(cursor, broadcast_fn, channel_id, fc)
