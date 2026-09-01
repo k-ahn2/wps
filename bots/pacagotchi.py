@@ -16,7 +16,7 @@ State is stored in the 'pacagotchi' table in the WPS SQLite database.
 The background tick thread updates pet state every TICK_INTERVAL seconds.
 """
 
-import json, time, random, threading, sqlite3
+import json, time, random, threading, sqlite3, os
 from handlers import db_logger
 
 # ---------------------------------------------------------------------------
@@ -25,7 +25,8 @@ from handlers import db_logger
 
 def _load_config():
     try:
-        with open("bots.json") as f:
+        config_path = os.path.join(os.path.dirname(__file__), "bots.json")
+        with open(config_path) as f:
             return json.load(f).get("pacagotchi", {})
     except Exception:
         return {}
