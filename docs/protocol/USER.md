@@ -74,7 +74,7 @@ table is just the keys and what they mean.
 | `name_last_updated` | number (epoch s) | When `name` last changed. Drives Ham Enquiry (`dbGetUpdatedHams`) |
 | `last_connected` | number (epoch s) | Most recent connect. Set on every connect |
 | `last_disconnected` | number (epoch s) | Most recent socket close |
-| `is_online` | number (`0` / `1`) | `1` while at least one socket for the callsign is open. Forced to `0` on server startup |
+| `is_online` | number (`0` / `1`) | `1` while at least one socket for the callsign is open. Only set after the receipt of the user's connect string. Reset to `0` on server startup incase of ungraceful WPS close |
 | `last_client_version` | string (or number `0`) | Connect object `v`, e.g. `0.94.13`. `0` if the client omits it. Stored only - nothing reads it |
 | `channel_subscriptions` | array of channel ids | Channels the user is subscribed to. WPS uses this to determine whether a user should receive a) updates when connected, b) push notifications when not connected (if enabled) |
 | `paused_channels` | array of channel ids | Channels whose backlog exceeds `maxNewPostsToReturnPerChannelOnConnect`, held until the client asks for them. Reset to `[]` on disconnect |
