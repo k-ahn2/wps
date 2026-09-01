@@ -189,6 +189,8 @@ If the recipient of the Emoji is connected in real-time, WPS relays the same `cp
 
 Subscribe or unsubscribe from a channel
 
+Updates `channel_subscriptions` on the user record - see [The User Object: write paths 9 & 10](/docs/protocol/USER.md#9-channel-subscribe-protocol-type-cs-s--1).
+
 ### Client to Server
 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
@@ -435,7 +437,7 @@ Returned when the number of pending posts in a given channel is greater than the
 
 ## Type cu - Channel Unpause
 
-Instruction from the client to WPS to unpause a channel, including details on the posts to return. WPS removes the `cid` from `paused_channels` on the user record, then returns a `cpb` containing the requested posts.
+Instruction from the client to WPS to unpause a channel, including details on the posts to return. WPS removes the `cid` from `paused_channels` on the user record, then returns a `cpb` containing the requested posts. See [The User Object: write path 11](/docs/protocol/USER.md#11-unpause-channel-protocol-type-cu).
 
 ### Client to Server
 

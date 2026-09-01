@@ -16,6 +16,11 @@
 
 [Return to README](/README.md)
 
+> [!NOTE]
+> Several of the types below persist data on the user record. For the full list of
+> keys on the `user` object and every code path that writes them, see
+> [Data Model - The User Object](/docs/protocol/USER.md).
+
 ## Type c - Connect
 
 Simply, type `c` is a bi-directional exchange of headers between client and server.
@@ -25,6 +30,8 @@ This is the first data exchange after connect - the client sends a type `c` obje
 The server then returns a type `c` object with information including the new message and post counts. 
 
 But, a type `c` object also triggers the subsequenct sequence of packets required to update the client with all changes since last login. See [The Connect Sequence Explained](#the-connect-sequence-explained) for a detailed explanation
+
+Connect handling also creates the user record on first connect and refreshes `last_connected`, `is_online`, `name`, `last_client_version` and the "since last logout" notification lists on every connect - see [The User Object: write path 1 & 2](/docs/protocol/USER.md#every-write-path).
 
 ### Client to Server
 ___
@@ -103,6 +110,8 @@ ___
 ```
 
 ## Type p - Enable Pairing
+
+Sets `pair_enabled` and `pair_start_time` on the user record - see [The User Object: write path 4](/docs/protocol/USER.md#4-enable-pairing-protocol-type-p).
 
 ### Client to Server
 <hr>
@@ -340,6 +349,8 @@ Recognised by WPS as a Keep Alive, but simply logs receipt and then ceases proce
 ## Type a and ar - Add or Update Avatar
 
 Adds or Updates an Avatar
+
+Writes `avatar` and `avatar_last_updated` to the user record - see [The User Object: write path 5](/docs/protocol/USER.md#5-add--update-avatar-protocol-type-a).
 
 ### Client to Server
 <hr>

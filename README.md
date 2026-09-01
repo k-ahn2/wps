@@ -36,6 +36,7 @@ Links to documentation in the `/docs` directory
 2. [Protocol - General](docs/protocol/GENERAL.md)
 3. [Protocol - Channels](docs/protocol/CHANNELS.md)
 4. [Protocol - Messages](docs/protocol/MESSAGES.md)
+5. [Data Model - The User Object](docs/protocol/USER.md)
 
 
 ## WPS Schematic
