@@ -1166,6 +1166,8 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
                         cleanup_bad_push_player_id(CONN_DB_CURSOR, message['tc'], p['playerId'], push_resp)
 
                     push_counter = push_counter + 1
+                else:
+                    wps_logger("MESSAGE HANDLER", callsign, f"Push not enabled or bad player ID for {p['playerId']}")
         else:
             wps_logger("MESSAGE HANDLER", callsign, "No push entries or have already messaged")
 
