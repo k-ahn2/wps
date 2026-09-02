@@ -2,6 +2,10 @@
 
 ## Table of Contents 
 
+Overview
+
+1. [Client to Server / Server to Client Responses](#client-to-server--server-to-client-responses)
+
 Singular Types
 
 1. [Type cp - Channel Post](#type-cp---channel-post)
@@ -24,6 +28,22 @@ Bots
 1. [Bots - Calling the Channel Post Handler Directly](#bots---calling-the-channel-post-handler-directly)
 
 [Return to README](/README.md)
+
+## Client to Server / Server to Client Responses
+
+Every Client to Server action in this document has a corresponding Server to Client response. **The only exception is emoji updates** ([`cpem`](#type-cpem---channel-post-emoji)), where WPS deliberately sends no delivery confirmation back to the sending client - see the [`cpem`](#type-cpem---channel-post-emoji) section for the rationale.
+
+Most channel actions produce **two** distinct server responses: one back to the client that sent the action, and one out to the other connected clients affected by it (typically the channel's subscribers). Clients that are offline when an action occurs pick up the applicable object at their next connect.
+
+| Client to Server | Response to the sending client | Response to other connected clients |
+| - | - | - |
+| [`cp`](#type-cp---channel-post) - Channel Post | [`cpr`](#type-cpr---channel-post-response) delivery receipt (unless suppressed - see [Bots](#bots---calling-the-channel-post-handler-directly)) | [`cp`](#type-cp---channel-post) to every connected subscriber of the `cid` |
+| [`cped`](#type-cped---channel-post-edit) - Channel Post Edit | [`cpr`](#type-cpr---channel-post-response) delivery receipt | [`cped`](#type-cped---channel-post-edit) to every connected subscriber of the `cid` |
+| [`cpem`](#type-cpem---channel-post-emoji) - Channel Post Emoji | *None* - no delivery confirmation is sent | [`cpem`](#type-cpem---channel-post-emoji) (latest full emoji state for the post) to every connected subscriber of the `cid` |
+| [`cs`](#type-cs---channel-subscribe) - Channel Subscribe | [`cs`](#type-cs---channel-subscribe) confirming the subscribe / unsubscribe (with new post count on subscribe) | *None* |
+| [`cpb`](#type-cpb---channel-post-batch) - Channel Post Batch | [`cpb`](#type-cpb---channel-post-batch) containing the requested posts | *None* |
+| [`cu`](#type-cu---channel-unpause) - Channel Unpause | [`cpb`](#type-cpb---channel-post-batch) containing the requested posts | *None* |
+| [`chl`](#type-chl---channel-list) - Channel List | [`chl`](#type-chl---channel-list) containing the channel list (or count-only result) | *None* |
 
 ## Type cp - Channel Post
 
@@ -84,6 +104,13 @@ The first post after a posts gap, when a user chooses not to donwload all oustan
 }
 ```
 
+### Server to Client
+
+A `cp` triggers two server responses:
+
+1. **To the sending client** - WPS returns a [`cpr` - Channel Post Response](#type-cpr---channel-post-response) delivery receipt, confirming the post was received and processed. This is suppressed if the post was sent with `r: 0` - see [Bots - Calling the Channel Post Handler Directly](#bots---calling-the-channel-post-handler-directly).
+2. **To the channel's subscribers** - WPS looks up every subscriber for the given `cid` and, for each one currently connected, relays the `cp` object in real-time. Subscribers who are offline receive it at their next connect (via [`cpb` - Channel Post Batch](#type-cpb---channel-post-batch)).
+
 ## Type cped - Channel Post Edit
 
 Edit an existing Post
@@ -109,6 +136,13 @@ Edit an existing Post
    "edts": 1750805550246
 }
 ```
+
+### Server to Client
+
+A `cped` triggers two server responses:
+
+1. **To the sending client** - WPS returns a [`cpr` - Channel Post Response](#type-cpr---channel-post-response) delivery receipt, confirming the edit was received and processed.
+2. **To the channel's subscribers** - WPS looks up every subscriber for the given `cid` and, for each one currently connected, relays the `cped` object in real-time. Subscribers who are offline receive it at their next connect (via [`cpedb` - Channel Post Edit Batch](#type-cpedb---channel-post-edit-batch)).
 
 ## Type cpr - Channel Post Response
 
