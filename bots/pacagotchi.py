@@ -575,6 +575,37 @@ def init(db_connection):
     _init_table(cursor)
 
 
+def _tick_once(db_filename, conn_box, broadcast_fn, channel_id):
+    """
+    One iteration of the tick loop: sleep TICK_INTERVAL, then advance pet state.
+
+    This is a module-level function on purpose. The running tick thread looks it
+    up on the module by name every iteration (see _loop below), and importlib
+    .reload (the 'r' warm-reload in wps.py) rewrites it in place, so edits to the
+    loop body - the sleep, the error handling, what gets called and in what order
+    - take effect on the next iteration without restarting the thread.
+
+    conn_box is a one-element list used to lazily open and then reuse this
+    thread's own sqlite3 connection (sqlite3 requires each thread to use a
+    connection it opened itself), surviving reloads because it lives in the
+    thread, not the module.
+    """
+    if not conn_box:
+        conn = sqlite3.connect(db_filename)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn_box.append(conn)
+    conn = conn_box[0]
+
+    time.sleep(TICK_INTERVAL)
+    try:
+        cursor = conn.cursor()
+        state  = _load(cursor)
+        fc     = state.get("name", "PACBOT") if state else "PACBOT"
+        tick(cursor, broadcast_fn, channel_id, fc)
+    except Exception as exc:
+        db_logger("PACAGOTCHI TICK", f"Tick error: {exc}", "ERROR")
+
+
 def start_tick_thread(db_connection, broadcast_fn, channel_id):
     """
     Start the background state-update thread.
@@ -585,17 +616,17 @@ def start_tick_thread(db_connection, broadcast_fn, channel_id):
     db_filename = db_connection.execute("PRAGMA database_list").fetchone()[2]
 
     def _loop():
-        conn = sqlite3.connect(db_filename)
-        conn.execute("PRAGMA journal_mode=WAL")
+        # Deliberately a bare trampoline: every iteration re-fetches _tick_once
+        # from the (possibly reloaded) module dict and calls it, so a warm reload
+        # swaps in a new loop body live. Only these few lines are frozen at
+        # thread-creation time; changing _loop itself still needs a full restart.
+        conn_box = []
         while True:
-            time.sleep(TICK_INTERVAL)
             try:
-                cursor = conn.cursor()
-                state  = _load(cursor)
-                fc     = state.get("name", "PACBOT") if state else "PACBOT"
-                tick(cursor, broadcast_fn, channel_id, fc)
+                globals()["_tick_once"](db_filename, conn_box, broadcast_fn, channel_id)
             except Exception as exc:
-                db_logger("PACAGOTCHI TICK", f"Tick error: {exc}", "ERROR")
+                db_logger("PACAGOTCHI TICK", f"Tick loop error: {exc}", "ERROR")
+                time.sleep(TICK_INTERVAL)
 
     t = threading.Thread(target=_loop, daemon=True, name="pacagotchi_tick")
     t.start()

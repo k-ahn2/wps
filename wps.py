@@ -79,6 +79,12 @@ def reload_bots():
     dispatch in channels_post_handler both pick up the new code immediately - no need to
     re-run init() or restart the thread. Bot state lives in the DB, not the module, so
     nothing is lost.
+
+    Caveat: the closure actually running inside a tick thread (pacagotchi's _loop) is
+    fixed at start_tick_thread time and a reload cannot replace it. Bots keep that
+    closure a bare trampoline that re-fetches its per-iteration function (_tick_once)
+    from the module dict every pass, so the loop *body* is reloadable but the trampoline
+    itself needs a full process restart to change.
     '''
     if not BOTS:
         return
