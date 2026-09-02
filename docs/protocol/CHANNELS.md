@@ -39,7 +39,7 @@ Most channel actions produce **two** distinct server responses: one back to the 
 | - | - | - |
 | [`cp`](#type-cp---channel-post) - Channel Post | [`cpr`](#type-cpr---channel-post-response) delivery receipt (unless suppressed - see [Bots](#bots---calling-the-channel-post-handler-directly)) | [`cp`](#type-cp---channel-post) to every connected subscriber of the `cid` |
 | [`cped`](#type-cped---channel-post-edit) - Channel Post Edit | [`cpr`](#type-cpr---channel-post-response) delivery receipt | [`cped`](#type-cped---channel-post-edit) to every connected subscriber of the `cid` |
-| [`cpem`](#type-cpem---channel-post-emoji) - Channel Post Emoji | *None* - no delivery confirmation is sent | [`cpem`](#type-cpem---channel-post-emoji) (latest full emoji state for the post) to every connected subscriber of the `cid` |
+| [`cpem`](#type-cpem---channel-post-emoji) - Channel Post Emoji | *None* - no delivery confirmation is sent | [`cpem`](#type-cpem---channel-post-emoji) - the same single add / remove action, with the sending callsign added as `fc` - to every other connected subscriber of the `cid` |
 | [`cs`](#type-cs---channel-subscribe) - Channel Subscribe | [`cs`](#type-cs---channel-subscribe) confirming the subscribe / unsubscribe (with new post count on subscribe) | *None* |
 | [`cpb`](#type-cpb---channel-post-batch) - Channel Post Batch | [`cpb`](#type-cpb---channel-post-batch) containing the requested posts | *None* |
 | [`cu`](#type-cu---channel-unpause) - Channel Unpause | [`cpb`](#type-cpb---channel-post-batch) containing the requested posts | *None* |
@@ -176,7 +176,7 @@ If the emoji reaches the server, it should always be delivered to the connected 
 
 There are some edge cases where a client could send an emoji and the packet network fails before delivery to the server. In this edge case, the sender may see the emoji on their client, but it hasn't been delivered.
 
-Ater every emoji add or remove, both for real-time connections and during the connect sequence, WPS will always return the latest full emoji state for a message. For example, if a message has 1 emoji and 2nd is added, WPS will return both 1st and 2nd in the update.
+During the connect sequence WPS returns the latest full emoji state for each affected post, as a [`cpemb`](#type-cpemb---channel-post-emoji-batch) batch. For real-time connections WPS instead relays each individual add / remove action as it happens (see Server to Client below), and the client maintains the full state itself.
 
 ### Client to Server
 
@@ -217,7 +217,31 @@ Emoji Remove
 
 ### Server to Client
 
-If the recipient of the Emoji is connected in real-time, WPS relays the same `cpem` object
+For real-time connections WPS relays the `cpem` object it received from the sending client, unchanged, to every other connected subscriber of the `cid`, with the sending callsign added as `fc`. It is a single add / remove action - `e` remains the single unicode emoji value, not an array. The recipient applies it to their own copy of the post's emoji state. The full emoji state for a post is only sent as a batch ([`cpemb`](#type-cpemb---channel-post-emoji-batch)) during the connect sequence.
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`cpem`|String|`cpem` for Channel Post Emoji
+|Action|`a`|`1` or `0`|Number|`1` for Emoji Add or `0` for Emoji Remove
+|Timestamp|`ts`|`1750361450494`|Number|The `ts` of the post the emoji applies to
+|Channel Id|`cid`|`6`|Number|id of the channel|
+|Emoji Timestamp|`ets`|`1750804825979`|Number|Timestamp of the emoji update in MILLISECONDS|
+|Emoji|`e`|`1f44d`|String|The unicode value of the emoji added or removed
+|From Callsign|`fc`|`M0ABC`|String|Callsign of the user who added or removed the emoji, added by WPS
+
+### JSON Example
+
+```json
+{
+   "t": "cpem",
+   "a": 1,
+   "ts": 1750361450494,
+   "cid": 6,
+   "ets": 1750804825979,
+   "e": "1f44d",
+   "fc": "M0ABC"
+}
+```
 
 ## Type cs - Channel Subscribe
 
