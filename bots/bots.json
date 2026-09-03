@@ -15,6 +15,7 @@
         "sleep_max_hours": 10,
         "poop_rise_every_n_ticks": 7,
         "junk_illness_threshold": 3,
-        "ill_death_timeout": 10800
+        "ill_death_timeout": 10800,
+        "broadcast_reminder_interval": 1800
     }
 }
