@@ -49,8 +49,9 @@ AUTO_SLEEP_AFTER         = _c("auto_sleep_after",        10800)
 SLEEP_MIN_HOURS          = _c("sleep_min_hours",         6)
 SLEEP_MAX_HOURS          = _c("sleep_max_hours",         10)
 POOP_RISE_EVERY_N_TICKS  = _c("poop_rise_every_n_ticks", 7)
-JUNK_ILLNESS_THRESHOLD   = _c("junk_illness_threshold",  3)
-ILL_DEATH_TIMEOUT        = _c("ill_death_timeout",       10800)
+JUNK_ILLNESS_THRESHOLD        = _c("junk_illness_threshold",        3)
+ILL_DEATH_TIMEOUT             = _c("ill_death_timeout",             10800)
+BROADCAST_REMINDER_INTERVAL   = _c("broadcast_reminder_interval",   1800)
 
 MAX_STAT = 100
 MIN_STAT = 0
@@ -318,10 +319,37 @@ def tick(cursor, broadcast_fn, channel_id, fallback_fc="PACBOT"):
         return
 
     current_mood = _mood(state)
+
+    # Decide whether to broadcast this tick.
+    # Post on: mood worsening, a new alert condition appearing, or a reminder
+    # when still in a bad state after BROADCAST_REMINDER_INTERVAL seconds of silence.
+    should_broadcast = False
+    if not sleeping:
+        prev_mood        = state.get("prev_mood", "happy")
+        prev_hunger_warn = state.get("prev_hunger_warn", False)
+        prev_poop_warn   = state.get("prev_poop_warn", False)
+        last_broadcast   = state.get("last_broadcast", 0)
+
+        _MOOD_SEV = {"happy": 0, "sad": 1, "ill": 2, "dead": 3}
+        mood_worsened   = _MOOD_SEV.get(current_mood, 0) > _MOOD_SEV.get(prev_mood, 0)
+        new_hunger_warn = state["hunger"] < 30 and not prev_hunger_warn
+        new_poop_warn   = state["poop_level"] >= 3 and not prev_poop_warn
+
+        in_bad_state    = current_mood in ("sad", "ill") or state["hunger"] < 30
+        reminder_due    = in_bad_state and (now - last_broadcast) >= BROADCAST_REMINDER_INTERVAL
+
+        should_broadcast = mood_worsened or new_hunger_warn or new_poop_warn or reminder_due
+
+    # Update alert tracking fields regardless of sleep state
+    state["prev_mood"]        = current_mood
+    state["prev_hunger_warn"] = state["hunger"] < 30
+    state["prev_poop_warn"]   = state["poop_level"] >= 3
+    if should_broadcast:
+        state["last_broadcast"] = now
+
     _save(cursor, state)
 
-    # Post a status nudge if things are going wrong — but stay quiet while sleeping
-    if not sleeping and (current_mood in ("sad", "ill") or state["hunger"] < 30):
+    if should_broadcast:
         msg = _render(state)
         broadcast_fn(cursor, channel_id, msg, state.get("name", fallback_fc))
 
