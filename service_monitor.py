@@ -94,7 +94,7 @@ def get_service_monitoring_player_ids():
             for push_entry in user.get("push", []):
                 player_id = push_entry.get("playerId")
                 is_enabled = push_entry.get("isPushEnabled")
-                is_bad = "isBadPlayerId" in push_entry
+                is_bad = bool(push_entry.get("isBadPlayerId"))
                 if player_id and is_enabled and not is_bad:
                     resolved_player_ids.append(player_id)
     except Exception as e:

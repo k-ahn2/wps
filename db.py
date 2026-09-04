@@ -768,7 +768,7 @@ def dbChannelSubscribers(CONN_DB_CURSOR, sending_callsign, channel_id):
             enabled_player_ids = [
                 x['playerId']
                 for x in push_devices
-                if x.get('isPushEnabled') and 'isBadPlayerId' not in x
+                if x.get('isPushEnabled') and not x.get('isBadPlayerId')
             ]
 
             if channel_id not in channel_subscriptions:

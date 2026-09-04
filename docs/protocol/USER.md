@@ -102,9 +102,11 @@ entries that OneSignal rejects.
 | `isBadPlayerIdTimestamp` | number (epoch s) | [`cleanup_bad_push_player_id`](/handlers.py#L128) | When it was flagged |
 | `isBadPlayerIdReason` | string | [`cleanup_bad_push_player_id`](/handlers.py#L130) | The push response / JSON that caused the flag |
 
-Consumers filter on `isPushEnabled and 'isBadPlayerId' not in entry` -
+Consumers filter on `isPushEnabled and not entry.get('isBadPlayerId')` -
 [`dbChannelSubscribers`](/db.py#L768), [`message_send_handler`](/handlers.py#L1158),
-[`service_monitor.py`](/service_monitor.py#L94).
+[`service_monitor.py`](/service_monitor.py#L94). Some external clients send
+`isBadPlayerId: false` explicitly on the base entry rather than omitting the key,
+so consumers must check its truthiness, not just its presence.
 
 ## JSON example
 

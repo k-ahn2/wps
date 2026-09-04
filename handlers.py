@@ -1193,7 +1193,7 @@ def message_send_handler(CONN_DB_CURSOR, message, callsign, CONN):
             wps_logger("MESSAGE HANDLER", callsign, "Found push entries and no notification since last logout")
             wps_logger("MESSAGE HANDLER", callsign, "Push entries: " + str(push))
             for p in push:
-                if p['isPushEnabled'] and 'isBadPlayerId' not in p:
+                if p['isPushEnabled'] and not p.get('isBadPlayerId'):
                     wps_logger("MESSAGE HANDLER", callsign, f"Sending to push to: {p['playerId']}")
                     push_resp = send_push_notification('Message Alert', 'New message(s) from ' + callsign, p['playerId'])
 
