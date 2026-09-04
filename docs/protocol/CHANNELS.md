@@ -5,6 +5,7 @@
 Overview
 
 1. [Client to Server / Server to Client Responses](#client-to-server--server-to-client-responses)
+2. [Client Implementation Guidance](#client-implementation-guidance)
 
 Singular Types
 
@@ -44,6 +45,24 @@ Most channel actions produce **two** distinct server responses: one back to the 
 | [`cpb`](#type-cpb---channel-post-batch) - Channel Post Batch | [`cpb`](#type-cpb---channel-post-batch) containing the requested posts | *None* |
 | [`cu`](#type-cu---channel-unpause) - Channel Unpause | [`cpb`](#type-cpb---channel-post-batch) containing the requested posts | *None* |
 | [`chl`](#type-chl---channel-list) - Channel List | [`chl`](#type-chl---channel-list) containing the channel list (or count-only result) | *None* |
+
+## Client Implementation Guidance
+
+### Establishing a Baseline on Subscribe
+
+When a client subscribes to a channel for the first time (see [`cs` - Channel Subscribe](#type-cs---channel-subscribe)), it should download at least one post - sent by WPS via [`cpb` - Channel Post Batch](#type-cpb---channel-post-batch) - to form a baseline on the client. The `ts` of the latest post downloaded should then be used as that channel's `lp` (Last Post) in the `cc` object of the next [`c` - Connect](/docs/protocol/GENERAL.md#type-c---connect) request, so WPS knows what counts as new for that channel for that client from that point on.
+
+### Determining the Connect Timestamp for Edits and Emoji
+
+Each entry in the connect `cc` array also carries `le` (Last Emoji) and `led` (Last Edit) timestamps - see [Type c - Connect](/docs/protocol/GENERAL.md#type-c---connect). These need to tell WPS the baseline for edit / emoji activity the client hasn't seen yet.
+
+To compute `led`, and separately `le`, the client should walk the posts it holds locally for the channel and apply the following cascade, stopping at the first step that yields a value:
+
+1. **MAX post `edts`** (for `led`), or **MAX post `ets`** (for `le`) - the latest edit / emoji timestamp already recorded against a post held on the client.
+2. If no held post carries an `edts` / `ets` yet, **MAX post `ts` where post `g` exists** - the timestamp of the first post after a gap (see the `g` field on [`cp`](#type-cp---channel-post)), where gaps are implemented on the client.
+3. If neither applies, **MIN post `ts`** - the timestamp of the oldest post held on the client.
+
+This cascade exists so the client can a) pick up from the post with the latest known emoji or edit rather than re-checking everything, b) fall back to the first post after a gap, if implemented, rather than a post it never downloaded, or c) as a last resort, fall back to the timestamp of the earliest post it holds. Together these ensure the client only requests Emoji and Edit updates for posts it actually still holds.
 
 ## Type cp - Channel Post
 
