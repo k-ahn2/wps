@@ -54,6 +54,8 @@ When a client subscribes to a channel for the first time (see [`cs` - Channel Su
 
 ### Determining the Connect Timestamp for Edits and Emoji
 
+Because WPS is a reactive service that responds to information sent by connected clients, each client must take steps to ensure it correctly determins the baseline timestamps it is using to advise WPS what to send.
+
 Each entry in the connect `cc` array also carries `le` (Last Emoji) and `led` (Last Edit) timestamps - see [Type c - Connect](/docs/protocol/GENERAL.md#type-c---connect). These need to tell WPS the baseline for edit / emoji activity the client hasn't seen yet.
 
 To compute `led`, and separately `le`, the client should walk the posts it holds locally for the channel and apply the following cascade, stopping at the first step that yields a value:
