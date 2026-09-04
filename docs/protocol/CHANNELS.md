@@ -28,6 +28,10 @@ Bots
 
 1. [Bots - Calling the Channel Post Handler Directly](#bots---calling-the-channel-post-handler-directly)
 
+Gaps
+
+1. [Gap Processing](#gap-processing)
+
 [Return to README](/README.md)
 
 ## Client to Server / Server to Client Responses
@@ -66,6 +70,8 @@ To compute `led`, and separately `le`, the client should walk the posts it holds
 3. If neither applies, **MIN post `ts`** - the timestamp of the oldest post held on the client.
 
 This cascade exists so the client can a) pick up from the post with the latest known emoji or edit rather than re-checking everything, b) fall back to the first post after a gap, if implemented, rather than a post it never downloaded, or c) as a last resort, fall back to the timestamp of the earliest post it holds. Together these ensure the client only requests Emoji and Edit updates for posts it actually still holds.
+
+In practice, step 2 is rarely the one that fires: WPS seeds the gap post itself with `ets`/`edts` equal to its own `ts` (see [Gap Processing](#gap-processing)), so a client that persists those fields per post already satisfies step 1 from the gap post alone. Step 2 only matters for a client implementation that tracks the `g` flag but doesn't retain the synthetic `ets`/`edts` WPS sent with it.
 
 ## Type cp - Channel Post
 
@@ -681,3 +687,43 @@ A bot that instead connects like a normal client over the packet network doesn't
    "r": 0
 }
 ```
+
+## Gap Processing
+
+A "gap" is what results when a client deliberately skips downloading part of a channel's backlog. The typical scenario is when a subscribed user returns after a period of absence and is presented with a large backlog of posts, but only chooses to download recent history. 
+
+This section ties together [`pch`](#type-pch---paused-channel-headers), [`cu`](#type-cu---channel-unpause), and the [Determining the Connect Timestamp for Edits and Emoji](#determining-the-connect-timestamp-for-edits-and-emoji) cascade into the end-to-end flow.
+
+### How a gap is created
+
+1. **Backlog detected.** On connect, if a channel has more pending posts than the `maxNewPostsToReturnPerChannelOnConnect` env variable, WPS marks the channel paused for that user and sends [`pch`](#type-pch---paused-channel-headers) with the pending post count instead of the posts themselves.
+2. **Client chooses how to catch up.** The client responds with [`cu`](#type-cu---channel-unpause), either:
+   - `lts` - "send everything since this timestamp" (no gap - full catch-up), or
+   - `pc` - "just send me the last N posts" (the client is knowingly leaving older posts undownloaded - this creates the gap).
+3. **Server flags the gap.** In `unpause_channel_handler`, when the request used `pc`, WPS knows a gap exists on the client and marks the first post of the returned batch:
+   ```python
+   posts[0]['g'] = 1
+   posts[0]['ets'] = posts[0]['ts']
+   posts[0]['edts'] = posts[0]['ts']
+   ```
+   The `g` flag (see the [`cp`](#type-cp---channel-post) field table) marks that post as the first one after the gap. `ets`/`edts` are seeded to the post's own `ts`, giving it a synthetic emoji/edit baseline to ensure the client doesn't request Edits or Emojis for posts in the gap period, which it doesn't hold.
+   
+   WPS then removes the channel from the user's `paused_channels` and streams the requested posts via [`cpb`](#type-cpb---channel-post-batch).
+
+### Why the client needs to track it
+
+Every connect, the client must tell WPS `led`/`le` per channel (the baseline it wants edit/emoji updates from). It computes these with the cascade described in [Client Implementation Guidance](#client-implementation-guidance).
+
+Because WPS seeds `ets`/`edts` directly onto the gap post, step 1 of that cascade ("MAX post `edts`/`ets` held") is normally enough on its own to pick up from the right place - a client that persists those two fields per post never needs to fall through to step 2 (the `g`-based fallback). Step 2 exists only as a safety net for a client that tracks `g` but doesn't retain the synthetic `ets`/`edts` WPS sent alongside it.
+
+### Every post before a gap is frozen for that client
+
+Once a client accepts a gap, its `led`/`le` baseline for that channel jumps to the gap post's `ts` and, on every subsequent connect, can only move forward from there. This isn't limited to the backlog posts the client chose to skip - it applies to **every** post in the channel with an earlier `ts`, including ones the client had already downloaded and been receiving normal edit/emoji updates for before the pause happened. All of it falls behind the new baseline at once.
+
+- Edits or emoji reactions added later to any post that predates the gap will **never** be delivered to that client - whether or not the client holds that post locally. WPS only looks forward from `led`/`le`, so nothing before that point is ever revisited.
+- Those pre-gap posts are effectively frozen from that client's point of view - they'll stay exactly as they looked at the moment of the gap, no matter what edits or reactions happen to them afterward.
+- The only way for a client to see edit/emoji activity on pre-gap posts is to re-download them directly (e.g. `lts` from before the gap on a future `cu`/backfill), which re-establishes them as held posts and lets step 1 of the cascade pick up real activity on them from then on.
+
+### Summary
+
+Gap processing lets a client deliberately abandon old backlog instead of downloading it. WPS seeds the gap-boundary post with a synthetic `ets`/`edts` baseline so the client's normal cascade logic (step 1) picks up cleanly from that point without special-casing `g` - but the trade-off is permanent and channel-wide: every post before the gap, not just the skipped backlog, is frozen from that client's perspective unless it goes back and re-downloads it.
