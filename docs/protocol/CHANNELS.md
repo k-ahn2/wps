@@ -48,13 +48,14 @@ Most channel actions produce **two** distinct server responses: one back to the 
 
 ## Client Implementation Guidance
 
+Because WPS is a reactive service that responds to information sent by connected clients, each client must take steps to ensure it correctly determins the baseline timestamps it is using to advise WPS what to send.
+
 ### Establishing a Baseline on Subscribe
 
 When a client subscribes to a channel for the first time (see [`cs` - Channel Subscribe](#type-cs---channel-subscribe)), it should download at least one post - sent by WPS via [`cpb` - Channel Post Batch](#type-cpb---channel-post-batch) - to form a baseline on the client. The `ts` of the latest post downloaded should then be used as that channel's `lp` (Last Post) in the `cc` object of the next [`c` - Connect](/docs/protocol/GENERAL.md#type-c---connect) request, so WPS knows what counts as new for that channel for that client from that point on.
 
 ### Determining the Connect Timestamp for Edits and Emoji
 
-Because WPS is a reactive service that responds to information sent by connected clients, each client must take steps to ensure it correctly determins the baseline timestamps it is using to advise WPS what to send.
 
 Each entry in the connect `cc` array also carries `le` (Last Emoji) and `led` (Last Edit) timestamps - see [Type c - Connect](/docs/protocol/GENERAL.md#type-c---connect). These need to tell WPS the baseline for edit / emoji activity the client hasn't seen yet.
 
