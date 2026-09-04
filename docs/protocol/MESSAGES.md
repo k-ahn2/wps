@@ -65,7 +65,6 @@ Returns type `mr`
 |Type|`t`|`med`|String|Type `med` for Message Edit
 |Id|`_id`|`1740312733123-M8ABC`|String|_id of the edited message - must be common between Client and Server
 |Edited Message|`m`|`This is a test`|String|The edited message in full
-|Edited Flag|`ed`|`1`|Number|Currently used to determine if a message has been edited
 |Edited Timestamp|`edts`|`1740312733`|Number|Edited timestamp of message - seconds since epoch
 
 ### JSON Example
@@ -226,7 +225,7 @@ Emoji Remove
 ```json
 {
    "t": "medb", 
-   "m": [
+   "med": [
       {
          "_id": "1751389832123-M8ABC",
          "edts": 1751389832123,
@@ -255,7 +254,7 @@ Emoji Remove
 ```json
 {
    "t": "memb", 
-   "m": [
+   "mem": [
       {
          "_id": "1751389832123-M8ABC",
          "e": ["1f603"],

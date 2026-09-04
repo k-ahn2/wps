@@ -176,15 +176,24 @@ The server confirmation it has received a new Post or a Post edit
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`cpr`|String|Always type `cpr` for Channel Post Response
 |Timestamp|`ts`|`1750804825979`|Number|Timestamp of the post
-|Delivery Timestamp|`dts`|`1750804827975`|Number|The timestamp the server received and processed the message. Used by the client to calculate the delivery time to server
+|Delivery Timestamp|`dts`|`1750804827975`|Number|The timestamp the server received and processed the message. Used by the client to calculate the delivery time to server. OMITTED when acking a Post edit (see [`cped`](#type-cped---channel-post-edit))
 
 ### JSON Example
 
+Acking a new post
 ```json
 {
    "t": "cpr",
    "ts": 1750804825979,
    "dts": 1750804827975
+}
+```
+
+Acking a post edit
+```json
+{
+   "t": "cpr",
+   "ts": 1750804825979
 }
 ```
 
@@ -398,14 +407,15 @@ Request and send a batch of channel Posts
 
 ## Type cpedb - Channel Post Edit Batch
 
-Send a batch of Post edits
+Send a batch of Post edits. Sent in batches of `CPEDB_BATCH_SIZE` (default 4), the same chunking pattern used by [`cpb`](#type-cpb---channel-post-batch)
 
 ### Server to Client
 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`cpedb`|String|`cpedb` for Channel Post Edit Batch|
-|Edits|`e`|`[]`|Array of Objects|Array of edit update objects to apply|
+|Meta|`m`|`{}`|Object| pt = Post Edit Total, in the overall batch <BR>pc = Post Edit Count, the cumulative total after this batch is processed<br>```{ "pt": 17, "pc":4 }```
+|Edits|`ed`|`[]`|Array of Objects|Array of edit update objects to apply|
 |**Edit Objects**|
 |Channel Id|`cid`|`6`|Number|id of the channel|
 |Timestamp|`ts`|`1750361450494`|Number|The `ts` of post to apply the edit|
@@ -417,6 +427,10 @@ Send a batch of Post edits
 ``` json
 {
    "t": "cpedb", 
+   "m": {
+      "pt": 4,
+      "pc": 4
+   },
    "ed": [
       {
          "cid": 6, 
@@ -448,18 +462,22 @@ Send a batch of Post edits
 
 ## Type cpemb - Channel Post Emoji Batch
 
-Send a batch of emoji updates. Always sends the latest complete view of emojis for a Post
+Send a batch of emoji updates. Always sends the latest complete view of emojis for a Post. Sent in batches of `CPEMB_BATCH_SIZE` (default 10), the same chunking pattern used by [`cpb`](#type-cpb---channel-post-batch)
 
 ### Server to Client
 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`cpemb`|String|`cpemb` for Channel Post Emoji Batch
+|Meta|`m`|`{}`|Object| pt = Post Emoji Update Total, in the overall batch <BR>pc = Post Emoji Update Count, the cumulative total after this batch is processed<br>```{ "pt": 17, "pc":4 }```
 |Emojis|`e`|`[]`|Array of Objects|Array of emoji update objects to apply
 |**Emoji Objects**|
 |Channel Id|`cid`|`6`|Number|id of the channel|
 |Timestamp|`ts`|`1750361450494`|Number|The `ts` of post to add or remove the emoji
 |Emoji Timestamp|`ets`|`1750804825979`|Number|Timestamp of the emoji update|
+|Emoji Reactions|`e`|`[]`|Array of Objects|Array of reaction objects, one per distinct emoji applied to this post|
+|**Emoji Reaction Objects**|
+|Emoji|`e`|`1f44d`|String|Unicode value of the emoji|
 |Callsigns|`c`|`[]`|Array|Array of callsigns who have applied this emoji
 
 ### JSON Example
@@ -467,6 +485,10 @@ Send a batch of emoji updates. Always sends the latest complete view of emojis f
 ``` json
 {
    "t": "cpemb", 
+   "m": {
+      "pt": 1,
+      "pc": 1
+   },
    "e": [
       {
          "cid": 5, 

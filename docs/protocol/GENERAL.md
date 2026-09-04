@@ -111,7 +111,7 @@ ___
 
 ## Type p - Enable Pairing
 
-Sets `pair_enabled` and `pair_start_time` on the user record - see [The User Object: write path 4](/docs/protocol/USER.md#4-enable-pairing-protocol-type-p).
+Sets `pair_enabled` and `pair_start_time` on the user record - see [The User Object: write path 4](/docs/protocol/USER.md#4-enable-pairing-protocol-type-p). Always applies to the sending connection's own authenticated callsign - there is no way to enable pairing for another callsign.
 
 ### Client to Server
 <hr>
@@ -119,14 +119,12 @@ Sets `pair_enabled` and `pair_start_time` on the user record - see [The User Obj
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`p`|String|Always type `p` for Pairing
-|Callsign|`fc`|`T3EST`|String|The callsign of the user entering pairing mode
 
 ### JSON Example
 
 ```json
 {
-   "t": "p",
-   "fc": "T3EST"
+   "t": "p"
 }
 ```
 
@@ -177,16 +175,30 @@ Used to determine if a user is registered with WPS
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`ue`|String|Always type `ue` for User Enquiry response
 |Registered|`r`|`true` or `false`|Boolean|True if registered
-|Callsign|`c`|`M8ABC`|String|Callsign of the user enquired about
+|Callsign|`tc`|`M8ABC`|String|Callsign of the user enquired about
+|Name|`n`|`Alfred`|String|OPTIONAL - only present if `r` is `true`. The user's name
+|Last Seen|`ls`|`1740252223`|Number|OPTIONAL - only present if `r` is `true`. The later of the user's `last_connected` and `last_disconnected`
 
 
 ### JSON Example
 
+Registered
+```json
+{
+   "t": "ue",
+   "r": true,
+   "tc": "M8ABC",
+   "n": "Alfred",
+   "ls": 1740252223
+}
+```
+
+Not registered
 ```json
 {
    "t": "ue",
    "r": false,
-   "c": "M8ABC"
+   "tc": "M8ABC"
 }
 ```
 
@@ -329,9 +341,24 @@ Sent by the server as part of the connect sequence - contains updated name and l
 
 ## Type k - Keep Alive
 
-Recognised by WPS as a Keep Alive, but simply logs receipt and then ceases processing - no further action taken
+Recognised by WPS as a Keep Alive. WPS logs receipt and echoes back a `k` acknowledgement - no other action taken
 
 ### Client to Server
+<hr>
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`k`|String|Always `k` for Keep Alive
+
+### JSON Example
+
+```json
+{
+   "t": "k"
+}
+```
+
+### Server to Client
 <hr>
 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
@@ -424,9 +451,10 @@ Fetch a count of new Avatars
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`a`|String|Always type ‘a’ for Avatar
-|Timestamp|`ts`|`1750799200`|Number|The timestamp the Avatar was created
-|Avatar|`a`|`{}`|Object|An individual Avatar object
-|Avatar Count|`ac`|`3`|Number|If `co` is set the request, return the count only and suppress the `a` field
+|Callsign|`c`|`M8ABC`|String|The callsign the Avatar belongs to. OMITTED if `co` was set in the request
+|Timestamp|`ts`|`1750799200`|Number|The timestamp the Avatar was created. OMITTED if `co` was set in the request
+|Avatar|`a`|`{}`|Object|An individual Avatar object. OMITTED if `co` was set in the request
+|Avatar Count|`ac`|`3`|Number|If `co` is set the request, return the count only and suppress the `c`, `a`, and `ts` fields
 
 ### JSON Example
 
@@ -587,8 +615,8 @@ Upon receipt, WPS returns:
    - new posts or paused channel headers, depending on:
       - if <= `maxNewPostsToReturnPerChannelOnConnect`, send backlog of posts in batches of 4 as type `cpb`
       - if > `maxNewPostsToReturnPerChannelOnConnect`, return channel headers as type `pch`
-   - new post emojis, sent in one batch as type `cpemb`
-   - new post edits, sent in one batch as type `cpedb`
+   - new post emojis, sent in batches of 10 as type `cpemb`
+   - new post edits, sent in batches of 4 as type `cpedb`
    - updated last seen times and name changes as type `u`, for Messaged users
    - updated name changes as type `he`, for Channel users
    - online users as type `o`

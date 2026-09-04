@@ -909,6 +909,10 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
 
     channel_emojis_batch_array = {
         "t": "cpemb",
+        "m": {
+            "pt": 0,
+            "pc": 0
+        },
         "e": []
     }
 
@@ -916,6 +920,7 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
     close_connection(CONN_DB_CURSOR, callsign, CONN) if posts_with_emoji_updates_response['result'] == 'failure' else None
     posts_with_emoji_updates = posts_with_emoji_updates_response['data']
 
+    emoji_updates = []
     for post in posts_with_emoji_updates:
         emoji_update = {
             "cid": post['cid'],
@@ -926,12 +931,26 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
 
         for emoji in post['e']:
             emoji_update['e'].append(emoji) if len(emoji['c']) > 0 else None
-        
-        channel_emojis_batch_array['e'].append(emoji_update)
-    
-    if len(channel_emojis_batch_array['e']) > 0:
-        wps_logger('CONNECT HANDLER', callsign, f"Channel emoji update batch: {channel_emojis_batch_array}")
-        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, channel_emojis_batch_array)
+
+        emoji_updates.append(emoji_update)
+
+    channel_emojis_batch_array['m']['pt'] = len(emoji_updates)
+
+    if len(emoji_updates) > 0:
+
+        emoji_updates_batched = list(divide_into_batches(emoji_updates, CPEMB_BATCH_SIZE))
+
+        emoji_count = 0
+        for emoji_batch in emoji_updates_batched:
+            if (emoji_count + CPEMB_BATCH_SIZE) < channel_emojis_batch_array['m']['pt']:
+                emoji_count += CPEMB_BATCH_SIZE
+            else:
+                emoji_count = channel_emojis_batch_array['m']['pt']
+
+            channel_emojis_batch_array['e'] = emoji_batch
+            channel_emojis_batch_array['m']['pc'] = emoji_count
+            wps_logger('CONNECT HANDLER', callsign, f"Channel emoji update batch: {channel_emojis_batch_array}")
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, channel_emojis_batch_array)
         
     ###
     # Return post edits
@@ -945,12 +964,17 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
     # Create a blank parent return object
     edited_posts_resp = {
         "t": "cpedb",
+        "m": {
+            "pt": 0,
+            "pc": 0
+        },
         "ed": []
     }
-    
+
+    edits_to_return = []
     for edited_post in posts_with_edit_updates:
         wps_logger('CONNECT HANDLER', callsign, f"Edited Post: {edited_post}")
-        
+
         # Check edit is not already returned in the new posts response
         found_in_new_posts = False
         for new_post in new_posts:
@@ -958,7 +982,7 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
                 wps_logger('CONNECT HANDLER', callsign, "Post found in connect batch, not resending")
                 found_in_new_posts = True
                 break
-        
+
         if not found_in_new_posts:
             post_edit_to_return = {
                 "cid": edited_post['cid'],
@@ -966,11 +990,25 @@ def channels_connect_handler(CONN_DB_CURSOR, channel_object, callsign, CONN):
                 "edts": edited_post['edts'],
                 "p": edited_post['p']
             }
-            edited_posts_resp['ed'].append(post_edit_to_return) 
+            edits_to_return.append(post_edit_to_return)
 
-    if len(edited_posts_resp['ed']) > 0:
-        wps_logger('CONNECT HANDLER', callsign, f"New edits to return: {edited_posts_resp}")
-        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, edited_posts_resp)
+    edited_posts_resp['m']['pt'] = len(edits_to_return)
+
+    if len(edits_to_return) > 0:
+
+        edits_batched = list(divide_into_batches(edits_to_return, CPEDB_BATCH_SIZE))
+
+        edit_count = 0
+        for edit_batch in edits_batched:
+            if (edit_count + CPEDB_BATCH_SIZE) < edited_posts_resp['m']['pt']:
+                edit_count += CPEDB_BATCH_SIZE
+            else:
+                edit_count = edited_posts_resp['m']['pt']
+
+            edited_posts_resp['ed'] = edit_batch
+            edited_posts_resp['m']['pc'] = edit_count
+            wps_logger('CONNECT HANDLER', callsign, f"New edits to return: {edited_posts_resp}")
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, edited_posts_resp)
         
 def pairing_handler(CONN_DB_CURSOR, callsign, CONN):
     '''

@@ -85,3 +85,5 @@ compression_delimiter_base64 = chr(195) + chr(128)
 # Batch Sizes
 MB_BATCH_SIZE = 4 # Number of messages to send in batch type 'mb'
 CPB_BATCH_SIZE = 4 # Number of posts to send in batch type 'pb'
+CPEDB_BATCH_SIZE = 4 # Number of post edits to send in batch type 'cpedb'
+CPEMB_BATCH_SIZE = 10 # Number of post emoji updates to send in batch type 'cpemb'
