@@ -9,6 +9,31 @@ env_source.close()
 EVENTS_DB_FILENAME = env['events']['eventsDbFilename']
 DB_FILENAME = env['dbFilename']
 
+def dbGetBotChannelIds():
+    '''
+    Returns the channel ids (cid) of every bot channel - a channel flagged "b": true in
+    channels.json, mirrored into the single-row `channels` table. Activity in these channels
+    is excluded from all post counts and stats.
+
+    Returns [] if the channels row is missing, empty, or holds no bot channels, so a server
+    with no bots configured behaves exactly as before.
+    '''
+    try:
+        with sqlite3.connect(DB_FILENAME) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT channels FROM channels WHERE id = 1")
+            row = cursor.fetchone()
+
+        if not row or not row[0]:
+            return []
+
+        channels = json.loads(row[0])
+        return [channel['cid'] for channel in channels.get('c', []) if channel.get('b')]
+
+    except Exception:
+        # Never let a stats read fail because of a missing or stale channels row - just don't exclude anything
+        return []
+
 def dbGetStats():
     result = {
         "h": {}, # individual Header stats
@@ -17,10 +42,20 @@ def dbGetStats():
         "s": []  # array of Server stats
     }
         
+    # Posts made in a bot channel are excluded from every post statistic. This resolves to a
+    # no-op ("1 = 1") when no bot channels are configured, and to a NOT IN (...) list of cids
+    # otherwise. cids come straight from the channels row and are forced to int, so the list
+    # can never carry anything but integers into the SQL.
+    bot_channel_ids = dbGetBotChannelIds()
+    if bot_channel_ids:
+        exclude_bot_channels = "json_extract(post, '$.cid') NOT IN (%s)" % ", ".join(str(int(cid)) for cid in bot_channel_ids)
+    else:
+        exclude_bot_channels = "1 = 1"
+
     unique_connecting_users_query = """
-    SELECT 
+    SELECT
         COUNT(json_extract(user, '$.callsign')) as count
-    FROM 
+    FROM
         users
     WHERE
         CAST(json_extract(user, '$.last_connected') AS INTEGER) >= strftime('%s','now','localtime','-7 days')
@@ -34,24 +69,27 @@ def dbGetStats():
         "Total Posts" as "Statistic",
         COUNT(json_extract(post, '$.ts')) as count
     FROM posts
+    WHERE {exclude_bot_channels}
     UNION
-    SELECT  
+    SELECT
         3 as "Sort",
         "Posts" as "Category",
         "Posts Today So Far" as "Statistic",
         COUNT(json_extract(post, '$.ts')) as count
     FROM posts
-    WHERE 
-        CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day') * 1000
+    WHERE
+        {exclude_bot_channels}
+        AND CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','start of day') * 1000
     UNION
-    SELECT  
+    SELECT
         5 as "Sort",
         "Posts" as "Category",
         "Total Posts Last 7 Days" as "Statistic",
         COUNT(json_extract(post, '$.ts')) as count
     FROM posts
     WHERE
-        CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-7 days') * 1000
+        {exclude_bot_channels}
+        AND CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-7 days') * 1000
         AND CAST(json_extract(post, '$.ts') AS INTEGER) < strftime('%s','now','localtime') * 1000
     UNION
     SELECT 
@@ -64,9 +102,10 @@ def dbGetStats():
             COUNT(json_extract(post, '$.ts')) as count
         FROM posts
         WHERE
+            {exclude_bot_channels} AND
             CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-7 days') * 1000 AND
             CAST(json_extract(post, '$.ts') AS INTEGER) < strftime('%s','now','localtime') * 1000
-        GROUP BY 
+        GROUP BY
             callsign
         ORDER BY 
             count DESC
@@ -79,6 +118,7 @@ def dbGetStats():
         COUNT(json_extract(post, '$.ts')) as count
     FROM posts
     WHERE
+        {exclude_bot_channels} AND
         CAST(json_extract(post, '$.ts') AS INTEGER) >= strftime('%s','now','localtime','-30 days') * 1000 AND
         CAST(json_extract(post, '$.ts') AS INTEGER) < strftime('%s','now','localtime') * 1000
     UNION
@@ -92,6 +132,7 @@ def dbGetStats():
             strftime('%d-%m-%Y', ROUND(json_extract(post, '$.ts') / 1000), 'unixepoch', 'localtime') AS date,
 			COUNT(json_extract(post, '$.ts')) as postcount
         FROM posts
+        WHERE {exclude_bot_channels}
         GROUP BY date
         ORDER BY postcount DESC
         LIMIT 1)
@@ -108,7 +149,8 @@ def dbGetStats():
             json_extract(post, '$.fc') as callsign
         FROM posts
         WHERE
-            json_extract(post, '$.cid') != 6
+            {exclude_bot_channels}
+            AND json_extract(post, '$.cid') != 6
         GROUP BY date, callsign
         ORDER BY postcount DESC
         LIMIT 1)
