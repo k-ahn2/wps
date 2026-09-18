@@ -87,3 +87,13 @@ MB_BATCH_SIZE = 4 # Number of messages to send in batch type 'mb'
 CPB_BATCH_SIZE = 4 # Number of posts to send in batch type 'pb'
 CPEDB_BATCH_SIZE = 4 # Number of post edits to send in batch type 'cpedb'
 CPEMB_BATCH_SIZE = 10 # Number of post emoji updates to send in batch type 'cpemb'
+
+# Over-the-air error object (type 'z') error levels, sent to the client on the 'l' key
+WPS_ERROR_LEVEL_INFO = 0
+WPS_ERROR_LEVEL_WARNING = 1
+WPS_ERROR_LEVEL_ERROR = 2
+
+# Seconds to hold before returning control to the caller after sending a type 'z' object at
+# level WPS_ERROR_LEVEL_ERROR. Gives the client time to receive and display the error before
+# the caller tears the connection down.
+CLIENT_ERROR_DISCONNECT_DELAY = 10

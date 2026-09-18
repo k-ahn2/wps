@@ -1981,6 +1981,41 @@ def socket_send_handler(CONN_DB_CURSOR, CONN, callsign, payload):
         wps_logger("SOCKET SEND HANDLER", callsign, f"Error {e}", "ERROR")
         close_connection(CONN_DB_CURSOR, callsign, CONN)
 
+def build_error_object(level, description):
+    '''
+    Build an over-the-air error object (type 'z') for sending to a client.
+
+    'l' is the error level - 0 INFO, 1 WARNING, 2 ERROR (see WPS_ERROR_LEVEL_* in state.py).
+    'd' is a human-readable description of what went wrong.
+
+    An unrecognised level is coerced to ERROR so a bad call still surfaces loudly on the client.
+    '''
+
+    if level not in (WPS_ERROR_LEVEL_INFO, WPS_ERROR_LEVEL_WARNING, WPS_ERROR_LEVEL_ERROR):
+        level = WPS_ERROR_LEVEL_ERROR
+
+    return { "t": "z", "l": level, "d": str(description) }
+
+def send_error(CONN_DB_CURSOR, CONN, callsign, level, description):
+    '''
+    Send an over-the-air error object (type 'z') to a connected client.
+
+    When level is WPS_ERROR_LEVEL_ERROR, this holds for CLIENT_ERROR_DISCONNECT_DELAY seconds
+    after sending - giving the client time to receive and display the error - before returning
+    control to the caller, which is expected to then tear the connection down. INFO and WARNING
+    levels return immediately.
+    '''
+
+    level_name = { WPS_ERROR_LEVEL_INFO: "INFO", WPS_ERROR_LEVEL_WARNING: "WARNING", WPS_ERROR_LEVEL_ERROR: "ERROR" }.get(level, "ERROR")
+    error_object = build_error_object(level, description)
+
+    wps_logger("SEND ERROR", callsign, f"Sending type 'z' error to client: [{level_name}] {error_object['d']}", level_name)
+    socket_send_handler(CONN_DB_CURSOR, CONN, callsign, error_object)
+
+    if error_object["l"] == WPS_ERROR_LEVEL_ERROR:
+        wps_logger("SEND ERROR", callsign, f"Holding {CLIENT_ERROR_DISCONNECT_DELAY}s before returning to caller", "WARNING")
+        time.sleep(CLIENT_ERROR_DISCONNECT_DELAY)
+
 def socket_send_handler_other_connected_user(CONN_DB_CURSOR, sending_callsign, sending_connection, receiving_callsign, receiving_connection, payload):
     
     # Used to send messages to other connected users, where the sending user is different to the receiving user

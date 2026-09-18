@@ -12,7 +12,8 @@
 9. [Type a and ar - Add or Update Avatar](#type-a-and-ar---add-or-update-avatar)
 10. [Type ae - Avatar Enquiry](#type-ae---avatar-enquiry)
 11. [Type s - Stats](#type-s---stats)
-12. [The Connect Sequence Explained](#the-connect-sequence-explained)
+12. [Type z - Error](#type-z---error)
+13. [The Connect Sequence Explained](#the-connect-sequence-explained)
 
 [Return to README](/README.md)
 
@@ -480,6 +481,9 @@ Return Avatar Count
 
 Fetch Server Stats, as defined in `stats.py`
 
+> [!NOTE]
+> Every post statistic in the `p` array excludes posts made in a bot channel - any channel flagged `"b": true` in `channels.json`. Both bot-generated posts and posts made by users in that channel are left out of all counts, top-poster lists and "most in one day" figures. Message stats (`m`) and server stats (`s`) are unaffected, as messages carry no channel and server totals are not attributed per channel.
+
 ### Client to Server
 <hr>
 
@@ -590,6 +594,34 @@ All stats arrays (`p`, `m`, `s`) return objects with two keys:
          }
       ]
     }
+}
+```
+
+## Type z - Error
+
+> [!NOTE]
+> Type `z` is not yet used - future feature. `build_error_object` and `send_error` exist in `handlers.py` but no handler currently calls them, so no client will receive a type `z` object today.
+
+Sent by the server to a client to report an over-the-air condition - informational, a warning, or a fatal error. The server builds it with `build_error_object` and sends it with `send_error` in `handlers.py`.
+
+When the error level is `2` (ERROR), the server holds for `CLIENT_ERROR_DISCONNECT_DELAY` seconds (`state.py`, default `10`) after sending the object - so the client has time to receive and display it - before the calling code continues, which will normally disconnect the client. Levels `0` and `1` are informational only and the server takes no further action.
+
+### Server to Client
+<hr>
+
+| Friendly Name | Key | Sample Values | Data Type | Notes |
+| - | :-: | :-: | :-: | - |
+|Type|`t`|`z`|String|Always type `z` for Error
+|Level|`l`|`0`, `1`, `2`|Number|Error level - `0` INFO, `1` WARNING, `2` ERROR. Level `2` is followed by a disconnect after a short delay
+|Description|`d`|`Received string is not valid JSON`|String|Human-readable description of the condition
+
+### JSON Example
+
+```json
+{
+   "t": "z",
+   "l": 2,
+   "d": "Received string is not valid JSON"
 }
 ```
 
