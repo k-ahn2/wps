@@ -90,6 +90,17 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`enableBpqEvents`|Boolean|`False`|If True, the BPQ Queue Monitor will run and query BPQ for queue statistics
 |`bpqApplName`|String|`WPS`|The name of BPQ application to monitor
 |`bpqQueueApiUrl`|String|`"http://127.0.0.1:8008/api/tcpqueues?8"`|The BPQ Queue Monitoring API endpoint
+|`replication`|Object|see below|Settings for replicating messages, posts and user names to other WPS instances over DAPPS. Off by default. Changes need a restart. See [Replication - How It Works](/docs/replication/REPLICATION.md#setup)|
+|**Replication Fields**|
+|`enabled`|Boolean|`false`|Set to `true` to turn replication on|
+|`originCallsign`|String|`""`|This instance's identity - must exactly equal the callsign (with SSID) given to this node's DAPPS|
+|`peers`|Array|`[]`|The DAPPS callsigns (with SSID) of the other WPS instances. Events are sent to, and accepted from, only these|
+|`appSlug`|String|`wps-repl`|The DAPPS queue name. Must be the same on every instance|
+|`dappsRestUrl`|String|`"http://127.0.0.1:5000"`|Base URL of this node's DAPPS REST API|
+|`streamTtlSeconds`|Number|`604800`|How long DAPPS keeps trying to deliver an event|
+|`outboxPollSeconds`|Number|`5`|How often new events are handed to DAPPS|
+|`inboxPollSeconds`|Number|`5`|How often DAPPS is polled for inbound events|
+|`reconcileIntervalSeconds`|Number|`300`|How often each peer is told how far this instance has got, so gaps can be filled|
 
 ### Sample `env.json`
 
@@ -166,6 +177,8 @@ For grouping channels, adding auto-subscribed or read-only channels, or linking 
 |`state.py`|Shared in-memory state used by both `wps.py` and `handlers.py` (open connections, loaded bots, the channel cache). Deliberately never reloaded, so this state survives a warm reload|
 |`logger.py`|Application and database logging helpers (`wps_logger`, `db_logger`) shared by `db.py` and `handlers.py`|
 |`db.py`|Contains functions to handle every interaction between the WPS application and the database - e.g. `dbUserSearch`, `dbUserUpdate` or `dbGetOnlineUsers`. Called from `wps.py` and `handlers.py` and warm-reloadable without disconnecting users - see [Warm Reloading Code](/README.md#warm-reloading-code)|
+|`replication.py`|Replication between WPS instances over DAPPS - the outbox, inbox and reconcile background threads, started once from `wps.py` and not warm-reloadable. Does nothing unless `replication.enabled` is `true`. See [Replication - How It Works](/docs/replication/REPLICATION.md)|
+|`requirements.txt`|Python packages WPS needs beyond the standard library (currently `requests`, used by replication). Install with `pip install -r requirements.txt`|
 |`wps.log`|Application logging, default ERROR only|
 |`db.log`|Database logging, default ERROR only|
 |`backup.py`|Run to create a JSON file containing every user, message and post object in the database. Reads `env.json` to determine the database filename from `dbFilename`. Any Sqlite supported backup method would also be valid|

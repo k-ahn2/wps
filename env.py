@@ -48,6 +48,17 @@ env_template = {
         "telnetPassword": "",
         "enabledCallsignsToReceiveServiceNotifications": []
     },
+    "replication": {
+        "enabled": False,
+        "originCallsign": "",
+        "peers": [],
+        "appSlug": "wps-repl",
+        "dappsRestUrl": "http://127.0.0.1:5000",
+        "streamTtlSeconds": 604800,
+        "outboxPollSeconds": 5,
+        "inboxPollSeconds": 5,
+        "reconcileIntervalSeconds": 300
+    },
 }
 
 if os.path.exists("env.json"):

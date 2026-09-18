@@ -1,5 +1,6 @@
 import sqlite3, json, time
 import datetime
+import threading
 from logger import *
 
 # Environment Variables
@@ -8,6 +9,70 @@ env = json.load(env_source)
 env_source.close()
 
 DB_FILENAME = env['dbFilename']
+
+# --- Replication capture -----------------------------------------------------------------
+#
+# Every write below that follows a user request also captures a replication event, in the
+# same SQLite transaction as the write itself, so the event commits if and only if the write
+# does. See replication.py for what happens to that event next (outbox pump -> DAPPS ->
+# peer's inbox pump -> apply). Only a hand-picked subset of user fields is portable between
+# instances (see REPLICATED_USER_FIELDS) - presence, push tokens, pairing state etc. are
+# node-local and never captured.
+REPLICATION_CONFIG = env.get('replication', {})
+REPLICATION_ENABLED = REPLICATION_CONFIG.get('enabled', False)
+REPLICATION_ORIGIN = REPLICATION_CONFIG.get('originCallsign')
+REPLICATED_USER_FIELDS = {"name", "name_last_updated"}
+
+# Per-thread, not global: only the replication inbox-pump thread ever sets this, while it is
+# re-applying an already-replicated event, so the capture below stays silent for that one
+# call and the event is never queued to be replicated straight back out again (which is what
+# would otherwise turn a two-node mesh into an infinite A->B->A loop).
+_replication_local = threading.local()
+
+def set_applying_remote(flag):
+    _replication_local.applying_remote = flag
+
+def _is_applying_remote():
+    return getattr(_replication_local, 'applying_remote', False)
+
+def _replicate_capture(cursor, op, key, data, ts=None):
+    '''
+    Appends one row to replication_log and one to replication_outbox, inside the caller's
+    still-open transaction, so it shares the caller's commit/rollback. Deliberately swallows
+    its own errors (logged, not raised) - a bug here must never be able to break the primary
+    write it's riding along with.
+    '''
+    if not REPLICATION_ENABLED or _is_applying_remote():
+        return
+    try:
+        if not REPLICATION_ORIGIN:
+            return
+        event_ts = ts if ts is not None else round(time.time() * 1000)
+        cursor.execute("UPDATE replication_self SET next_seq = next_seq + 1 WHERE id = 1")
+        cursor.execute("SELECT next_seq - 1, epoch FROM replication_self WHERE id = 1")
+        row = cursor.fetchone()
+        if row is None:
+            db_logger("_replicate_capture", "replication_self row missing, skipping capture (has dbInit run?)", "ERROR")
+            return
+        seq, epoch = row
+        event = {
+            "v": 1,
+            "origin": REPLICATION_ORIGIN,
+            "seq": seq,
+            "epoch": epoch,
+            "ts": event_ts,
+            "op": op,
+            "key": key,
+            "data": data,
+        }
+        event_json = json.dumps(event, separators=(',', ':'))
+        cursor.execute(
+            "INSERT INTO replication_log (origin, seq, ts, op, event) VALUES (?, ?, ?, ?, ?)",
+            (REPLICATION_ORIGIN, seq, event_ts, op, event_json)
+        )
+        cursor.execute("INSERT INTO replication_outbox (seq) VALUES (?)", (seq,))
+    except Exception as e:
+        db_logger("_replicate_capture", f"Failed to capture replication event for op {op}: {e}", "ERROR")
 
 def get_db_connection():
     '''
@@ -61,6 +126,88 @@ def dbInit(CONN_DB_CURSOR):
     );
     '''
     CONN_DB_CURSOR.execute(create_channels_table)
+
+    # A post is naturally keyed by (channel, timestamp) but nothing enforced that until
+    # replication needed idempotent re-insertion of a post arriving twice from a peer -
+    # see dbInsertPost's IntegrityError handling below, which mirrors messages' existing
+    # idx_unique_message_id.
+    create_posts_index = '''
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_post_cid_ts
+    ON posts (json_extract(post, '$.cid'), json_extract(post, '$.ts'));
+    '''
+    try:
+        CONN_DB_CURSOR.execute(create_posts_index)
+    except sqlite3.IntegrityError as e:
+        # An existing wps.db from before this index existed could in principle already hold
+        # a duplicate (cid, ts) pair from some earlier bug. Don't fail startup over it - log
+        # loudly so it can be cleaned up, and carry on without the index (dbInsertPost's
+        # IntegrityError handling below simply won't trigger until it's created).
+        db_logger("dbInit", f"Could not create idx_unique_post_cid_ts ({e}) - there may be "
+                  f"duplicate (cid, ts) rows in posts needing manual cleanup", "ERROR")
+
+    # --- Replication tables (see replication.py) ---
+    # Tables are always created so the schema exists regardless of whether
+    # replication.enabled is set - they simply stay empty if it isn't.
+
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_self (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        origin_id TEXT,
+        next_seq INTEGER NOT NULL DEFAULT 1,
+        epoch INTEGER NOT NULL DEFAULT 1
+    );
+    ''')
+    CONN_DB_CURSOR.execute(
+        "INSERT OR IGNORE INTO replication_self (id, origin_id, next_seq, epoch) VALUES (1, ?, 1, 1)",
+        (REPLICATION_ORIGIN,)
+    )
+
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_log (
+        origin TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        ts INTEGER NOT NULL,
+        op TEXT NOT NULL,
+        event TEXT NOT NULL,
+        PRIMARY KEY (origin, seq)
+    );
+    ''')
+
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_outbox (
+        seq INTEGER PRIMARY KEY,
+        dapps_ids TEXT,
+        submitted_at INTEGER
+    );
+    ''')
+
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_origin_cursor (
+        origin TEXT PRIMARY KEY,
+        last_applied_seq INTEGER NOT NULL DEFAULT 0
+    );
+    ''')
+
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_peer_ack (
+        peer TEXT PRIMARY KEY,
+        peer_acked_seq INTEGER NOT NULL DEFAULT 0,
+        submitted_seq INTEGER NOT NULL DEFAULT 0,
+        last_digest_at INTEGER
+    );
+    ''')
+    existing_peer_ack_columns = [row[1] for row in CONN_DB_CURSOR.execute("PRAGMA table_info(replication_peer_ack)")]
+    if "submitted_seq" not in existing_peer_ack_columns:
+        CONN_DB_CURSOR.execute("ALTER TABLE replication_peer_ack ADD COLUMN submitted_seq INTEGER NOT NULL DEFAULT 0")
+
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_pending (
+        origin TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        event TEXT NOT NULL,
+        PRIMARY KEY (origin, seq)
+    );
+    ''')
 
     CONN_DB_CURSOR.connection.commit()
 
@@ -135,6 +282,10 @@ def dbUserUpdate(CONN_DB_CURSOR, callsign, update_object):
         """
         params.append(callsign)
         db_logger("dbUserUpdate", "Query: " + ' '.join(update_query.split()) + " | Params: " + str(params))
+
+        replicated_fields = {k: v for k, v in update_object.items() if k in REPLICATED_USER_FIELDS}
+        if replicated_fields:
+            _replicate_capture(CONN_DB_CURSOR, "user.update", {"callsign": callsign}, {**replicated_fields, "callsign": callsign})
 
         CONN_DB_CURSOR.execute(update_query, params)
         CONN_DB_CURSOR.connection.commit()
@@ -524,6 +675,8 @@ def dbInsertMessage(CONN_DB_CURSOR, message):
         params = [json.dumps(message, separators=(',', ':'))]
         db_logger("dbInsertMessage", "Query: " + ' '.join(insert_query.split()) + " | Params: " + str(params))
 
+        _replicate_capture(CONN_DB_CURSOR, "msg.insert", {"_id": message.get("_id")}, message, ts=message.get("lts"))
+
         CONN_DB_CURSOR.execute(insert_query, params)
         CONN_DB_CURSOR.connection.commit()
 
@@ -537,6 +690,9 @@ def dbInsertMessage(CONN_DB_CURSOR, message):
     except sqlite3.IntegrityError:
         # Duplicate _id → ignore gracefully
         # # Could use INSERT OR IGNORE to avoid this, but helpful to know if WPS gets the same message twice.
+        # Roll back so the replication capture above (which ran before this INSERT and doesn't
+        # know yet that it was a no-op) doesn't linger uncommitted on the connection.
+        CONN_DB_CURSOR.connection.rollback()
         db_logger("dbInsertMessage", "Duplicate _id encountered, ignored gracefully but shouldn't have happened", 'ERROR')
         return_success = {
             "result": "success",
@@ -608,6 +764,14 @@ def dbUpdateMessage(CONN_DB_CURSOR, message_id, update):
         params.append(message_id)
         db_logger("dbUpdateMessage", "Query: " + ' '.join(update_query.split()) + " | Params: " + str(params))
 
+        # dbUpdateMessage is used generically for both edits ({"edts","m","ed"}, from
+        # message_edit_handler) and emoji reactions ({"e","ets"}, from message_emoji_handler) -
+        # tell them apart by shape so the replicated event carries the right op.
+        if "m" in update:
+            _replicate_capture(CONN_DB_CURSOR, "msg.edit", {"_id": message_id}, {"edts": update["edts"], "m": update["m"]}, ts=update["edts"])
+        elif "e" in update:
+            _replicate_capture(CONN_DB_CURSOR, "msg.emoji", {"_id": message_id}, {"e": update["e"], "ets": update["ets"]}, ts=update["ets"])
+
         CONN_DB_CURSOR.execute(update_query, params)
         CONN_DB_CURSOR.connection.commit()
 
@@ -639,9 +803,24 @@ def dbInsertPost(CONN_DB_CURSOR, post):
         params = [json.dumps(post, separators=(',', ':'))]
         db_logger("dbInsertPost", "Query: " + ' '.join(insert_query.split()) + " | Params: " + str(params))
 
+        _replicate_capture(CONN_DB_CURSOR, "post.insert", {"cid": post.get("cid"), "ts": post.get("ts")}, post, ts=post.get("dts", post.get("ts")))
+
         CONN_DB_CURSOR.execute(insert_query, params)
         CONN_DB_CURSOR.connection.commit()
 
+        return_success = {
+            "result": "success",
+            "data": None,
+        }
+        db_logger("dbInsertPost", "Return: " + str(return_success))
+        return return_success
+
+    except sqlite3.IntegrityError:
+        # Duplicate (cid, ts) - e.g. the same post replicated in twice. Mirrors
+        # dbInsertMessage's handling of idx_unique_message_id. Roll back so the replication
+        # capture above (which ran before this INSERT) doesn't linger uncommitted.
+        CONN_DB_CURSOR.connection.rollback()
+        db_logger("dbInsertPost", "Duplicate (cid, ts) encountered, ignored gracefully", 'ERROR')
         return_success = {
             "result": "success",
             "data": None,
@@ -717,6 +896,15 @@ def dbUpdatePost(CONN_DB_CURSOR, channel_id, post_timestamp, update):
         """
         params.extend([ts_param, cid_param])
         db_logger("dbUpdatePost", "Query: " + ' '.join(update_query.split()) + " | Params: " + str(params))
+
+        # dbUpdatePost is used generically for both edits ({"edts","p","ed"}, from
+        # post_edit_handler) and emoji reactions ({"e","ets"}, from post_emoji_handler) -
+        # tell them apart by shape so the replicated event carries the right op.
+        post_key = {"cid": channel_id, "ts": post_timestamp}
+        if "p" in update:
+            _replicate_capture(CONN_DB_CURSOR, "post.edit", post_key, {"edts": update["edts"], "p": update["p"]}, ts=update["edts"])
+        elif "e" in update:
+            _replicate_capture(CONN_DB_CURSOR, "post.emoji", post_key, {"e": update["e"], "ets": update["ets"]}, ts=update["ets"])
 
         CONN_DB_CURSOR.execute(update_query, params)
         CONN_DB_CURSOR.connection.commit()

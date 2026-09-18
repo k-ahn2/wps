@@ -37,6 +37,8 @@ Links to documentation in the `/docs` directory
 3. [Protocol - Channels](docs/protocol/CHANNELS.md)
 4. [Protocol - Messages](docs/protocol/MESSAGES.md)
 5. [Data Model - The User Object](docs/protocol/USER.md)
+6. [Replication - How It Works](docs/replication/REPLICATION.md)
+7. [Replication - Design Proposal](docs/replication/DESIGN.md)
 
 
 ## WPS Schematic
@@ -284,6 +286,7 @@ WPS separates the TCP layer from the message-processing/business logic specifica
 - **`wps.py` itself** - the TCP socket, accept loop, per-connection receive/buffer/framing loop and connection lifecycle. This is the part that must keep running uninterrupted, so it's deliberately never reloaded
 - **`state.py`, `logger.py`, `env.py`** - none of these are reloaded; changes to shared state shape, logging setup, or environment loading need a restart
 - **`env.json` changes that affect startup only** - e.g. `socketTcpPort` (the socket is already bound), `dbFilename`, `botsEnabled`, or logging levels set up once at startup
+- **`replication.py` and the `replication` block in `env.json`** - the replication threads are started once at process start and never reloaded, so a change to `replication.py` or to any replication setting (`enabled`, `peers`, `originCallsign`...) needs a restart. The capture code inside `db.py` *is* reloaded like the rest of that file. See [Replication - How It Works](docs/replication/REPLICATION.md)
 - **A brand new bot** added to `bots/bots.json` - bots are only imported and started once, during `startup_and_listen()` at process start. Reloading only re-executes bot modules already present in the running bot registry; a bot that wasn't loaded at startup needs a restart to be picked up (`channels.json` itself is still re-read on every client connect, independent of warm reload, so channel/group edits don't need either a reload or a restart)
 - **A schema change that isn't purely additive** - e.g. reloading a `db.py` change that renames or drops a column read by code that hasn't been reloaded yet, or that requires a one-off migration `dbInit()` won't apply to an already-open database. Purely additive changes (a new function, a new `CREATE TABLE IF NOT EXISTS`) are safe; anything that changes what existing rows or connections look like is safest applied with a restart
 - **Any syntax or import error in `db.py` or `handlers.py`** at reload time - the reload is caught and logged as an `ERROR` without crashing the server, but leaves the previous, still-working code in place until a valid reload succeeds. Always check a change parses cleanly (e.g. `python3 -c "import handlers"`) before reloading a live node

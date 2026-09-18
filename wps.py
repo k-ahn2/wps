@@ -3,6 +3,7 @@ from logger import *
 from state import *
 import db
 import handlers
+import replication
 import threading
 import socket
 import json
@@ -371,6 +372,11 @@ def startup_and_listen():
 
     # Create the database tables, if they don't exist
     db.dbInit(global_cursor)
+
+    # Start instance-to-instance replication over DAPPS (outbox/inbox/reconcile pumps).
+    # No-ops (loudly) if replication.enabled isn't set in env.json. Not warm-reloadable -
+    # these are process-lifetime threads, same as the bot tick threads below.
+    replication.start()
 
     # Load the channel list from channels.json into the database
     handlers.sync_channels_from_file(global_cursor)
