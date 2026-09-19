@@ -81,9 +81,16 @@ def get_db_connection():
     shared connection is not safe for concurrent writers even with
     check_same_thread=False. WAL mode allows concurrent readers alongside a
     writer.
+
+    wal_autocheckpoint is lowered from SQLite's default of 1000 pages (~4MB) to 100 (~400KB).
+    Commits land in wps.db-wal and only reach wps.db itself at a checkpoint, and with WPS's
+    modest write volume the default could leave wps.db untouched for days - so anything that
+    copies just wps.db would silently miss recent writes. The setting is per-connection, but
+    the WAL is shared, so any connection opened here triggers the checkpoint when it commits.
     '''
     conn = sqlite3.connect(DB_FILENAME)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=100")
     return conn
 
 def dbInit(CONN_DB_CURSOR):
