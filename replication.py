@@ -452,7 +452,9 @@ def _send_digest():
 
     for peer in PEERS:
         try:
-            _dapps_submit(peer, {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest})
+            # Short TTL: only the newest digest matters, so one that can't be delivered within a
+            # couple of intervals should expire in DAPPS rather than queue behind a down peer.
+            _dapps_submit(peer, {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
         except Exception as e:
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to send digest to {peer}: {e}", "ERROR")
 
