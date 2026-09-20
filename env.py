@@ -1,4 +1,4 @@
-import json, os
+import copy, json, os
 
 # Check or Create the Environemnt variables file, env.json
 
@@ -78,5 +78,6 @@ if os.path.exists("env.json"):
             json.dump(env, f, indent=4)
 else:
     print("env.json not found, creating default env.json")
+    env = copy.deepcopy(env_template)
     with open("env.json", "w") as f:
-        json.dump(env_template, f, indent=4)
+        json.dump(env, f, indent=4)
