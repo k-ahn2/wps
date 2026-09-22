@@ -62,18 +62,32 @@ env_template = {
     },
 }
 
+def _merge_defaults(env, template):
+    '''
+    Backfills any key missing from env, checking inside nested dicts too - a key added to
+    an existing section (e.g. a new replication.* setting) needs this to be picked up on
+    restart, since the section itself ("replication") is already present and a shallow
+    top-level-only check would never look inside it.
+    '''
+    changed = False
+    for key, value in template.items():
+        if key not in env:
+            print(f"{key} missing from env.json, adding with default value {value}")
+            env[key] = copy.deepcopy(value)
+            changed = True
+        elif isinstance(value, dict) and isinstance(env.get(key), dict):
+            if _merge_defaults(env[key], value):
+                changed = True
+    return changed
+
+
 if os.path.exists("env.json"):
     with open("env.json", "r") as f:
         env_source = open("env.json", "r")
         env = json.load(f)
 
-        key_added = False
-        for key, value in env_template.items():
-            if key not in env:
-                key_added = True
-                print(f"{key} missing from env.json, adding with default value {value}")
-                env[key] = value
-    
+        key_added = _merge_defaults(env, env_template)
+
     if key_added:
         with open("env.json", "w") as f:
             json.dump(env, f, indent=4)
