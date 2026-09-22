@@ -54,6 +54,7 @@ env_template = {
         "peers": [],
         "appSlug": "wps-repl",
         "dappsRestUrl": "http://127.0.0.1:5000",
+        "dappsSysopPassword": "",
         "streamTtlSeconds": 604800,
         "outboxPollSeconds": 5,
         "inboxPollSeconds": 5,
