@@ -481,7 +481,9 @@ def _handle_digest(envelope):
 
 def _request_sync(origin, from_seq, to_seq):
     try:
-        _dapps_submit(origin, {"op": "sync.request", "origin": origin, "from_seq": from_seq, "to_seq": to_seq, "requested_by": ORIGIN})
+        # Short TTL: if origin is unreachable, the next reconcile tick will send an updated
+        # sync.request anyway, so a stale one shouldn't linger in the DAPPS queue.
+        _dapps_submit(origin, {"op": "sync.request", "origin": origin, "from_seq": from_seq, "to_seq": to_seq, "requested_by": ORIGIN}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
     except Exception as e:
         wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to request sync from {origin} for {from_seq}-{to_seq}: {e}", "ERROR")
 
