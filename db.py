@@ -216,6 +216,16 @@ def dbInit(CONN_DB_CURSOR):
     );
     ''')
 
+    # Origins this instance has asked a seq_at.request for (replication.bootstrapFromTs) but
+    # not yet heard back from. While a row exists here, replication.py withholds normal
+    # gap-fill/digest handling for that origin - see _handle_seq_at_response.
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_bootstrap_pending (
+        origin TEXT PRIMARY KEY,
+        requested_at INTEGER
+    );
+    ''')
+
     CONN_DB_CURSOR.connection.commit()
 
 def sourceValueToJsonValue(value):

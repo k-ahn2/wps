@@ -106,6 +106,7 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`outboxPollSeconds`|Number|`5`|How often the outbox pump looks for new events|
 |`inboxPollSeconds`|Number|`5`|How often the inbox pump polls DAPPS for inbound messages|
 |`reconcileIntervalSeconds`|Number|`300`|How often a digest is sent to each peer|
+|`bootstrapFromTs`|Number (epoch ms)|`null`|Set only on a brand-new instance joining an existing mesh, to skip replaying full history - see [Bringing up a new instance](#bringing-up-a-new-instance). Leave `null` for a normal instance|
 
 Each peer needs the mirror-image configuration: its own `originCallsign`, and a `peers` list that includes yours. Replication is **full mesh** - every instance lists every other instance.
 
@@ -161,13 +162,15 @@ Every replicated change is one JSON envelope. `origin` and `seq` are its identit
 
 ### Control messages
 
-Three more message types travel over the same DAPPS queue. They carry no `seq` and are not stored in `replication_log`.
+Five more message types travel over the same DAPPS queue. They carry no `seq` and are not stored in `replication_log`.
 
 | `op` | Sent by | Purpose | Fields |
 | - | - | - | - |
 |`ack`|Receiver, after applying an event|Tells the origin its event is applied, so the origin can retire it|`origin` (the stream owner), `seq`, `by` (the acknowledging instance)|
 |`digest`|Every instance, periodically|Announces "my own stream is at seq N"|`origin`, `latest_seq`|
 |`sync.request`|An instance that is behind|Asks the origin to re-send a range|`origin` (whose stream), `from_seq`, `to_seq`, `requested_by`|
+|`seq_at.request`|A new instance with `bootstrapFromTs` set|Asks a peer "what seq should I start from to get everything from timestamp `ts` onward?"|`origin` (whose stream - the recipient), `requested_by`, `ts` (epoch ms)|
+|`seq_at.response`|A peer, answering `seq_at.request`|Tells the requester the `last_applied_seq` to seed for the responder's own stream|`origin` (the responder, i.e. the stream), `seq`, `requested_by`|
 
 ## Processing
 
@@ -336,6 +339,7 @@ All replication tables live in `wps.db` and are created by `db.dbInit`.
 |`replication_peer_ack`|Per configured peer: `peer_acked_seq` (highest of our events the peer confirmed applied), `submitted_seq` (highest handed to DAPPS for it)|Startup, outbox pump, acknowledgements|
 |`replication_origin_cursor`|Per remote origin: `last_applied_seq`, the highest contiguous event applied|Inbox pump|
 |`replication_pending`|Events that arrived ahead of a gap, waiting for their predecessors|Inbox pump|
+|`replication_bootstrap_pending`|Origins a fresh instance has sent a `seq_at.request` to but not yet heard back from - only ever populated when `bootstrapFromTs` is set. While a row exists for an origin, normal digest/gap handling for it is withheld so it doesn't request full history from seq 0|Startup (`_start_bootstrap_if_configured`), inbox pump (`_handle_seq_at_response` deletes the row once resolved)|
 
 Also added: a unique index `idx_unique_post_cid_ts` on posts, so a replicated post can be inserted idempotently the way messages already were. If an existing database somehow holds duplicate `(cid, ts)` rows the index cannot be created; that is logged to `db.log` and WPS carries on without it.
 
@@ -427,9 +431,28 @@ Content **authored on the rebuilt instance between its backup and the failure** 
 
 ### Bringing up a new instance
 
-The simplest route is to start it empty with a new `originCallsign`, add it to every peer's `peers`, and let reconciliation replay each peer's history from `replication_log`. That is correct but sends the whole history over the air.
+Three routes, in increasing order of how much history the new instance ends up with:
 
-For a large history, start from a copy of a healthy peer `P`'s `wps.db` instead. The copy carries `P`'s replication tables, so on the new instance:
+**1. Full replay (simplest, sends everything over the air).** Start it empty with a new `originCallsign`, add it to every peer's `peers`, and let reconciliation replay each peer's history from `replication_log`. Correct, but for a large mesh this means every post and message ever made travels over packet radio again.
+
+**2. `bootstrapFromTs` (join mid-history without a database copy).** For an instance that's fine not having anything before a chosen cutoff - e.g. "just give me everything from here forward" - set `replication.bootstrapFromTs` to that cutoff as an epoch-ms timestamp, on the new instance only:
+
+```json
+"replication": {
+    "enabled": true,
+    "originCallsign": "M0LTE-9",
+    "peers": ["M0LTE-7", "GB7ABC-7"],
+    "bootstrapFromTs": 1758000000000
+}
+```
+
+Add the new instance's DAPPS callsign to every existing peer's `peers` and restart them **first** - every peer must be running a `replication.py` that understands `seq_at.request`/`seq_at.response` (see [Control messages](#control-messages)) before the new instance starts, or an un-upgraded peer falls through to the data-event path, raises on the missing `seq` field, and the request is retried forever without resolving. Then start the new instance.
+
+On first start, seeing `bootstrapFromTs` set and no `replication_origin_cursor` rows yet, it records every configured peer in `replication_bootstrap_pending` and sends each a `seq_at.request` (retried every `reconcileIntervalSeconds` until answered). Each peer answers from its own `replication_log` - the earliest `seq` it has at or after that timestamp, minus one - or, if nothing in its log is that new yet, its current latest `seq` (i.e. "you're already caught up"). The new instance seeds `replication_origin_cursor` for that peer from the answer and only then lets normal digest/gap handling run for it; any of that peer's events that arrived while the answer was in flight were buffered and are drained or bridged with a `sync.request` at that point. Content from before the cutoff is never asked for and never arrives - it exists only on instances that were around for it.
+
+`bootstrapFromTs` is consulted once, on the very first start with no cursor rows. It's harmless to leave in `env.json` afterwards - every later restart just no-ops.
+
+**3. Seed from a database copy (full history, no replay).** For a large history where the new instance should hold everything, start from a copy of a healthy peer `P`'s `wps.db` instead. The copy carries `P`'s replication tables, so on the new instance:
 
 1. Empty `replication_log`, `replication_outbox`, `replication_peer_ack` and `replication_pending`.
 2. Set `replication_self` to the new instance: `origin_id` its own `originCallsign`, `next_seq = 1`, `epoch = 1`.
@@ -439,7 +462,7 @@ For a large history, start from a copy of a healthy peer `P`'s `wps.db` instead.
 Anything that happened after the copy is then filled in by digests.
 
 > [!NOTE]
-> The restore and copy procedures above follow from how the cursors work but have not yet been exercised against live instances. Try them on a test pair first.
+> The database-copy procedure above follows from how the cursors work but has not yet been exercised against live instances. `bootstrapFromTs` likewise. Try either on a test pair first.
 
 ## Known Limitations
 
@@ -460,7 +483,7 @@ Anything that happened after the copy is then filled in by digests.
 | File | What it holds |
 | - | - |
 |`db.py`|Replication tables (in `dbInit`), `_replicate_capture`, `set_applying_remote`, `REPLICATED_USER_FIELDS`, and the capture calls inside `dbInsertPost`, `dbUpdatePost`, `dbInsertMessage`, `dbUpdateMessage`, `dbUserUpdate`|
-|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; `start()`|
+|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); `start()`|
 |`wps.py`|Calls `replication.start()` at boot, after `db.dbInit`|
 |`env.py`|Default `replication` block added to `env.json`|
 |`requirements.txt`|`requests`|

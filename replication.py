@@ -35,6 +35,10 @@ STREAM_TTL_SECONDS = REPLICATION_CONFIG.get('streamTtlSeconds', 604800)  # 7 day
 OUTBOX_POLL_SECONDS = REPLICATION_CONFIG.get('outboxPollSeconds', 5)
 INBOX_POLL_SECONDS = REPLICATION_CONFIG.get('inboxPollSeconds', 5)
 RECONCILE_INTERVAL_SECONDS = REPLICATION_CONFIG.get('reconcileIntervalSeconds', 300)
+# Set only on a brand-new instance that should join mid-history rather than replay everything:
+# epoch-ms timestamp. Consulted once, at the first start with no replication_origin_cursor rows
+# yet - see _start_bootstrap_if_configured. Inert (and safe to leave in env.json) afterwards.
+BOOTSTRAP_FROM_TS = REPLICATION_CONFIG.get('bootstrapFromTs')
 
 
 def _now_ms():
@@ -343,7 +347,7 @@ def _handle_inbound(msg):
     # accept events from configured peers: both the DAPPS-stamped source callsign (when
     # present) and the identity claimed inside the envelope must be a peer. Anything else is
     # logged and dropped (acked, so it doesn't sit in the queue and get re-polled forever).
-    claimed = envelope.get({"ack": "by", "sync.request": "requested_by"}.get(op, "origin"))
+    claimed = envelope.get({"ack": "by", "sync.request": "requested_by", "seq_at.request": "requested_by"}.get(op, "origin"))
     source = msg.get("sourceCallsign")
     if not _is_configured_peer(claimed) or (source is not None and not _is_configured_peer(source)):
         wps_logger("REPLICATION INBOX", ORIGIN, f"Rejecting message {dapps_id} from unconfigured peer (source={source}, claimed={claimed}, op={op})", "ERROR")
@@ -365,6 +369,16 @@ def _handle_inbound(msg):
         _dapps_ack(dapps_id)
         return
 
+    if op == "seq_at.request":
+        _handle_seq_at_request(envelope)
+        _dapps_ack(dapps_id)
+        return
+
+    if op == "seq_at.response":
+        _handle_seq_at_response(envelope)
+        _dapps_ack(dapps_id)
+        return
+
     # A normal replicated data event (post.insert, post.edit, msg.insert, ...)
     origin = envelope["origin"]
     seq = envelope["seq"]
@@ -376,6 +390,21 @@ def _handle_inbound(msg):
 
     conn = db.get_db_connection()
     cur = conn.cursor()
+
+    cur.execute("SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
+    if cur.fetchone() is not None:
+        # Still waiting to learn where to start this origin's stream (see
+        # _start_bootstrap_if_configured). Buffer verbatim rather than treating this as a gap
+        # from seq 0 - that would trigger a sync.request for the entire history, exactly what
+        # bootstrapFromTs exists to avoid. _handle_seq_at_response drains this once resolved.
+        wps_logger("REPLICATION INBOX", ORIGIN, f"{origin}/{seq} arrived while bootstrap is still pending - buffering")
+        cur.execute(
+            "INSERT OR REPLACE INTO replication_pending (origin, seq, event) VALUES (?, ?, ?)",
+            (origin, seq, json.dumps(envelope, separators=(',', ':')))
+        )
+        conn.commit()
+        _dapps_ack(dapps_id)
+        return
 
     cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
     row = cur.fetchone()
@@ -437,6 +466,7 @@ def _handle_app_ack(envelope):
 def _reconcile_loop():
     while True:
         try:
+            _retry_bootstrap_pending()
             _send_digest()
             _log_backlog()
         except Exception as e:
@@ -467,6 +497,14 @@ def _handle_digest(envelope):
 
     conn = db.get_db_connection()
     cur = conn.cursor()
+
+    cur.execute("SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
+    if cur.fetchone() is not None:
+        # Cursor for this origin isn't seeded yet - a digest compared against the default of 0
+        # would ask for the whole history. _retry_bootstrap_pending is already chasing the
+        # seq_at.response; nothing to do here but wait for it.
+        return
+
     cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
     row = cur.fetchone()
     last_applied = row[0] if row else 0
@@ -520,6 +558,144 @@ def _handle_sync_request(envelope):
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to re-send seq={seq} to {requester}: {e}", "ERROR")
 
 
+def _fill_gap_to_pending(origin):
+    '''
+    Called right after a bootstrap resolves and _drain_pending has consumed whatever was
+    immediately contiguous. If a peer's data events started arriving (and got buffered) while
+    the seq_at.response was still in flight, there is usually still a gap between the newly
+    seeded cursor and the lowest buffered seq - request exactly that range, the same way an
+    ordinary out-of-order arrival does in _handle_inbound.
+    '''
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
+    row = cur.fetchone()
+    last_applied = row[0] if row else 0
+    cur.execute("SELECT MIN(seq) FROM replication_pending WHERE origin = ? AND seq > ?", (origin, last_applied))
+    row = cur.fetchone()
+    lowest_pending = row[0] if row else None
+    if lowest_pending is not None and lowest_pending > last_applied + 1:
+        wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Requesting {origin}/{last_applied + 1}-{lowest_pending - 1} to bridge to buffered events received during bootstrap")
+        _request_sync(origin, last_applied + 1, lowest_pending - 1)
+
+
+# --- Timestamp bootstrap: seq_at.request/response, for a fresh instance joining mid-history ---
+
+def _handle_seq_at_request(envelope):
+    '''
+    A peer (usually a brand-new instance configured with replication.bootstrapFromTs) is
+    asking: "if I want your stream starting from timestamp ts, what last_applied_seq should I
+    seed for you?" Answered from our own replication_log, which holds only our own origin's
+    events - exactly what's needed to answer for ourselves.
+    '''
+    origin = envelope["origin"]
+    if origin != ORIGIN:
+        return  # only the actual owner of the requested log can answer for it
+
+    requester = envelope["requested_by"]
+    target_ts = envelope["ts"]
+
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    # replication_log.ts is stored in the native precision of the thing that changed - seconds
+    # for msg.* rows (lts/edts/ets), milliseconds for everything else (dts/edts/ets, or the
+    # capture-time default for user.update). bootstrapFromTs is documented as epoch-ms, so
+    # msg.* rows need normalising up to milliseconds before comparing.
+    cur.execute(
+        "SELECT MIN(seq) FROM replication_log WHERE origin = ? AND "
+        "(CASE WHEN op LIKE 'msg.%' THEN ts * 1000 ELSE ts END) >= ?",
+        (ORIGIN, target_ts)
+    )
+    row = cur.fetchone()
+    first_seq_at_or_after = row[0] if row and row[0] is not None else None
+
+    if first_seq_at_or_after is None:
+        # Nothing in our log is that new yet - the requester is fully caught up as of now.
+        cur.execute("SELECT next_seq - 1 FROM replication_self WHERE id = 1")
+        seed_seq = cur.fetchone()[0]
+    else:
+        seed_seq = first_seq_at_or_after - 1
+
+    wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request from {requester} for ts={target_ts}: answering seq={seed_seq}")
+    try:
+        _dapps_submit(requester, {"op": "seq_at.response", "origin": ORIGIN, "seq": seed_seq, "requested_by": requester})
+    except Exception as e:
+        wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Failed to send seq_at.response to {requester}: {e}", "ERROR")
+
+
+def _handle_seq_at_response(envelope):
+    origin = envelope["origin"]
+    if envelope.get("requested_by") != ORIGIN:
+        return  # a response to someone else's request
+
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
+    if cur.fetchone() is None:
+        return  # already resolved (e.g. a duplicate response) or not something we asked for
+
+    seed_seq = envelope["seq"]
+    cur.execute(
+        "INSERT INTO replication_origin_cursor (origin, last_applied_seq) VALUES (?, ?) "
+        "ON CONFLICT(origin) DO UPDATE SET last_applied_seq = excluded.last_applied_seq",
+        (origin, seed_seq)
+    )
+    cur.execute("DELETE FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
+    conn.commit()
+    wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Seeded cursor for {origin} at seq={seed_seq}")
+
+    _drain_pending(conn, cur, origin)
+    _fill_gap_to_pending(origin)
+
+
+def _start_bootstrap_if_configured(cur, conn):
+    '''
+    Called once from start(). If replication.bootstrapFromTs is set and this instance has never
+    resolved a starting cursor for any peer, mark every peer pending and let
+    _retry_bootstrap_pending (called immediately below, then every reconcile tick) send the
+    seq_at.request. Safe to call on every restart: once replication_bootstrap_pending is empty
+    and replication_origin_cursor has rows, bootstrapFromTs is inert and this is a no-op, so
+    it's fine to leave the setting in env.json indefinitely.
+    '''
+    if not BOOTSTRAP_FROM_TS:
+        return
+
+    cur.execute("SELECT 1 FROM replication_bootstrap_pending LIMIT 1")
+    restart_mid_bootstrap = cur.fetchone() is not None
+    if restart_mid_bootstrap:
+        return  # rows already there from a prior start; _retry_bootstrap_pending will chase them
+
+    cur.execute("SELECT 1 FROM replication_origin_cursor LIMIT 1")
+    if cur.fetchone() is not None:
+        return  # already bootstrapped (or caught up organically) in an earlier run
+
+    for peer in PEERS:
+        cur.execute("INSERT OR IGNORE INTO replication_bootstrap_pending (origin, requested_at) VALUES (?, ?)", (peer, _now_ms()))
+    conn.commit()
+    wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Bootstrapping from ts={BOOTSTRAP_FROM_TS}: requesting seq_at from {PEERS}")
+
+
+def _retry_bootstrap_pending():
+    '''
+    Runs every reconcile tick (and once right after _start_bootstrap_if_configured). Re-sends
+    seq_at.request for any peer still in replication_bootstrap_pending - covers the request
+    being sent before local DAPPS was reachable, or the response being lost. Once
+    _handle_seq_at_response resolves a peer it deletes the row, so this naturally stops
+    retrying that peer.
+    '''
+    if not BOOTSTRAP_FROM_TS:
+        return
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT origin FROM replication_bootstrap_pending")
+    pending = [row[0] for row in cur.fetchall()]
+    for peer in pending:
+        try:
+            _dapps_submit(peer, {"op": "seq_at.request", "origin": peer, "requested_by": ORIGIN, "ts": BOOTSTRAP_FROM_TS}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+        except Exception as e:
+            wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request to {peer} failed, will retry: {e}", "ERROR")
+
+
 def _log_backlog():
     conn = db.get_db_connection()
     cur = conn.cursor()
@@ -552,6 +728,9 @@ def start():
     for peer in PEERS:
         cur.execute("INSERT OR IGNORE INTO replication_peer_ack (peer, peer_acked_seq) VALUES (?, 0)", (peer,))
     conn.commit()
+
+    _start_bootstrap_if_configured(cur, conn)
+    _retry_bootstrap_pending()
 
     threading.Thread(target=_outbox_pump_loop, daemon=True, name="replication_outbox_pump").start()
     threading.Thread(target=_inbox_pump_loop, daemon=True, name="replication_inbox_pump").start()

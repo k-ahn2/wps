@@ -58,7 +58,8 @@ env_template = {
         "streamTtlSeconds": 604800,
         "outboxPollSeconds": 5,
         "inboxPollSeconds": 5,
-        "reconcileIntervalSeconds": 300
+        "reconcileIntervalSeconds": 300,
+        "bootstrapFromTs": None
     },
 }
 
