@@ -100,7 +100,7 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 | - | :-: | :-: | :- |
 |`enabled`|Boolean|`false`|Master switch. When `false`, replication does not start|
 |`dappsCallsign`|String|`""`|This instance's identity, and **must exactly equal the callsign you gave this node's DAPPS** in step 2 above, SSID included. Peers address acknowledgements and resend requests to this value. Used as the envelope `origin`|
-|`originCallsign`|String|`""`|Recorded as the `o` key on posts received via replication (carried in the envelope as `originCallsign`). Defaults to `dappsCallsign` if empty. Informational only - not used for addressing|
+|`originCallsign`|String|`""`|Recorded as the `o` key on posts received via replication (carried in the envelope as `origin`). Defaults to `dappsCallsign` if empty. Informational only - not used for addressing|
 |`peers`|Array|`[]`|The **DAPPS callsigns** of the other instances (SSID included). Events are sent only to these, and inbound events are accepted only from these (case-insensitive)|
 |`appSlug`|String|`wps-repl`|The DAPPS queue name. **Must be identical on every instance**|
 |`dappsRestUrl`|String|`http://127.0.0.1:5000`|Base URL of this node's own DAPPS dashboard/REST API. Change only if DAPPS runs on another host or port|
@@ -154,8 +154,7 @@ Every replicated change is one JSON envelope. `origin` and `seq` are its identit
 | Field | Notes |
 | - | - |
 |`v`|Envelope version, currently `1`|
-|`origin`|The instance the change was made on (its `dappsCallsign`). Never rewritten|
-|`originCallsign`|The origin's `originCallsign` setting, used for the `o` key on posts. Falls back to `origin` if absent|
+|`origin`|The instance the change was made on (its `originCallsign` setting, which becomes the `o` key on posts at the receiver). Never rewritten|
 |`seq`|Gap-free, increasing counter per origin, allocated inside the same transaction as the write. This is what receivers use to detect duplicates and gaps|
 |`epoch`|Currently always `1` unless changed by hand. Forms part of the DAPPS stream id - see [Rebuilding or Restoring an Instance](#rebuilding-or-restoring-an-instance)|
 |`ts`|When the change happened, in the **native precision of the thing changed**: seconds for messages (`lts`, `edts`, `ets`), milliseconds for posts (`dts`, `edts`, `ets`) and for `user.update`|

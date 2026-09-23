@@ -58,8 +58,7 @@ def _replicate_capture(cursor, op, key, data, ts=None):
         seq, epoch = row
         event = {
             "v": 1,
-            "origin": REPLICATION_ORIGIN,
-            "originCallsign": REPLICATION_ORIGIN_CALLSIGN,
+            "origin": REPLICATION_ORIGIN_CALLSIGN,
             "seq": seq,
             "epoch": epoch,
             "ts": event_ts,
