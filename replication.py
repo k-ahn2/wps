@@ -545,7 +545,26 @@ def _handle_digest(envelope):
                    f"{origin} looks restored or rebuilt; its new events will be dropped as duplicates until this is resolved (see docs/replication/REPLICATION.md)", "ERROR")
 
 
+# origin -> (from_seq, to_seq, monotonic time) of the last sync.request sent. Live events keep
+# arriving while a gap is being filled, and each one would otherwise fire its own overlapping
+# request (2-43, 2-44, 2-45, ...), making the origin re-send the same range over and over.
+_last_sync_request = {}
+_last_sync_request_lock = threading.Lock()
+
+
 def _request_sync(origin, from_seq, to_seq):
+    now = time.monotonic()
+    with _last_sync_request_lock:
+        prev = _last_sync_request.get(origin)
+        if prev and prev[0] <= from_seq and now - prev[2] < RECONCILE_INTERVAL_SECONDS:
+            # Within the window of an earlier request that starts at or before this one: only
+            # ask for whatever extends beyond what was already requested.
+            from_seq = max(from_seq, prev[1] + 1)
+            if from_seq > to_seq:
+                return
+            _last_sync_request[origin] = (prev[0], to_seq, prev[2])
+        else:
+            _last_sync_request[origin] = (from_seq, to_seq, now)
     try:
         # Short TTL: if origin is unreachable, the next reconcile tick will send an updated
         # sync.request anyway, so a stale one shouldn't linger in the DAPPS queue.
