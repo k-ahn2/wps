@@ -91,6 +91,7 @@ Sends a new Post to a given channel
 |Reply From Call|`rfc`|`T3EST`|String|The sender of the post being replied to
 |Gap|`g`|`1`|Boolean|If a user doesn't request all outstanding posts for a channel, this flag signifies the first new post after the posts gap
 |Receipt|`r`|`0`|Number|Set to `0` to suppress the `cpr` delivery receipt for this post - see [Bots - Calling the Channel Post Handler Directly](#bots---calling-the-channel-post-handler-directly)
+|Origin|`o`|`M0XYZ`|String|Callsign of the WPS instance the post originated on. Only present on posts received via replication (absent on posts made locally). Set by the receiving instance, stored in its local DB and sent to clients, but never replicated onwards
 |**Server Only Fields**|
 |Delivery Timestamp|`dts`|`1750804826875`|Number|The timestamp the server received and processed the message. This is returned to the client in the `cpr` response for the client to calculate the delivery time to server
 

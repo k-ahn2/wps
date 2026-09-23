@@ -279,7 +279,7 @@ Each operation has a rule that makes it safe to apply twice and safe to apply ou
 
 | `op` | Rule |
 | - | - |
-|`post.insert`|Insert. A duplicate `(cid, ts)` is rejected by the unique index and ignored. First writer wins|
+|`post.insert`|Insert, with an `o` key added to the post holding the origin callsign (local DB and clients only - never replicated, as applying a remote event skips capture). A duplicate `(cid, ts)` is rejected by the unique index and ignored. First writer wins|
 |`post.edit`|Refused if the post is unknown (raises, so it is retried). Ignored if the stored `edts` is already `>=` the incoming one. Otherwise sets `p`, `edts` and `ed = 1`|
 |`post.emoji`|Refused if the post is unknown. Ignored if the stored `ets` is `>=` the incoming one. Otherwise sets the merged reaction list `e` and `ets`|
 |`msg.insert`|Insert. A duplicate `_id` is rejected by its unique index and ignored|
