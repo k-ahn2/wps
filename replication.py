@@ -154,6 +154,7 @@ def _apply_and_broadcast(cur, envelope):
 
     if op == "post.insert":
         post = data
+        post["o"] = envelope["origin"]
         insert_resp = db.dbInsertPost(cur, post)
         if insert_resp["result"] == "failure":
             raise RuntimeError(f"dbInsertPost failed: {insert_resp['error']}")
