@@ -20,8 +20,7 @@ DB_FILENAME = env['dbFilename']
 # node-local and never captured.
 REPLICATION_CONFIG = env.get('replication', {})
 REPLICATION_ENABLED = REPLICATION_CONFIG.get('enabled', False)
-REPLICATION_ORIGIN = REPLICATION_CONFIG.get('dappsCallsign')  # this node's DAPPS callsign - the replication identity
-REPLICATION_ORIGIN_CALLSIGN = REPLICATION_CONFIG.get('originCallsign') or REPLICATION_ORIGIN  # value stamped as `o` on posts at the receiver
+REPLICATION_ORIGIN = REPLICATION_CONFIG.get('originCallsign') or REPLICATION_CONFIG.get('dappsCallsign')  # this node's replication identity, stamped as `o` on posts at the receiver
 REPLICATED_USER_FIELDS = {"name", "name_last_updated"}
 
 # Per-thread, not global: only the replication inbox-pump thread ever sets this, while it is
@@ -58,7 +57,7 @@ def _replicate_capture(cursor, op, key, data, ts=None):
         seq, epoch = row
         event = {
             "v": 1,
-            "origin": REPLICATION_ORIGIN_CALLSIGN,
+            "origin": REPLICATION_ORIGIN,
             "seq": seq,
             "epoch": epoch,
             "ts": event_ts,

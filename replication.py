@@ -27,8 +27,28 @@ env_source.close()
 
 REPLICATION_CONFIG = env.get('replication', {})
 ENABLED = REPLICATION_CONFIG.get('enabled', False)
-ORIGIN = REPLICATION_CONFIG.get('dappsCallsign')
-PEERS = REPLICATION_CONFIG.get('peers', [])
+DAPPS_CALLSIGN = REPLICATION_CONFIG.get('dappsCallsign')  # this node's DAPPS callsign - the address peers send to
+ORIGIN = REPLICATION_CONFIG.get('originCallsign') or DAPPS_CALLSIGN  # this node's replication identity: envelope `origin`, and the `o` key on posts at receivers
+
+# peers: [{"originCallsign": "GB7ABC", "dappsCallsign": "GB7ABC-7"}, ...]. A bare string is
+# accepted as a peer whose origin and DAPPS callsigns are the same.
+def _normalise_peers(raw):
+    peers = []
+    for p in raw:
+        if isinstance(p, str):
+            peers.append((p, p))
+        elif isinstance(p, dict) and p.get('dappsCallsign'):
+            peers.append((p.get('originCallsign') or p['dappsCallsign'], p['dappsCallsign']))
+    return peers
+
+_PEER_PAIRS = _normalise_peers(REPLICATION_CONFIG.get('peers', []))
+PEERS = [dapps for _, dapps in _PEER_PAIRS]  # DAPPS callsigns: send targets, and the keys of replication_peer_ack
+_ORIGIN_TO_DAPPS = {origin.upper(): dapps for origin, dapps in _PEER_PAIRS}
+_DAPPS_TO_ORIGIN = {dapps.upper(): origin for origin, dapps in _PEER_PAIRS}
+
+
+def _dapps_for_origin(origin):
+    return _ORIGIN_TO_DAPPS.get(origin.upper(), origin)
 APP_SLUG = REPLICATION_CONFIG.get('appSlug', 'wps-repl')
 DAPPS_REST_URL = REPLICATION_CONFIG.get('dappsRestUrl', 'http://127.0.0.1:5000').rstrip('/')
 STREAM_TTL_SECONDS = REPLICATION_CONFIG.get('streamTtlSeconds', 604800)  # 7 days
@@ -335,7 +355,11 @@ def _inbox_pump_tick():
 
 
 def _is_configured_peer(callsign):
-    return isinstance(callsign, str) and callsign.upper() in {p.upper() for p in PEERS}
+    return isinstance(callsign, str) and callsign.upper() in _DAPPS_TO_ORIGIN
+
+
+def _is_configured_peer_origin(origin):
+    return isinstance(origin, str) and origin.upper() in _ORIGIN_TO_DAPPS
 
 
 def _handle_inbound(msg):
@@ -348,9 +372,12 @@ def _handle_inbound(msg):
     # accept events from configured peers: both the DAPPS-stamped source callsign (when
     # present) and the identity claimed inside the envelope must be a peer. Anything else is
     # logged and dropped (acked, so it doesn't sit in the queue and get re-polled forever).
-    claimed = envelope.get({"ack": "by", "sync.request": "requested_by", "seq_at.request": "requested_by"}.get(op, "origin"))
+    # `by` and `requested_by` carry the sender's DAPPS callsign; `origin` carries its origin callsign.
+    claim_key = {"ack": "by", "sync.request": "requested_by", "seq_at.request": "requested_by"}.get(op, "origin")
+    claimed = envelope.get(claim_key)
     source = msg.get("sourceCallsign")
-    if not _is_configured_peer(claimed) or (source is not None and not _is_configured_peer(source)):
+    claimed_ok = _is_configured_peer(claimed) if claim_key != "origin" else _is_configured_peer_origin(claimed)
+    if not claimed_ok or (source is not None and not _is_configured_peer(source)):
         wps_logger("REPLICATION INBOX", ORIGIN, f"Rejecting message {dapps_id} from unconfigured peer (source={source}, claimed={claimed}, op={op})", "ERROR")
         _dapps_ack(dapps_id)
         return
@@ -437,7 +464,7 @@ def _handle_inbound(msg):
 
 def _send_app_ack(origin, seq):
     try:
-        _dapps_submit(origin, {"op": "ack", "origin": origin, "seq": seq, "by": ORIGIN})
+        _dapps_submit(_dapps_for_origin(origin), {"op": "ack", "origin": origin, "seq": seq, "by": DAPPS_CALLSIGN})
     except Exception as e:
         wps_logger("REPLICATION INBOX", ORIGIN, f"Failed to send app-level ack for {origin}/{seq}: {e}", "ERROR")
 
@@ -522,7 +549,7 @@ def _request_sync(origin, from_seq, to_seq):
     try:
         # Short TTL: if origin is unreachable, the next reconcile tick will send an updated
         # sync.request anyway, so a stale one shouldn't linger in the DAPPS queue.
-        _dapps_submit(origin, {"op": "sync.request", "origin": origin, "from_seq": from_seq, "to_seq": to_seq, "requested_by": ORIGIN}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+        _dapps_submit(_dapps_for_origin(origin), {"op": "sync.request", "origin": origin, "from_seq": from_seq, "to_seq": to_seq, "requested_by": DAPPS_CALLSIGN}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
     except Exception as e:
         wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to request sync from {origin} for {from_seq}-{to_seq}: {e}", "ERROR")
 
@@ -626,7 +653,7 @@ def _handle_seq_at_request(envelope):
 
 def _handle_seq_at_response(envelope):
     origin = envelope["origin"]
-    if envelope.get("requested_by") != ORIGIN:
+    if envelope.get("requested_by") != DAPPS_CALLSIGN:
         return  # a response to someone else's request
 
     conn = db.get_db_connection()
@@ -670,8 +697,8 @@ def _start_bootstrap_if_configured(cur, conn):
     if cur.fetchone() is not None:
         return  # already bootstrapped (or caught up organically) in an earlier run
 
-    for peer in PEERS:
-        cur.execute("INSERT OR IGNORE INTO replication_bootstrap_pending (origin, requested_at) VALUES (?, ?)", (peer, _now_ms()))
+    for peer_origin, _ in _PEER_PAIRS:
+        cur.execute("INSERT OR IGNORE INTO replication_bootstrap_pending (origin, requested_at) VALUES (?, ?)", (peer_origin, _now_ms()))
     conn.commit()
     wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Bootstrapping from ts={BOOTSTRAP_FROM_TS}: requesting seq_at from {PEERS}")
 
@@ -692,7 +719,7 @@ def _retry_bootstrap_pending():
     pending = [row[0] for row in cur.fetchall()]
     for peer in pending:
         try:
-            _dapps_submit(peer, {"op": "seq_at.request", "origin": peer, "requested_by": ORIGIN, "ts": BOOTSTRAP_FROM_TS}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+            _dapps_submit(_dapps_for_origin(peer), {"op": "seq_at.request", "origin": peer, "requested_by": DAPPS_CALLSIGN, "ts": BOOTSTRAP_FROM_TS}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
         except Exception as e:
             wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request to {peer} failed, will retry: {e}", "ERROR")
 
@@ -720,7 +747,7 @@ def start():
         print(f"{timestamp()} Replication disabled (set replication.enabled=true in env.json to turn on)")
         return
 
-    if not ORIGIN or not PEERS:
+    if not DAPPS_CALLSIGN or not PEERS:
         print(f"{timestamp()} Replication enabled but replication.dappsCallsign/peers are not configured in env.json - not starting")
         return
 

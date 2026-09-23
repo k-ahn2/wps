@@ -90,7 +90,7 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
     "enabled": true,
     "dappsCallsign": "M0LTE-7",
     "originCallsign": "M0LTE",
-    "peers": ["GB7ABC-7"],
+    "peers": [{"originCallsign": "GB7ABC", "dappsCallsign": "GB7ABC-7"}],
     "appSlug": "wps-repl",
     "dappsRestUrl": "http://127.0.0.1:5000"
 }
@@ -100,8 +100,8 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 | - | :-: | :-: | :- |
 |`enabled`|Boolean|`false`|Master switch. When `false`, replication does not start|
 |`dappsCallsign`|String|`""`|This instance's identity, and **must exactly equal the callsign you gave this node's DAPPS** in step 2 above, SSID included. Peers address acknowledgements and resend requests to this value. Used as the envelope `origin`|
-|`originCallsign`|String|`""`|Recorded as the `o` key on posts received via replication (carried in the envelope as `origin`). Defaults to `dappsCallsign` if empty. Informational only - not used for addressing|
-|`peers`|Array|`[]`|The **DAPPS callsigns** of the other instances (SSID included). Events are sent only to these, and inbound events are accepted only from these (case-insensitive)|
+|`originCallsign`|String|`""`|This instance's identity in the replication stream: the envelope `origin`, and the `o` key on posts received via replication. Defaults to `dappsCallsign` if empty. Peers list it as that peer's `originCallsign`|
+|`peers`|Array|`[]`|The other instances, each as `{"originCallsign": "...", "dappsCallsign": "..."}`: that peer's own `originCallsign` setting (the `origin` in its envelopes) and its **DAPPS callsign** (SSID included). Events are sent only to the DAPPS callsigns, and inbound events are accepted only if the DAPPS source and the claimed origin belong to a listed peer (case-insensitive). A bare string is treated as a peer whose two callsigns are identical|
 |`appSlug`|String|`wps-repl`|The DAPPS queue name. **Must be identical on every instance**|
 |`dappsRestUrl`|String|`http://127.0.0.1:5000`|Base URL of this node's own DAPPS dashboard/REST API. Change only if DAPPS runs on another host or port|
 |`streamTtlSeconds`|Number|`604800`|How long DAPPS keeps trying to deliver an event (7 days). Anything older is caught by [reconciliation](#7-reconcile)|
@@ -154,7 +154,7 @@ Every replicated change is one JSON envelope. `origin` and `seq` are its identit
 | Field | Notes |
 | - | - |
 |`v`|Envelope version, currently `1`|
-|`origin`|The instance the change was made on (its `originCallsign` setting, which becomes the `o` key on posts at the receiver). Never rewritten|
+|`origin`|The instance the change was made on (its `originCallsign` setting, which becomes the `o` key on posts at the receiver). Never rewritten. Receivers map it to the peer's DAPPS callsign via `peers` when addressing acks and resend requests|
 |`seq`|Gap-free, increasing counter per origin, allocated inside the same transaction as the write. This is what receivers use to detect duplicates and gaps|
 |`epoch`|Currently always `1` unless changed by hand. Forms part of the DAPPS stream id - see [Rebuilding or Restoring an Instance](#rebuilding-or-restoring-an-instance)|
 |`ts`|When the change happened, in the **native precision of the thing changed**: seconds for messages (`lts`, `edts`, `ets`), milliseconds for posts (`dts`, `edts`, `ets`) and for `user.update`|
@@ -254,7 +254,7 @@ DAPPS delivers the message node to node over packet radio - routing, retrying, f
 
 Every `inboxPollSeconds` the pump calls `GET /AppApi/inbound/wps-repl` and handles each message in turn. Anything that raises is logged and left **un-acknowledged**, so DAPPS presents it again on the next poll.
 
-**Step 1 - is it from a peer?** Anyone able to reach this node's DAPPS can address `wps-repl@<callsign>`, and DAPPS does not authenticate senders beyond the callsign it stamps on the message. So a message is accepted only if both the DAPPS-stamped source callsign (when present) and the identity claimed inside the envelope (`origin`, `by` or `requested_by` depending on `op`) are in `peers`. Otherwise it is logged at `ERROR`, acknowledged (so it does not sit in the queue) and dropped.
+**Step 1 - is it from a peer?** Anyone able to reach this node's DAPPS can address `wps-repl@<callsign>`, and DAPPS does not authenticate senders beyond the callsign it stamps on the message. So a message is accepted only if both the DAPPS-stamped source callsign (when present) and the identity claimed inside the envelope (`origin`, `by` or `requested_by` depending on `op`) belong to a listed peer (`by`/`requested_by` and the source are DAPPS callsigns; `origin` is an origin callsign). Otherwise it is logged at `ERROR`, acknowledged (so it does not sit in the queue) and dropped.
 
 **Step 2 - what is it?**
 
@@ -443,7 +443,7 @@ Three routes, in increasing order of how much history the new instance ends up w
 "replication": {
     "enabled": true,
     "dappsCallsign": "M0LTE-9",
-    "peers": ["M0LTE-7", "GB7ABC-7"],
+    "peers": [{"originCallsign": "M0LTE", "dappsCallsign": "M0LTE-7"}, {"originCallsign": "GB7ABC", "dappsCallsign": "GB7ABC-7"}],
     "bootstrapFromTs": 1758000000000
 }
 ```
