@@ -93,7 +93,8 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`replication`|Object|see below|Settings for replicating messages, posts and user names to other WPS instances over DAPPS. Off by default. Changes need a restart. See [Replication - How It Works](/docs/replication/REPLICATION.md#setup)|
 |**Replication Fields**|
 |`enabled`|Boolean|`false`|Set to `true` to turn replication on|
-|`originCallsign`|String|`""`|This instance's identity - must exactly equal the callsign (with SSID) given to this node's DAPPS|
+|`dappsCallsign`|String|`""`|This instance's identity for replication - must exactly equal the callsign (with SSID) given to this node's DAPPS|
+|`originCallsign`|String|`""`|The value recorded as the `o` key on posts received via replication. Defaults to `dappsCallsign` if empty|
 |`peers`|Array|`[]`|The DAPPS callsigns (with SSID) of the other WPS instances. Events are sent to, and accepted from, only these|
 |`appSlug`|String|`wps-repl`|The DAPPS queue name. Must be the same on every instance|
 |`dappsRestUrl`|String|`"http://127.0.0.1:5000"`|Base URL of this node's DAPPS REST API|

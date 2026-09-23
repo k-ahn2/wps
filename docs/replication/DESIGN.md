@@ -45,7 +45,7 @@ Version 1 implements the proposal's core: capture, publish, receive and apply, a
 |Instance rebuild|"seq restored from the replicated DB"|Not automatic. Documented manual recovery; a digest lower than the applied cursor is logged as an error|
 |`epoch`|Bumps when the seq store is reinitialised|Stamped on events and used in the stream id; bumped by hand, never automatically|
 |Log retention|"Long retention window"|Never pruned|
-|Configuration|`env.json` `replicationPeers`|`env.json` `replication` block (`enabled`, `originCallsign`, `peers`, ...)|
+|Configuration|`env.json` `replicationPeers`|`env.json` `replication` block (`enabled`, `dappsCallsign`, `peers`, ...)|
 |Capture failure|Not specified|Errors are logged and swallowed so a replication fault can never fail a user's write|
 
 ## Summary

@@ -257,7 +257,7 @@ def main():
 
     env = load_env()
     replication_config = env.get("replication", {})
-    origin = replication_config.get("originCallsign")
+    origin = replication_config.get("dappsCallsign")
     peers = replication_config.get("peers", [])
     app_slug = replication_config.get("appSlug", "wps-repl")
     dapps_url = replication_config.get("dappsRestUrl", "http://127.0.0.1:5000").rstrip("/")

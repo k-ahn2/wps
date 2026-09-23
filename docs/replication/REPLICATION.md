@@ -88,7 +88,8 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 ```json
 "replication": {
     "enabled": true,
-    "originCallsign": "M0LTE-7",
+    "dappsCallsign": "M0LTE-7",
+    "originCallsign": "M0LTE",
     "peers": ["GB7ABC-7"],
     "appSlug": "wps-repl",
     "dappsRestUrl": "http://127.0.0.1:5000"
@@ -98,7 +99,8 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 | Parameter | Data Type | Default | Notes |
 | - | :-: | :-: | :- |
 |`enabled`|Boolean|`false`|Master switch. When `false`, replication does not start|
-|`originCallsign`|String|`""`|This instance's identity, and **must exactly equal the callsign you gave this node's DAPPS** in step 2 above, SSID included. Peers address acknowledgements and resend requests to this value|
+|`dappsCallsign`|String|`""`|This instance's identity, and **must exactly equal the callsign you gave this node's DAPPS** in step 2 above, SSID included. Peers address acknowledgements and resend requests to this value. Used as the envelope `origin`|
+|`originCallsign`|String|`""`|Recorded as the `o` key on posts received via replication (carried in the envelope as `originCallsign`). Defaults to `dappsCallsign` if empty. Informational only - not used for addressing|
 |`peers`|Array|`[]`|The **DAPPS callsigns** of the other instances (SSID included). Events are sent only to these, and inbound events are accepted only from these (case-insensitive)|
 |`appSlug`|String|`wps-repl`|The DAPPS queue name. **Must be identical on every instance**|
 |`dappsRestUrl`|String|`http://127.0.0.1:5000`|Base URL of this node's own DAPPS dashboard/REST API. Change only if DAPPS runs on another host or port|
@@ -108,13 +110,13 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`reconcileIntervalSeconds`|Number|`300`|How often a digest is sent to each peer|
 |`bootstrapFromTs`|Number (epoch ms)|`null`|Set only on a brand-new instance joining an existing mesh, to skip replaying full history - see [Bringing up a new instance](#bringing-up-a-new-instance). Leave `null` for a normal instance|
 
-Each peer needs the mirror-image configuration: its own `originCallsign`, and a `peers` list that includes yours. Replication is **full mesh** - every instance lists every other instance.
+Each peer needs the mirror-image configuration: its own `dappsCallsign`, and a `peers` list that includes yours. Replication is **full mesh** - every instance lists every other instance.
 
 On startup WPS prints one of:
 
 - `Replication started: origin=... app=... peers=... dapps=...`
 - `Replication disabled (set replication.enabled=true in env.json to turn on)`
-- `Replication enabled but replication.originCallsign/peers are not configured in env.json - not starting`
+- `Replication enabled but replication.dappsCallsign/peers are not configured in env.json - not starting`
 
 `requests` is the only new Python dependency (`pip install -r requirements.txt`).
 
@@ -152,7 +154,8 @@ Every replicated change is one JSON envelope. `origin` and `seq` are its identit
 | Field | Notes |
 | - | - |
 |`v`|Envelope version, currently `1`|
-|`origin`|The instance the change was made on (its `originCallsign`). Never rewritten|
+|`origin`|The instance the change was made on (its `dappsCallsign`). Never rewritten|
+|`originCallsign`|The origin's `originCallsign` setting, used for the `o` key on posts. Falls back to `origin` if absent|
 |`seq`|Gap-free, increasing counter per origin, allocated inside the same transaction as the write. This is what receivers use to detect duplicates and gaps|
 |`epoch`|Currently always `1` unless changed by hand. Forms part of the DAPPS stream id - see [Rebuilding or Restoring an Instance](#rebuilding-or-restoring-an-instance)|
 |`ts`|When the change happened, in the **native precision of the thing changed**: seconds for messages (`lts`, `edts`, `ets`), milliseconds for posts (`dts`, `edts`, `ets`) and for `user.update`|
@@ -433,14 +436,14 @@ Content **authored on the rebuilt instance between its backup and the failure** 
 
 Three routes, in increasing order of how much history the new instance ends up with:
 
-**1. Full replay (simplest, sends everything over the air).** Start it empty with a new `originCallsign`, add it to every peer's `peers`, and let reconciliation replay each peer's history from `replication_log`. Correct, but for a large mesh this means every post and message ever made travels over packet radio again.
+**1. Full replay (simplest, sends everything over the air).** Start it empty with a new `dappsCallsign`, add it to every peer's `peers`, and let reconciliation replay each peer's history from `replication_log`. Correct, but for a large mesh this means every post and message ever made travels over packet radio again.
 
 **2. `bootstrapFromTs` (join mid-history without a database copy).** For an instance that's fine not having anything before a chosen cutoff - e.g. "just give me everything from here forward" - set `replication.bootstrapFromTs` to that cutoff as an epoch-ms timestamp, on the new instance only:
 
 ```json
 "replication": {
     "enabled": true,
-    "originCallsign": "M0LTE-9",
+    "dappsCallsign": "M0LTE-9",
     "peers": ["M0LTE-7", "GB7ABC-7"],
     "bootstrapFromTs": 1758000000000
 }
@@ -455,7 +458,7 @@ On first start, seeing `bootstrapFromTs` set and no `replication_origin_cursor` 
 **3. Seed from a database copy (full history, no replay).** For a large history where the new instance should hold everything, start from a copy of a healthy peer `P`'s `wps.db` instead. The copy carries `P`'s replication tables, so on the new instance:
 
 1. Empty `replication_log`, `replication_outbox`, `replication_peer_ack` and `replication_pending`.
-2. Set `replication_self` to the new instance: `origin_id` its own `originCallsign`, `next_seq = 1`, `epoch = 1`.
+2. Set `replication_self` to the new instance: `origin_id` its own `dappsCallsign`, `next_seq = 1`, `epoch = 1`.
 3. Keep the `replication_origin_cursor` rows from the copy (they record how far `P` had applied each other origin), and add a row for `P` itself with `last_applied_seq` equal to `P`'s `next_seq - 1` at the moment the copy was taken.
 4. Add the new instance to every peer's `peers` list and restart them.
 

@@ -50,6 +50,7 @@ env_template = {
     },
     "replication": {
         "enabled": False,
+        "dappsCallsign": "",
         "originCallsign": "",
         "peers": [],
         "appSlug": "wps-repl",

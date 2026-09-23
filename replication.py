@@ -27,7 +27,7 @@ env_source.close()
 
 REPLICATION_CONFIG = env.get('replication', {})
 ENABLED = REPLICATION_CONFIG.get('enabled', False)
-ORIGIN = REPLICATION_CONFIG.get('originCallsign')
+ORIGIN = REPLICATION_CONFIG.get('dappsCallsign')
 PEERS = REPLICATION_CONFIG.get('peers', [])
 APP_SLUG = REPLICATION_CONFIG.get('appSlug', 'wps-repl')
 DAPPS_REST_URL = REPLICATION_CONFIG.get('dappsRestUrl', 'http://127.0.0.1:5000').rstrip('/')
@@ -154,7 +154,7 @@ def _apply_and_broadcast(cur, envelope):
 
     if op == "post.insert":
         post = data
-        post["o"] = envelope["origin"]
+        post["o"] = envelope.get("originCallsign") or envelope["origin"]
         insert_resp = db.dbInsertPost(cur, post)
         if insert_resp["result"] == "failure":
             raise RuntimeError(f"dbInsertPost failed: {insert_resp['error']}")
@@ -721,7 +721,7 @@ def start():
         return
 
     if not ORIGIN or not PEERS:
-        print(f"{timestamp()} Replication enabled but replication.originCallsign/peers are not configured in env.json - not starting")
+        print(f"{timestamp()} Replication enabled but replication.dappsCallsign/peers are not configured in env.json - not starting")
         return
 
     conn = db.get_db_connection()
