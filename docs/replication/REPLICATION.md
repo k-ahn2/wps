@@ -111,9 +111,9 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`bootstrapFromTs`|Number (epoch ms)|`null`|Set only on a brand-new instance joining an existing mesh, to skip replaying full history - see [Bringing up a new instance](#bringing-up-a-new-instance). Leave `null` for a normal instance|
 |`activityRetentionDays`|Number|`7`|How long rows are kept in `replication_activity`, the history behind the [dashboard](#dashboard). Pruned every reconcile tick|
 |`dashboard.enabled`|Boolean|`true`|Serve the read-only [replication dashboard](#dashboard) from inside WPS. Only takes effect when `enabled` is also `true`|
-|`dashboard.host`|String|`127.0.0.1`|Address the dashboard listens on. Anything other than a loopback address is refused unless `dashboard.password` is set|
+|`dashboard.host`|String|`0.0.0.0`|Address the dashboard listens on. The default accepts connections on every interface; use `127.0.0.1` to restrict it to the node itself|
 |`dashboard.port`|Number|`8095`|Dashboard HTTP port|
-|`dashboard.password`|String|`""`|If set, the dashboard requires HTTP basic auth with this password (any username)|
+|`dashboard.password`|String|`""`|Optional. If set, the dashboard requires HTTP basic auth with this password (any username). Empty means no authentication|
 
 Each peer needs the mirror-image configuration: its own `dappsCallsign`, and a `peers` list that includes yours. Replication is **full mesh** - every instance lists every other instance.
 
@@ -373,7 +373,7 @@ Also added: a unique index `idx_unique_post_cid_ts` on posts, so a replicated po
 
 ### Dashboard
 
-`replication_dashboard.py` serves a read-only web view of the replication tables. WPS starts it automatically whenever replication is enabled (`replication.enabled` and `replication.dashboard.enabled`, the latter on by default) and prints `Replication dashboard on http://127.0.0.1:8095/`. Set `dashboard.enabled` to `false` to turn it off. It can also be run on its own with `python3 replication_dashboard.py` from the WPS directory - handy while WPS itself is stopped, and it runs that way even with replication disabled, saying so.
+`replication_dashboard.py` serves a read-only web view of the replication tables. WPS starts it automatically whenever replication is enabled (`replication.enabled` and `replication.dashboard.enabled`, the latter on by default) and prints `Replication dashboard on http://0.0.0.0:8095/` - browse to the node's address on port 8095. Set `dashboard.enabled` to `false` to turn it off. It can also be run on its own with `python3 replication_dashboard.py` from the WPS directory - handy while WPS itself is stopped, and it runs that way even with replication disabled, saying so.
 
 | Tab | Shows |
 | - | - |
@@ -387,7 +387,7 @@ Click any data row for the item view: its full event JSON, per-peer delivery (fo
 
 The history comes from `replication_activity`, which starts filling from the first start after upgrading, so older items show their event but an empty timeline. Recording is best-effort and never affects replication: a failure to write a row is logged under `REPLICATION ACTIVITY` and skipped. Repeated failures are recorded once, not once per poll: an outbox submit failing for the same peer and `seq`, the same inbound message failing the same way, or DAPPS polling staying down.
 
-The dashboard shows message and post content, so it listens on `127.0.0.1` by default - reach it remotely through an SSH tunnel (`ssh -L 8095:127.0.0.1:8095 node`), or set `dashboard.password` before binding it to another address.
+It is intended as an internal dashboard: by default it is reachable from any address with no authentication, and it shows message and post content. Keep the port off the public internet (firewall), set `dashboard.host` to `127.0.0.1` to make it local-only, or set `dashboard.password` to require a login.
 
 ### Logs
 

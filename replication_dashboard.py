@@ -1,6 +1,5 @@
 import base64
 import hmac
-import ipaddress
 import json
 import os
 import sqlite3
@@ -21,9 +20,8 @@ from state import timestamp
 # `python3 replication_dashboard.py` (e.g. while WPS is stopped) - it only ever reads wps.db,
 # over a read-only connection, so it can never interfere with replication itself.
 #
-# The pages show message and post content, so the server binds to 127.0.0.1 by default. It
-# refuses to listen on any other address unless replication.dashboard.password is set (HTTP
-# basic auth, any username).
+# It is an internal dashboard: by default it listens on every interface with no
+# authentication. replication.dashboard.password optionally adds HTTP basic auth (any username).
 
 DASHBOARD_CONFIG = replication.REPLICATION_CONFIG.get('dashboard', {})
 DB_PATH = os.path.abspath(replication.env['dbFilename'])
@@ -440,15 +438,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(500, json.dumps({"error": str(e)}), "application/json")
 
 
-def _is_loopback(host):
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
 def start(force=False):
     '''
     Called once from wps.py at startup; no-ops unless both replication.enabled and
@@ -457,11 +446,8 @@ def start(force=False):
     '''
     if not force and not (replication.ENABLED and DASHBOARD_CONFIG.get("enabled", True)):
         return None
-    host = DASHBOARD_CONFIG.get("host", "127.0.0.1")
+    host = DASHBOARD_CONFIG.get("host", "0.0.0.0")
     port = DASHBOARD_CONFIG.get("port", 8095)
-    if not _is_loopback(host) and not DASHBOARD_CONFIG.get("password"):
-        print(f"{timestamp()} Replication dashboard NOT started: host {host} is not loopback and replication.dashboard.password is empty")
-        return None
     try:
         server = ThreadingHTTPServer((host, port), _Handler)
     except OSError as e:

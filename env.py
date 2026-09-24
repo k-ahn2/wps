@@ -64,7 +64,7 @@ env_template = {
         "activityRetentionDays": 7,
         "dashboard": {
             "enabled": True,
-            "host": "127.0.0.1",
+            "host": "0.0.0.0",
             "port": 8095,
             "password": ""
         }
