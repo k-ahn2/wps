@@ -59,10 +59,51 @@ RECONCILE_INTERVAL_SECONDS = REPLICATION_CONFIG.get('reconcileIntervalSeconds', 
 # epoch-ms timestamp. Consulted once, at the first start with no replication_origin_cursor rows
 # yet - see _start_bootstrap_if_configured. Inert (and safe to leave in env.json) afterwards.
 BOOTSTRAP_FROM_TS = REPLICATION_CONFIG.get('bootstrapFromTs')
+ACTIVITY_RETENTION_DAYS = REPLICATION_CONFIG.get('activityRetentionDays', 7)
 
 
 def _now_ms():
     return round(time.time() * 1000)
+
+
+# --- Activity recording (read by replication_dashboard.py) ---------------------------------
+
+def _record(direction, category, op, status, peer=None, origin=None, seq=None, detail=None, dapps_id=None, event=None):
+    '''
+    Appends one row to replication_activity on its own connection, so it never joins (or
+    commits) a caller's transaction. Observational only - a failure here is logged and
+    swallowed, never allowed to disturb replication itself.
+    '''
+    try:
+        conn = db.get_db_connection()
+        try:
+            conn.execute(
+                "INSERT INTO replication_activity (at, direction, category, op, peer, origin, seq, status, detail, dapps_id, event) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (_now_ms(), direction, category, op, peer, origin, seq, status, detail, dapps_id,
+                 json.dumps(event, separators=(',', ':')) if event is not None else None)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        wps_logger("REPLICATION ACTIVITY", ORIGIN, f"Failed to record activity ({direction} {op} {status}): {e}", "ERROR")
+
+
+# Pumps retry failures every tick; these remember what has already been recorded so a peer or
+# DAPPS being down produces one activity row per failure, not one every few seconds.
+_last_outbox_failure = {}       # peer -> seq whose submit failure was last recorded
+_recorded_inbound_errors = {}   # dapps_id -> error text last recorded for it
+_dapps_poll_ok = True
+
+
+def _prune_activity():
+    conn = db.get_db_connection()
+    try:
+        conn.execute("DELETE FROM replication_activity WHERE at < ?", (_now_ms() - ACTIVITY_RETENTION_DAYS * 86400000,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # --- DAPPS REST client --------------------------------------------------------------------
@@ -135,6 +176,9 @@ def _outbox_pump_tick():
                 dapps_id = _dapps_submit(peer, envelope, stream_id=_stream_id_for(ORIGIN, envelope["epoch"]), gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS)
             except Exception as e:
                 wps_logger("REPLICATION OUTBOX", ORIGIN, f"Submit seq={seq} to {peer} failed, will retry: {e}", "ERROR")
+                if _last_outbox_failure.get(peer) != seq:
+                    _last_outbox_failure[peer] = seq
+                    _record("out", "data", envelope.get("op"), "failed", peer=peer, origin=ORIGIN, seq=seq, detail=f"Submit to DAPPS failed, retrying every tick: {e}")
                 break
 
             dapps_ids = json.loads(dapps_ids_json) if dapps_ids_json else {}
@@ -145,6 +189,8 @@ def _outbox_pump_tick():
                 (json.dumps(dapps_ids), _now_ms() if all(p in dapps_ids for p in PEERS) else None, seq)
             )
             conn.commit()
+            _last_outbox_failure.pop(peer, None)
+            _record("out", "data", envelope.get("op"), "sent", peer=peer, origin=ORIGIN, seq=seq, dapps_id=dapps_id)
 
 
 def _retire_acked_outbox_rows(cur, conn):
@@ -173,7 +219,7 @@ def _apply_and_broadcast(cur, envelope):
     data = envelope["data"]
 
     if op == "post.insert":
-        post = data
+        post = dict(data)  # copy: the envelope itself is recorded as received, without the local `o`
         post["o"] = envelope["origin"]
         insert_resp = db.dbInsertPost(cur, post)
         if insert_resp["result"] == "failure":
@@ -189,7 +235,7 @@ def _apply_and_broadcast(cur, envelope):
             raise RuntimeError(f"post.edit for unknown post cid={key['cid']} ts={key['ts']}")
         if existing["data"].get("edts", 0) >= data["edts"]:
             wps_logger("REPLICATION APPLY", ORIGIN, f"Stale post.edit for cid={key['cid']} ts={key['ts']}, ignoring")
-            return
+            return "stale"
 
         update_resp = db.dbUpdatePost(cur, key["cid"], key["ts"], {"edts": data["edts"], "p": data["p"], "ed": 1})
         if update_resp["result"] == "failure":
@@ -214,7 +260,7 @@ def _apply_and_broadcast(cur, envelope):
             raise RuntimeError(f"post.emoji for unknown post cid={key['cid']} ts={key['ts']}")
         if existing["data"].get("ets", 0) >= data["ets"]:
             wps_logger("REPLICATION APPLY", ORIGIN, f"Stale post.emoji for cid={key['cid']} ts={key['ts']}, ignoring")
-            return
+            return "stale"
 
         update_resp = db.dbUpdatePost(cur, key["cid"], key["ts"], {"e": data["e"], "ets": data["ets"]})
         if update_resp["result"] == "failure":
@@ -243,7 +289,7 @@ def _apply_and_broadcast(cur, envelope):
             raise RuntimeError(f"msg.edit for unknown message _id={key['_id']}")
         if existing["data"].get("edts", 0) >= data["edts"]:
             wps_logger("REPLICATION APPLY", ORIGIN, f"Stale msg.edit for _id={key['_id']}, ignoring")
-            return
+            return "stale"
 
         update_resp = db.dbUpdateMessage(cur, key["_id"], {"edts": data["edts"], "m": data["m"], "ed": 1})
         if update_resp["result"] == "failure":
@@ -265,7 +311,7 @@ def _apply_and_broadcast(cur, envelope):
             raise RuntimeError(f"msg.emoji for unknown message _id={key['_id']}")
         if existing["data"].get("ets", 0) >= data["ets"]:
             wps_logger("REPLICATION APPLY", ORIGIN, f"Stale msg.emoji for _id={key['_id']}, ignoring")
-            return
+            return "stale"
 
         update_resp = db.dbUpdateMessage(cur, key["_id"], {"e": data["e"], "ets": data["ets"]})
         if update_resp["result"] == "failure":
@@ -278,30 +324,35 @@ def _apply_and_broadcast(cur, envelope):
         if existing["result"] != "success" or existing["data"] is None:
             # Users are created by their own first connect on each instance, not by replication.
             wps_logger("REPLICATION APPLY", ORIGIN, f"user.update for {callsign}, not a user on this instance, ignoring")
-            return
+            return "ignored"
         # name_last_updated is both the last-writer-wins guard and the watermark clients use to
         # pick up name changes (dbGetUpdatedHams), so it replicates alongside name.
         if (existing["data"].get("name_last_updated") or 0) >= (data.get("name_last_updated") or 0):
             wps_logger("REPLICATION APPLY", ORIGIN, f"Stale user.update for {callsign}, ignoring")
-            return
+            return "stale"
         update_resp = db.dbUserUpdate(cur, callsign, {k: v for k, v in data.items() if k in db.REPLICATED_USER_FIELDS})
         if update_resp["result"] == "failure":
             raise RuntimeError(f"dbUserUpdate failed: {update_resp['error']}")
 
     else:
         wps_logger("REPLICATION APPLY", ORIGIN, f"Unknown op '{op}', ignoring", "ERROR")
+        return "ignored"
+
+    return "applied"
 
 
 def _apply_one(conn, cur, origin, seq, envelope):
+    '''Returns the outcome from _apply_and_broadcast: "applied", "stale" or "ignored".'''
     db.set_applying_remote(True)
     try:
-        _apply_and_broadcast(cur, envelope)
+        outcome = _apply_and_broadcast(cur, envelope)
         cur.execute(
             "INSERT INTO replication_origin_cursor (origin, last_applied_seq) VALUES (?, ?) "
             "ON CONFLICT(origin) DO UPDATE SET last_applied_seq = excluded.last_applied_seq",
             (origin, seq)
         )
         conn.commit()
+        return outcome
     except Exception:
         conn.rollback()
         raise
@@ -322,9 +373,11 @@ def _drain_pending(conn, cur, origin):
         seq, event_json = row
         envelope = json.loads(event_json)
 
-        _apply_one(conn, cur, origin, seq, envelope)
+        outcome = _apply_one(conn, cur, origin, seq, envelope)
         cur.execute("DELETE FROM replication_pending WHERE origin = ? AND seq = ?", (origin, seq))
         conn.commit()
+        _record("in", "data", envelope.get("op"), outcome, peer=_dapps_for_origin(origin), origin=origin, seq=seq,
+                detail="Applied from the out-of-order buffer", event=envelope)
         _send_app_ack(origin, seq)
 
 
@@ -340,18 +393,80 @@ def _inbox_pump_loop():
 
 
 def _inbox_pump_tick():
+    global _dapps_poll_ok
     try:
         inbound = _dapps_inbound()
     except Exception as e:
         wps_logger("REPLICATION INBOX", ORIGIN, f"Failed to poll DAPPS inbound: {e}", "ERROR")
+        if _dapps_poll_ok:
+            _dapps_poll_ok = False
+            _record("in", "system", "dapps.poll", "failed", detail=f"Cannot poll local DAPPS at {DAPPS_REST_URL}: {e}")
         return
+
+    if not _dapps_poll_ok:
+        _dapps_poll_ok = True
+        _record("in", "system", "dapps.poll", "recovered", detail=f"Local DAPPS at {DAPPS_REST_URL} reachable again")
 
     for msg in inbound:
         try:
             _handle_inbound(msg)
+            _recorded_inbound_errors.pop(msg.get("id"), None)
         except Exception as e:
             # Deliberately don't ack - DAPPS will redeliver next poll and we'll try again.
             wps_logger("REPLICATION INBOX", ORIGIN, f"Failed to handle inbound {msg.get('id')}: {e}", "ERROR")
+            _record_inbound_error(msg, e)
+
+
+def _record_inbound_error(msg, error):
+    dapps_id = msg.get("id")
+    if _recorded_inbound_errors.get(dapps_id) == str(error):
+        return  # same message failing the same way on redelivery - already in the log
+    if len(_recorded_inbound_errors) > 1000:
+        _recorded_inbound_errors.clear()
+    _recorded_inbound_errors[dapps_id] = str(error)
+    try:
+        envelope = json.loads(base64.b64decode(msg["payload"]))
+    except Exception:
+        envelope = None
+    op = envelope.get("op") if isinstance(envelope, dict) else None
+    _record("in", "sync" if op in _CONTROL_OPS else "data", op, "error", peer=msg.get("sourceCallsign"),
+            origin=envelope.get("origin") if isinstance(envelope, dict) else None,
+            seq=envelope.get("seq") if isinstance(envelope, dict) and op not in _CONTROL_OPS else None,
+            detail=f"Not acked, DAPPS will redeliver: {error}", dapps_id=dapps_id, event=envelope)
+
+
+_CONTROL_OPS = {"ack", "digest", "sync.request", "seq_at.request", "seq_at.response"}
+
+
+def _describe_control(envelope):
+    op = envelope.get("op")
+    if op == "ack":
+        return f"{envelope.get('by')} applied {envelope.get('origin')}/{envelope.get('seq')}"
+    if op == "digest":
+        return f"{envelope.get('origin')} latest_seq={envelope.get('latest_seq')}"
+    if op == "sync.request":
+        return f"{envelope.get('requested_by')} asks {envelope.get('origin')} for {envelope.get('from_seq')}-{envelope.get('to_seq')}"
+    if op == "seq_at.request":
+        return f"{envelope.get('requested_by')} asks {envelope.get('origin')} for seq at ts={envelope.get('ts')}"
+    if op == "seq_at.response":
+        return f"{envelope.get('origin')} answers seq={envelope.get('seq')} for {envelope.get('requested_by')}"
+    return None
+
+
+def _submit_control(dest, payload, ttl=None):
+    '''_dapps_submit for a control message, recording the attempt either way. Re-raises on failure
+    so each caller keeps its own logging and retry behaviour.'''
+    try:
+        dapps_id = _dapps_submit(dest, payload, ttl=ttl)
+    except Exception as e:
+        _record("out", "sync", payload.get("op"), "failed", peer=dest, origin=payload.get("origin"),
+                seq=payload.get("seq") if payload.get("op") == "ack" else None,
+                detail=f"{_describe_control(payload)} - {e}", event=payload)
+        raise
+    _record("out", "sync", payload.get("op"), "sent", peer=dest, origin=payload.get("origin"),
+            seq=payload.get("seq") if payload.get("op") == "ack" else None,
+            detail=_describe_control(payload), dapps_id=dapps_id, event=payload)
+    return dapps_id
 
 
 def _is_configured_peer(callsign):
@@ -379,8 +494,19 @@ def _handle_inbound(msg):
     claimed_ok = _is_configured_peer(claimed) if claim_key != "origin" else _is_configured_peer_origin(claimed)
     if not claimed_ok or (source is not None and not _is_configured_peer(source)):
         wps_logger("REPLICATION INBOX", ORIGIN, f"Rejecting message {dapps_id} from unconfigured peer (source={source}, claimed={claimed}, op={op})", "ERROR")
+        _record("in", "sync" if op in _CONTROL_OPS else "data", op, "rejected", peer=source, origin=envelope.get("origin"),
+                seq=envelope.get("seq") if op not in _CONTROL_OPS else None,
+                detail=f"Unconfigured peer (source={source}, claimed {claim_key}={claimed})", dapps_id=dapps_id, event=envelope)
         _dapps_ack(dapps_id)
         return
+
+    # Everything below is from a configured peer; record it against that peer's DAPPS callsign.
+    peer = source or (claimed if claim_key != "origin" else _dapps_for_origin(claimed))
+
+    if op in _CONTROL_OPS:
+        _record("in", "sync", op, "received", peer=peer, origin=envelope.get("origin"),
+                seq=envelope.get("seq") if op == "ack" else None, detail=_describe_control(envelope),
+                dapps_id=dapps_id, event=envelope)
 
     if op == "ack":
         _handle_app_ack(envelope)
@@ -413,6 +539,8 @@ def _handle_inbound(msg):
 
     if origin == ORIGIN:
         # Our own event came back somehow (e.g. a peer relayed it) - nothing to apply.
+        _record("in", "data", op, "ignored", peer=peer, origin=origin, seq=seq, detail="Our own event echoed back",
+                dapps_id=dapps_id, event=envelope)
         _dapps_ack(dapps_id)
         return
 
@@ -431,6 +559,8 @@ def _handle_inbound(msg):
             (origin, seq, json.dumps(envelope, separators=(',', ':')))
         )
         conn.commit()
+        _record("in", "data", op, "buffered", peer=peer, origin=origin, seq=seq,
+                detail="Bootstrap for this origin still pending - held until seq_at.response arrives", dapps_id=dapps_id, event=envelope)
         _dapps_ack(dapps_id)
         return
 
@@ -440,6 +570,8 @@ def _handle_inbound(msg):
 
     if seq <= last_applied:
         wps_logger("REPLICATION INBOX", ORIGIN, f"Duplicate delivery of {origin}/{seq}, already applied - ack and drop")
+        _record("in", "data", op, "duplicate", peer=peer, origin=origin, seq=seq,
+                detail=f"Already applied up to {last_applied} - dropped", dapps_id=dapps_id, event=envelope)
         _dapps_ack(dapps_id)
         return
 
@@ -450,11 +582,14 @@ def _handle_inbound(msg):
             (origin, seq, json.dumps(envelope, separators=(',', ':')))
         )
         conn.commit()
+        _record("in", "data", op, "buffered", peer=peer, origin=origin, seq=seq,
+                detail=f"Gap: have {last_applied}, requesting {last_applied + 1}-{seq - 1}", dapps_id=dapps_id, event=envelope)
         _dapps_ack(dapps_id)  # DAPPS delivered it fine - the gap is an application-level concern
         _request_sync(origin, last_applied + 1, seq - 1)
         return
 
-    _apply_one(conn, cur, origin, seq, envelope)
+    outcome = _apply_one(conn, cur, origin, seq, envelope)
+    _record("in", "data", op, outcome, peer=peer, origin=origin, seq=seq, dapps_id=dapps_id, event=envelope)
     _drain_pending(conn, cur, origin)
     _dapps_ack(dapps_id)
     _send_app_ack(origin, seq)
@@ -464,7 +599,7 @@ def _handle_inbound(msg):
 
 def _send_app_ack(origin, seq):
     try:
-        _dapps_submit(_dapps_for_origin(origin), {"op": "ack", "origin": origin, "seq": seq, "by": DAPPS_CALLSIGN})
+        _submit_control(_dapps_for_origin(origin), {"op": "ack", "origin": origin, "seq": seq, "by": DAPPS_CALLSIGN})
     except Exception as e:
         wps_logger("REPLICATION INBOX", ORIGIN, f"Failed to send app-level ack for {origin}/{seq}: {e}", "ERROR")
 
@@ -497,6 +632,7 @@ def _reconcile_loop():
             _retry_bootstrap_pending()
             _send_digest()
             _log_backlog()
+            _prune_activity()
         except Exception as e:
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Tick error: {e}", "ERROR")
         time.sleep(RECONCILE_INTERVAL_SECONDS)
@@ -512,7 +648,7 @@ def _send_digest():
         try:
             # Short TTL: only the newest digest matters, so one that can't be delivered within a
             # couple of intervals should expire in DAPPS rather than queue behind a down peer.
-            _dapps_submit(peer, {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+            _submit_control(peer, {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
         except Exception as e:
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to send digest to {peer}: {e}", "ERROR")
 
@@ -568,7 +704,7 @@ def _request_sync(origin, from_seq, to_seq):
     try:
         # Short TTL: if origin is unreachable, the next reconcile tick will send an updated
         # sync.request anyway, so a stale one shouldn't linger in the DAPPS queue.
-        _dapps_submit(_dapps_for_origin(origin), {"op": "sync.request", "origin": origin, "from_seq": from_seq, "to_seq": to_seq, "requested_by": DAPPS_CALLSIGN}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+        _submit_control(_dapps_for_origin(origin), {"op": "sync.request", "origin": origin, "from_seq": from_seq, "to_seq": to_seq, "requested_by": DAPPS_CALLSIGN}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
     except Exception as e:
         wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to request sync from {origin} for {from_seq}-{to_seq}: {e}", "ERROR")
 
@@ -596,13 +732,17 @@ def _handle_sync_request(envelope):
     for seq, event_json in rows:
         envelope_to_resend = json.loads(event_json)
         try:
-            _dapps_submit(
+            dapps_id = _dapps_submit(
                 requester, envelope_to_resend,
                 stream_id=_stream_id_for(ORIGIN, envelope_to_resend["epoch"]),
                 gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS
             )
+            _record("out", "data", envelope_to_resend.get("op"), "resent", peer=requester, origin=ORIGIN, seq=seq,
+                    detail=f"Re-sent for sync.request {from_seq}-{to_seq}", dapps_id=dapps_id)
         except Exception as e:
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to re-send seq={seq} to {requester}: {e}", "ERROR")
+            _record("out", "data", envelope_to_resend.get("op"), "failed", peer=requester, origin=ORIGIN, seq=seq,
+                    detail=f"Re-send for sync.request {from_seq}-{to_seq} failed: {e}")
 
 
 def _fill_gap_to_pending(origin):
@@ -665,7 +805,7 @@ def _handle_seq_at_request(envelope):
 
     wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request from {requester} for ts={target_ts}: answering seq={seed_seq}")
     try:
-        _dapps_submit(requester, {"op": "seq_at.response", "origin": ORIGIN, "seq": seed_seq, "requested_by": requester})
+        _submit_control(requester, {"op": "seq_at.response", "origin": ORIGIN, "seq": seed_seq, "requested_by": requester})
     except Exception as e:
         wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Failed to send seq_at.response to {requester}: {e}", "ERROR")
 
@@ -738,7 +878,7 @@ def _retry_bootstrap_pending():
     pending = [row[0] for row in cur.fetchall()]
     for peer in pending:
         try:
-            _dapps_submit(_dapps_for_origin(peer), {"op": "seq_at.request", "origin": peer, "requested_by": DAPPS_CALLSIGN, "ts": BOOTSTRAP_FROM_TS}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+            _submit_control(_dapps_for_origin(peer), {"op": "seq_at.request", "origin": peer, "requested_by": DAPPS_CALLSIGN, "ts": BOOTSTRAP_FROM_TS}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
         except Exception as e:
             wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request to {peer} failed, will retry: {e}", "ERROR")
 

@@ -60,7 +60,14 @@ env_template = {
         "outboxPollSeconds": 5,
         "inboxPollSeconds": 5,
         "reconcileIntervalSeconds": 300,
-        "bootstrapFromTs": None
+        "bootstrapFromTs": None,
+        "activityRetentionDays": 7,
+        "dashboard": {
+            "enabled": True,
+            "host": "127.0.0.1",
+            "port": 8095,
+            "password": ""
+        }
     },
 }
 

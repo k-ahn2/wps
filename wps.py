@@ -4,6 +4,7 @@ from state import *
 import db
 import handlers
 import replication
+import replication_dashboard
 import threading
 import socket
 import json
@@ -377,6 +378,10 @@ def startup_and_listen():
     # No-ops (loudly) if replication.enabled isn't set in env.json. Not warm-reloadable -
     # these are process-lifetime threads, same as the bot tick threads below.
     replication.start()
+
+    # Read-only replication status dashboard over HTTP (replication.dashboard in env.json).
+    # Only started when replication.enabled is also set.
+    replication_dashboard.start()
 
     # Load the channel list from channels.json into the database
     handlers.sync_channels_from_file(global_cursor)

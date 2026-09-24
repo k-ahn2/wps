@@ -109,6 +109,11 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`inboxPollSeconds`|Number|`5`|How often the inbox pump polls DAPPS for inbound messages|
 |`reconcileIntervalSeconds`|Number|`300`|How often a digest is sent to each peer|
 |`bootstrapFromTs`|Number (epoch ms)|`null`|Set only on a brand-new instance joining an existing mesh, to skip replaying full history - see [Bringing up a new instance](#bringing-up-a-new-instance). Leave `null` for a normal instance|
+|`activityRetentionDays`|Number|`7`|How long rows are kept in `replication_activity`, the history behind the [dashboard](#dashboard). Pruned every reconcile tick|
+|`dashboard.enabled`|Boolean|`true`|Serve the read-only [replication dashboard](#dashboard) from inside WPS. Only takes effect when `enabled` is also `true`|
+|`dashboard.host`|String|`127.0.0.1`|Address the dashboard listens on. Anything other than a loopback address is refused unless `dashboard.password` is set|
+|`dashboard.port`|Number|`8095`|Dashboard HTTP port|
+|`dashboard.password`|String|`""`|If set, the dashboard requires HTTP basic auth with this password (any username)|
 
 Each peer needs the mirror-image configuration: its own `dappsCallsign`, and a `peers` list that includes yours. Replication is **full mesh** - every instance lists every other instance.
 
@@ -341,6 +346,7 @@ All replication tables live in `wps.db` and are created by `db.dbInit`.
 |`replication_peer_ack`|Per configured peer: `peer_acked_seq` (highest of our events the peer confirmed applied), `submitted_seq` (highest handed to DAPPS for it)|Startup, outbox pump, acknowledgements|
 |`replication_origin_cursor`|Per remote origin: `last_applied_seq`, the highest contiguous event applied|Inbox pump|
 |`replication_pending`|Events that arrived ahead of a gap, waiting for their predecessors|Inbox pump|
+|`replication_activity`|Observational history for the [dashboard](#dashboard): one row per data event sent or received and per control message, with direction, category (`data`/`sync`/`system`), peer, `origin`/`seq`, outcome and (for inbound rows) the full envelope. Nothing in the protocol reads it; pruned after `activityRetentionDays`|Outbox, inbox and reconcile pumps (`_record`)|
 |`replication_bootstrap_pending`|Origins a fresh instance has sent a `seq_at.request` to but not yet heard back from - only ever populated when `bootstrapFromTs` is set. While a row exists for an origin, normal digest/gap handling for it is withheld so it doesn't request full history from seq 0|Startup (`_start_bootstrap_if_configured`), inbox pump (`_handle_seq_at_response` deletes the row once resolved)|
 
 Also added: a unique index `idx_unique_post_cid_ts` on posts, so a replicated post can be inserted idempotently the way messages already were. If an existing database somehow holds duplicate `(cid, ts)` rows the index cannot be created; that is logged to `db.log` and WPS carries on without it.
@@ -364,6 +370,24 @@ Also added: a unique index `idx_unique_post_cid_ts` on posts, so a replicated po
 |`db.py` or `handlers.py` warm-reloaded|Picked up on the next tick. The pumps themselves are not reloaded|
 
 ## Monitoring and Operations
+
+### Dashboard
+
+`replication_dashboard.py` serves a read-only web view of the replication tables. WPS starts it automatically whenever replication is enabled (`replication.enabled` and `replication.dashboard.enabled`, the latter on by default) and prints `Replication dashboard on http://127.0.0.1:8095/`. Set `dashboard.enabled` to `false` to turn it off. It can also be run on its own with `python3 replication_dashboard.py` from the WPS directory - handy while WPS itself is stopped, and it runs that way even with replication disabled, saying so.
+
+| Tab | Shows |
+| - | - |
+|Overview|Our latest `seq` and outbox backlog; per peer: health, how far they have acknowledged our stream, how far we have applied theirs (against the `latest_seq` in their last digest), buffered gaps, when we last heard from and sent to them; last-24h counts by direction/category/status; recent failures|
+|Activity log|Every data event received or sent and every sync message (`ack`, `digest`, `sync.request`, `seq_at.*`) in both directions, plus local DAPPS going unreachable and recovering. Filter by category, direction, status, peer, problems only, or free text over content|
+|Received items|Each inbound data delivery and its outcome: `applied`, `buffered` (gap or bootstrap), `duplicate`, `stale` (older than what we hold), `ignored`, `rejected` (unconfigured sender) or `error` (apply failed, will retry)|
+|Sent items|Every event this instance originated (`replication_log`), with each peer's state: `queued` (not yet in DAPPS), `submitted`, `acked`|
+|Buffered|The current contents of `replication_pending`|
+
+Click any data row for the item view: its full event JSON, per-peer delivery (for our own events), and a timeline of everything recorded against that `origin/seq` - submissions, re-sends, deliveries, acks. `#item/<origin>/<seq>` links straight to it. The pages auto-refresh every 5 seconds.
+
+The history comes from `replication_activity`, which starts filling from the first start after upgrading, so older items show their event but an empty timeline. Recording is best-effort and never affects replication: a failure to write a row is logged under `REPLICATION ACTIVITY` and skipped. Repeated failures are recorded once, not once per poll: an outbox submit failing for the same peer and `seq`, the same inbound message failing the same way, or DAPPS polling staying down.
+
+The dashboard shows message and post content, so it listens on `127.0.0.1` by default - reach it remotely through an SSH tunnel (`ssh -L 8095:127.0.0.1:8095 node`), or set `dashboard.password` before binding it to another address.
 
 ### Logs
 
@@ -414,7 +438,7 @@ Delivery latency is roughly `outboxPollSeconds` + DAPPS transit + `inboxPollSeco
 
 ### Growth
 
-`replication_log` is **never pruned** in this version - it is the source for re-sends and for bringing a new instance up to date. It grows by one row per replicable write. Deleting old rows is safe only for rows every peer has confirmed *and* only if you never need to bring a new or rebuilt peer up from the beginning of history.
+`replication_activity` is pruned automatically after `activityRetentionDays`. `replication_log` is **never pruned** in this version - it is the source for re-sends and for bringing a new instance up to date. It grows by one row per replicable write. Deleting old rows is safe only for rows every peer has confirmed *and* only if you never need to bring a new or rebuilt peer up from the beginning of history.
 
 ## Rebuilding or Restoring an Instance
 
@@ -485,7 +509,8 @@ Anything that happened after the copy is then filled in by digests.
 | File | What it holds |
 | - | - |
 |`db.py`|Replication tables (in `dbInit`), `_replicate_capture`, `set_applying_remote`, `REPLICATED_USER_FIELDS`, and the capture calls inside `dbInsertPost`, `dbUpdatePost`, `dbInsertMessage`, `dbUpdateMessage`, `dbUserUpdate`|
-|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); `start()`|
-|`wps.py`|Calls `replication.start()` at boot, after `db.dbInit`|
+|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); activity recording for the dashboard (`_record`, `_submit_control`, `_prune_activity`); `start()`|
+|`replication_dashboard.py`|The read-only HTTP dashboard: JSON API over the replication tables plus the single-page UI. `start()` is called from `wps.py`; also runnable standalone|
+|`wps.py`|Calls `replication.start()` and `replication_dashboard.start()` at boot, after `db.dbInit`|
 |`env.py`|Default `replication` block added to `env.json`|
 |`requirements.txt`|`requests`|

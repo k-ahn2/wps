@@ -226,6 +226,32 @@ def dbInit(CONN_DB_CURSOR):
     );
     ''')
 
+    # Operational history for the replication dashboard (replication_dashboard.py): one row per
+    # data event received or sent, and per control message (ack, digest, sync.request,
+    # seq_at.*) in either direction. Purely observational - nothing in the replication
+    # protocol reads it back - so it is pruned after replication.activityRetentionDays.
+    # direction: 'in' | 'out'. category: 'data' | 'sync' | 'system'. peer is always the other
+    # side's DAPPS callsign; origin/seq identify the data event where there is one. event holds
+    # the full envelope for inbound rows (outbound data rows are looked up in replication_log).
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_activity (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at INTEGER NOT NULL,
+        direction TEXT NOT NULL,
+        category TEXT NOT NULL,
+        op TEXT,
+        peer TEXT,
+        origin TEXT,
+        seq INTEGER,
+        status TEXT NOT NULL,
+        detail TEXT,
+        dapps_id TEXT,
+        event TEXT
+    );
+    ''')
+    CONN_DB_CURSOR.execute("CREATE INDEX IF NOT EXISTS idx_replication_activity_at ON replication_activity (at)")
+    CONN_DB_CURSOR.execute("CREATE INDEX IF NOT EXISTS idx_replication_activity_item ON replication_activity (origin, seq)")
+
     CONN_DB_CURSOR.connection.commit()
 
 def sourceValueToJsonValue(value):
