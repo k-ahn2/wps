@@ -99,8 +99,10 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`appSlug`|String|`wps-repl`|The DAPPS queue name. Must be the same on every instance|
 |`dappsRestUrl`|String|`"http://127.0.0.1:5000"`|Base URL of this node's DAPPS REST API|
 |`streamTtlSeconds`|Number|`604800`|How long DAPPS keeps trying to deliver an event|
-|`outboxPollSeconds`|Number|`5`|How often new events are handed to DAPPS|
-|`inboxPollSeconds`|Number|`5`|How often DAPPS is polled for inbound events|
+|`outboxPollSeconds`|Number|`5`|Fallback interval for handing events to DAPPS. New events are handed over immediately; this mainly sets the retry rate|
+|`inboxPollSeconds`|Number|`5`|How often DAPPS is polled for inbound events when replication is quiet|
+|`inboxFastPollSeconds`|Number|`1`|How often DAPPS is polled while replication is active|
+|`inboxFastPollWindowSeconds`|Number|`300`|How long the fast rate lasts after the latest local write or inbound data event|
 |`reconcileIntervalSeconds`|Number|`300`|How often each peer is told how far this instance has got, so gaps can be filled|
 
 ### Sample `env.json`

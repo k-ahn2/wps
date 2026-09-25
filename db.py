@@ -1,4 +1,4 @@
-import sqlite3, json, time
+import sqlite3, json, time, sys
 import datetime
 import threading
 from logger import *
@@ -71,6 +71,11 @@ def _replicate_capture(cursor, op, key, data, ts=None):
             (REPLICATION_ORIGIN, seq, event_ts, op, event_json)
         )
         cursor.execute("INSERT INTO replication_outbox (seq) VALUES (?)", (seq,))
+        # replication imports db, so look it up rather than import it here. That avoids the
+        # cycle, and a warm-reloaded db.py still reaches the one long-lived replication module.
+        replication = sys.modules.get('replication')
+        if replication is not None:
+            replication.notify_local_event()
     except Exception as e:
         db_logger("_replicate_capture", f"Failed to capture replication event for op {op}: {e}", "ERROR")
 

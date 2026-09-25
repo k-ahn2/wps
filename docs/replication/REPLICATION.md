@@ -105,8 +105,10 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`appSlug`|String|`wps-repl`|The DAPPS queue name. **Must be identical on every instance**|
 |`dappsRestUrl`|String|`http://127.0.0.1:5000`|Base URL of this node's own DAPPS dashboard/REST API. Change only if DAPPS runs on another host or port|
 |`streamTtlSeconds`|Number|`604800`|How long DAPPS keeps trying to deliver an event (7 days). Anything older is caught by [reconciliation](#7-reconcile)|
-|`outboxPollSeconds`|Number|`5`|How often the outbox pump looks for new events|
-|`inboxPollSeconds`|Number|`5`|How often the inbox pump polls DAPPS for inbound messages|
+|`outboxPollSeconds`|Number|`5`|Fallback interval for the outbox pump. New local events wake it immediately, so this mainly sets how often a refused submission is retried|
+|`inboxPollSeconds`|Number|`5`|How often the inbox pump polls DAPPS for inbound messages when replication is quiet|
+|`inboxFastPollSeconds`|Number|`1`|Inbox poll interval while replication is active - see [Receive](#4-receive---the-inbox-pump)|
+|`inboxFastPollWindowSeconds`|Number|`300`|How long the fast inbox rate lasts after the most recent local write or inbound data event|
 |`reconcileIntervalSeconds`|Number|`300`|How often a digest is sent to each peer|
 |`bootstrapFromTs`|Number (epoch ms)|`null`|Set only on a brand-new instance joining an existing mesh, to skip replaying full history - see [Bringing up a new instance](#bringing-up-a-new-instance). Leave `null` for a normal instance|
 |`activityRetentionDays`|Number|`7`|How long rows are kept in `replication_activity`, the history behind the [dashboard](#dashboard). Pruned every reconcile tick|
@@ -227,7 +229,7 @@ If a write turns out to be a duplicate (the existing unique indexes on message `
 
 ### 2. Publish - the outbox pump
 
-Every `outboxPollSeconds`, for each peer independently:
+Each time a local write captures an event, the pump is woken straight away (after a 100 ms pause so the writer's transaction has committed). It also runs every `outboxPollSeconds` regardless, which retries anything DAPPS refused. On each run, for each peer independently:
 
 1. Read that peer's `submitted_seq` from `replication_peer_ack`.
 2. Select up to 50 outbox rows with a higher `seq`, in order, joined to their envelope in `replication_log`.
@@ -257,7 +259,7 @@ DAPPS delivers the message node to node over packet radio - routing, retrying, f
 
 ### 4. Receive - the inbox pump
 
-Every `inboxPollSeconds` the pump calls `GET /AppApi/inbound/wps-repl` and handles each message in turn. Anything that raises is logged and left **un-acknowledged**, so DAPPS presents it again on the next poll.
+The pump calls `GET /AppApi/inbound/wps-repl` and handles each message in turn. It polls every `inboxPollSeconds` while replication is quiet, and every `inboxFastPollSeconds` for `inboxFastPollWindowSeconds` after the latest local write or inbound data event from a peer - the time when a reply is likely. Acks and digests do not extend the fast window, so the regular digests cannot keep it running. Anything that raises is logged and left **un-acknowledged**, so DAPPS presents it again on the next poll.
 
 **Step 1 - is it from a peer?** Anyone able to reach this node's DAPPS can address `wps-repl@<callsign>`, and DAPPS does not authenticate senders beyond the callsign it stamps on the message. So a message is accepted only if both the DAPPS-stamped source callsign (when present) and the identity claimed inside the envelope (`origin`, `by` or `requested_by` depending on `op`) belong to a listed peer (`by`/`requested_by` and the source are DAPPS callsigns; `origin` is an origin callsign). Otherwise it is logged at `ERROR`, acknowledged (so it does not sit in the queue) and dropped.
 
@@ -434,7 +436,7 @@ The DAPPS dashboard shows the queues from the transport side: `/Inbound` (live i
 
 ### Timing
 
-Delivery latency is roughly `outboxPollSeconds` + DAPPS transit + `inboxPollSeconds`, plus whatever the radio link imposes. Lower the poll intervals to trim the WPS share; DAPPS transit dominates on RF.
+Delivery latency is roughly DAPPS transit + one inbox poll interval, plus whatever the radio link imposes. New events reach DAPPS within about 100 ms of the write. The inbox wait is up to `inboxFastPollSeconds` during a conversation, and up to `inboxPollSeconds` for the first message after a quiet spell. DAPPS transit dominates on RF.
 
 ### Growth
 
@@ -499,7 +501,7 @@ Anything that happened after the copy is then filled in by digests.
 - **A true collision is not merged.** If two instances ever held different content for the same post `(cid, ts)` or message `_id`, each keeps the first it saw and they would diverge. Timestamps are millisecond-precision and include the author, so this is theoretical.
 - **Bots.** Bot posts replicate like any post. If a bot runs on more than one replicated instance, each will post independently and each will receive the other's, so posts double up. Run a given bot on one instance only.
 - **Full mesh only.** Every instance must list every other in `peers`. There is no relaying through an intermediate instance.
-- **REST polling.** The inbox is polled rather than subscribed to, adding up to `inboxPollSeconds` of latency. DAPPS's MQTT interface could remove it.
+- **REST polling.** The inbox is polled rather than subscribed to, adding up to one poll interval of latency (`inboxFastPollSeconds` while active, `inboxPollSeconds` when quiet). DAPPS's MQTT interface could remove it.
 - **DAPPS authentication is not supported.** If you enable DAPPS's `auth-required` option, the REST calls here would need a bearer token, which is not sent.
 - **Retention.** See [Growth](#growth). `epoch` is not managed automatically.
 - **Not yet replicated:** avatars, pairing, subscriptions and pauses.

@@ -54,6 +54,13 @@ DAPPS_REST_URL = REPLICATION_CONFIG.get('dappsRestUrl', 'http://127.0.0.1:5000')
 STREAM_TTL_SECONDS = REPLICATION_CONFIG.get('streamTtlSeconds', 604800)  # 7 days
 OUTBOX_POLL_SECONDS = REPLICATION_CONFIG.get('outboxPollSeconds', 5)
 INBOX_POLL_SECONDS = REPLICATION_CONFIG.get('inboxPollSeconds', 5)
+# After any replicated activity (a local write, or a data event from a peer) the inbox is
+# polled faster for a while, since that's when a reply is likely and poll delay is felt.
+INBOX_FAST_POLL_SECONDS = REPLICATION_CONFIG.get('inboxFastPollSeconds', 1)
+INBOX_FAST_POLL_WINDOW_SECONDS = REPLICATION_CONFIG.get('inboxFastPollWindowSeconds', 300)
+# notify_local_event() fires from inside the writer's still-open transaction, so the outbox
+# pump waits this long after waking for the commit to land before it reads the outbox.
+OUTBOX_WAKE_SETTLE_SECONDS = 0.1
 RECONCILE_INTERVAL_SECONDS = REPLICATION_CONFIG.get('reconcileIntervalSeconds', 300)
 # Set only on a brand-new instance that should join mid-history rather than replay everything:
 # epoch-ms timestamp. Consulted once, at the first start with no replication_origin_cursor rows
@@ -140,6 +147,27 @@ def _stream_id_for(origin, epoch):
     return f"{APP_SLUG}:{origin}.e{epoch}"
 
 
+# --- Wake-ups: submit new events promptly, poll the inbox faster while a conversation is on -
+
+_outbox_wake = threading.Event()
+_inbox_fast_until = 0.0  # time.monotonic() deadline; the inbox polls at the fast rate until then
+
+
+def notify_local_event():
+    '''
+    Called by db._replicate_capture whenever a local write captures a replication event. Wakes
+    the outbox pump now rather than at its next tick, and starts a fast inbox window because a
+    reply from a peer is now likely.
+    '''
+    _outbox_wake.set()
+    _extend_fast_inbox()
+
+
+def _extend_fast_inbox():
+    global _inbox_fast_until
+    _inbox_fast_until = time.monotonic() + INBOX_FAST_POLL_WINDOW_SECONDS
+
+
 # --- Outbox pump: replication_log/outbox (captured by db.py) -> DAPPS ---------------------
 
 def _outbox_pump_loop():
@@ -148,7 +176,10 @@ def _outbox_pump_loop():
             _outbox_pump_tick()
         except Exception as e:
             wps_logger("REPLICATION OUTBOX", ORIGIN, f"Tick error: {e}", "ERROR")
-        time.sleep(OUTBOX_POLL_SECONDS)
+        # The timeout still matters: it retries submissions that DAPPS refused last tick.
+        if _outbox_wake.wait(OUTBOX_POLL_SECONDS):
+            _outbox_wake.clear()
+            time.sleep(OUTBOX_WAKE_SETTLE_SECONDS)
 
 
 def _outbox_pump_tick():
@@ -389,7 +420,8 @@ def _inbox_pump_loop():
             _inbox_pump_tick()
         except Exception as e:
             wps_logger("REPLICATION INBOX", ORIGIN, f"Tick error: {e}", "ERROR")
-        time.sleep(INBOX_POLL_SECONDS)
+        fast = time.monotonic() < _inbox_fast_until
+        time.sleep(INBOX_FAST_POLL_SECONDS if fast else INBOX_POLL_SECONDS)
 
 
 def _inbox_pump_tick():
@@ -543,6 +575,10 @@ def _handle_inbound(msg):
                 dapps_id=dapps_id, event=envelope)
         _dapps_ack(dapps_id)
         return
+
+    # Data from a peer means someone there is active - keep polling fast for their follow-ups.
+    # Control messages (acks, digests) deliberately don't count, or digests alone would keep it fast.
+    _extend_fast_inbox()
 
     conn = db.get_db_connection()
     cur = conn.cursor()
