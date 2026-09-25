@@ -729,6 +729,15 @@ def _handle_sync_request(envelope):
     rows = cur.fetchall()
     wps_logger("REPLICATION RECONCILE", ORIGIN, f"Re-sending {len(rows)} event(s) {from_seq}-{to_seq} to {requester}")
 
+    # The requester will keep asking until the range arrives, so make it visible when part of
+    # it isn't in our log - it can never be served and needs an operator.
+    missing = sorted(set(range(from_seq, to_seq + 1)) - {seq for seq, _ in rows})
+    if missing:
+        shown = ", ".join(str(s) for s in missing[:20]) + (f" ... ({len(missing)} total)" if len(missing) > 20 else "")
+        wps_logger("REPLICATION RECONCILE", ORIGIN, f"sync.request {from_seq}-{to_seq} from {requester}: not in replication_log as {ORIGIN}: {shown}", "ERROR")
+        _record("out", "sync", "sync.request", "failed", peer=requester, origin=ORIGIN,
+                detail=f"Cannot serve {len(missing)} of {to_seq - from_seq + 1} requested seq(s), not in replication_log as {ORIGIN}: {shown}")
+
     for seq, event_json in rows:
         envelope_to_resend = json.loads(event_json)
         try:
@@ -896,6 +905,70 @@ def _log_backlog():
 
 # --- Startup -------------------------------------------------------------------------------
 
+def _merge_origin_aliases(cur, conn):
+    '''
+    Called once from start(). The envelope `origin` used to be the DAPPS callsign, and is now
+    originCallsign. Rows written under the old name are otherwise stranded: our own log rows
+    under DAPPS_CALLSIGN can't be found by _handle_sync_request, and a peer's cursor/buffer
+    under its DAPPS callsign doesn't count towards its origin, so each side keeps asking for a
+    range the other can never serve. seq comes from a single per-node counter, so rows under
+    the two names never collide and can simply be folded together. Idempotent - a no-op once
+    nothing is left under an old name.
+    '''
+    # Our own log: the source for re-sends.
+    if DAPPS_CALLSIGN and DAPPS_CALLSIGN != ORIGIN:
+        cur.execute(
+            "UPDATE OR IGNORE replication_log SET origin = ?, event = json_set(event, '$.origin', ?) WHERE origin = ?",
+            (ORIGIN, ORIGIN, DAPPS_CALLSIGN)
+        )
+        if cur.rowcount:
+            wps_logger("REPLICATION", ORIGIN, f"Moved {cur.rowcount} own log row(s) from old origin {DAPPS_CALLSIGN} to {ORIGIN}")
+
+    # Each peer's cursor and out-of-order buffer.
+    merged = []
+    for peer_origin, peer_dapps in _PEER_PAIRS:
+        if peer_origin == peer_dapps:
+            continue
+        cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (peer_dapps,))
+        old = cur.fetchone()
+        cur.execute("SELECT COUNT(*) FROM replication_pending WHERE origin = ?", (peer_dapps,))
+        old_pending = cur.fetchone()[0]
+        if old is None and not old_pending:
+            continue
+        if old is not None:
+            cur.execute(
+                "INSERT INTO replication_origin_cursor (origin, last_applied_seq) VALUES (?, ?) "
+                "ON CONFLICT(origin) DO UPDATE SET last_applied_seq = MAX(last_applied_seq, excluded.last_applied_seq)",
+                (peer_origin, old[0])
+            )
+            cur.execute("DELETE FROM replication_origin_cursor WHERE origin = ?", (peer_dapps,))
+        cur.execute(
+            "INSERT OR IGNORE INTO replication_pending (origin, seq, event) "
+            "SELECT ?, seq, json_set(event, '$.origin', ?) FROM replication_pending WHERE origin = ?",
+            (peer_origin, peer_origin, peer_dapps)
+        )
+        cur.execute("DELETE FROM replication_pending WHERE origin = ?", (peer_dapps,))
+        # Anything buffered at or below the merged cursor is already applied.
+        cur.execute(
+            "DELETE FROM replication_pending WHERE origin = ? AND seq <= "
+            "(SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?)",
+            (peer_origin, peer_origin)
+        )
+        cur.execute("DELETE FROM replication_bootstrap_pending WHERE origin = ?", (peer_dapps,))
+        merged.append(peer_origin)
+        wps_logger("REPLICATION", ORIGIN, f"Merged cursor/buffer for old origin {peer_dapps} into {peer_origin} "
+                   f"(old cursor {old[0] if old else None}, {old_pending} buffered)")
+    conn.commit()
+
+    # The merged cursor may now reach the buffer; apply what's contiguous and ask for the rest.
+    for peer_origin in merged:
+        try:
+            _drain_pending(conn, cur, peer_origin)
+            _fill_gap_to_pending(peer_origin)
+        except Exception as e:
+            wps_logger("REPLICATION", ORIGIN, f"Draining merged buffer for {peer_origin} failed, the inbox pump will retry via digest: {e}", "ERROR")
+
+
 def start():
     '''
     Called once from wps.py's startup_and_listen(), after db.dbInit() has created the
@@ -916,6 +989,7 @@ def start():
         cur.execute("INSERT OR IGNORE INTO replication_peer_ack (peer, peer_acked_seq) VALUES (?, 0)", (peer,))
     conn.commit()
 
+    _merge_origin_aliases(cur, conn)
     _start_bootstrap_if_configured(cur, conn)
     _retry_bootstrap_pending()
 
