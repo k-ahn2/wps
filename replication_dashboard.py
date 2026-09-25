@@ -1,5 +1,8 @@
 import base64
+import csv
+import datetime
 import hmac
+import io
 import json
 import os
 import sqlite3
@@ -207,10 +210,10 @@ def _str_arg(query, name):
     return value or None
 
 
-def api_activity(cur, query):
-    if not _has_table(cur, "replication_activity"):
-        return {"rows": [], "activity_table": False}
-
+def _activity_filters(query):
+    '''WHERE clauses for replication_activity (aliased a, joined to replication_log as l) from
+    the query string - shared by the activity view and its export, so a download always matches
+    what the filters show on screen.'''
     where, params = [], []
     for column in ("direction", "category", "status", "op"):
         value = _str_arg(query, column)
@@ -229,22 +232,38 @@ def api_activity(cur, query):
     if seq is not None:
         where.append("a.seq = ?")
         params.append(seq)
-    before = _int_arg(query, "before")
-    if before is not None:
-        where.append("a.id < ?")
-        params.append(before)
+    since_hours = _int_arg(query, "since_hours")
+    if since_hours:
+        where.append("a.at >= ?")
+        params.append(_now_ms() - since_hours * 3600000)
     text = _str_arg(query, "q")
     if text:
         where.append("(COALESCE(a.event, l.event, '') LIKE ? OR COALESCE(a.detail, '') LIKE ?)")
         params.extend([f"%{text}%", f"%{text}%"])
+    return where, params
+
+
+# Outbound data rows don't store the envelope - it's already in replication_log.
+_ACTIVITY_SELECT = (
+    "SELECT a.id, a.at, a.direction, a.category, a.op, a.peer, a.origin, a.seq, a.status, a.detail, a.dapps_id, "
+    "COALESCE(a.event, l.event) AS event FROM replication_activity a "
+    "LEFT JOIN replication_log l ON a.direction = 'out' AND a.category = 'data' AND l.origin = a.origin AND l.seq = a.seq "
+)
+
+
+def api_activity(cur, query):
+    if not _has_table(cur, "replication_activity"):
+        return {"rows": [], "activity_table": False}
+
+    where, params = _activity_filters(query)
+    before = _int_arg(query, "before")
+    if before is not None:
+        where.append("a.id < ?")
+        params.append(before)
     limit = min(_int_arg(query, "limit", 100), MAX_PAGE)
 
-    # Outbound data rows don't store the envelope - it's already in replication_log.
     cur.execute(
-        "SELECT a.id, a.at, a.direction, a.category, a.op, a.peer, a.origin, a.seq, a.status, a.detail, a.dapps_id, "
-        "COALESCE(a.event, l.event) AS event FROM replication_activity a "
-        "LEFT JOIN replication_log l ON a.direction = 'out' AND a.category = 'data' AND l.origin = a.origin AND l.seq = a.seq "
-        + (f"WHERE {' AND '.join(where)} " if where else "") +
+        _ACTIVITY_SELECT + (f"WHERE {' AND '.join(where)} " if where else "") +
         "ORDER BY a.id DESC LIMIT ?", (*params, limit))
     rows = []
     for r in cur.fetchall():
@@ -253,6 +272,86 @@ def api_activity(cur, query):
         row["summary"] = _summarise(envelope) if row["category"] == "data" else ""
         rows.append(row)
     return {"rows": rows, "activity_table": True, "has_more": len(rows) == limit}
+
+
+def _iso(ms):
+    return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+# Shipped inside every JSON export so the file explains itself to whoever (or whatever) reads it.
+EXPORT_FIELD_NOTES = {
+    "about": "Replication activity from one WPS instance. Instances replicate posts, messages, edits, emoji "
+             "reactions and user names to each other over DAPPS. Each instance numbers its own events with a "
+             "per-origin sequence (seq); peers apply each origin's events strictly in seq order.",
+    "at / at_iso": "When this instance recorded the row (epoch ms / UTC ISO-8601).",
+    "direction": "in = received from a peer via DAPPS; out = submitted to local DAPPS for a peer.",
+    "category": "data = a replicated change (post.insert, post.edit, post.emoji, msg.insert, msg.edit, msg.emoji, "
+                "user.update); sync = control message (ack, digest, sync.request, seq_at.request, seq_at.response); "
+                "system = local DAPPS polling failed/recovered.",
+    "peer": "The other instance's DAPPS callsign (sender for in, destination for out).",
+    "origin / seq": "The instance that originated the data event and its sequence number - together they identify "
+                    "one replicated change. For ack rows they identify the event being acknowledged.",
+    "status": "in/data: applied, buffered (arrived ahead of a gap, or while bootstrap pending), duplicate (already "
+              "applied), stale (older than what is held), ignored, rejected (unconfigured sender), error (apply "
+              "failed, will be redelivered). out: sent, resent (answering a sync.request), failed. in/sync: received. "
+              "system: failed, recovered.",
+    "detail": "Human-readable explanation recorded with the row.",
+    "summary": "One-line description of a data event's content.",
+    "event": "The full replication envelope / control message. Envelope fields: v, origin, seq, epoch, ts (seconds "
+             "for msg.* ops, milliseconds otherwise), op, key, data.",
+    "healthy pattern": "Each data event: out sent -> peer in applied -> peer out ack -> origin in ack. Digests every "
+                       "reconcile interval in both directions. Gaps show as buffered + sync.request, then resent and "
+                       "applied.",
+}
+
+
+def export_activity(cur, query):
+    '''Returns (body, content_type, filename): every activity row matching the filters, oldest first.'''
+    fmt = "csv" if _str_arg(query, "format") == "csv" else "json"
+    now = _now_ms()
+    rows = []
+    if _has_table(cur, "replication_activity"):
+        where, params = _activity_filters(query)
+        cur.execute(_ACTIVITY_SELECT + (f"WHERE {' AND '.join(where)} " if where else "") + "ORDER BY a.id ASC", params)
+        for r in cur.fetchall():
+            row = dict(r)
+            envelope = _parse_event(row.pop("event"))
+            rows.append({
+                "id": row["id"], "at": row["at"], "at_iso": _iso(row["at"]),
+                **{k: row[k] for k in ("direction", "category", "op", "peer", "origin", "seq", "status", "detail", "dapps_id")},
+                "summary": _summarise(envelope) if row["category"] == "data" else "",
+                "event": envelope,
+            })
+
+    stamp = datetime.datetime.fromtimestamp(now / 1000).strftime("%Y%m%d-%H%M%S")
+    filename = f"wps-replication-activity-{replication.ORIGIN or 'node'}-{stamp}.{fmt}"
+    filters = {k: v[0] for k, v in query.items() if k != "format" and v and v[0]}
+
+    if fmt == "csv":
+        out = io.StringIO()
+        columns = ["id", "at_iso", "at", "direction", "category", "op", "peer", "origin", "seq", "status", "detail", "dapps_id", "summary", "event"]
+        writer = csv.DictWriter(out, fieldnames=columns)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({**row, "event": json.dumps(row["event"], ensure_ascii=False, separators=(',', ':')) if row["event"] is not None else ""})
+        return out.getvalue(), "text/csv; charset=utf-8", filename
+
+    body = {
+        "export": {
+            "generated_at": _iso(now),
+            "node_origin": replication.ORIGIN,
+            "node_dapps_callsign": replication.DAPPS_CALLSIGN,
+            "filters": filters,
+            "row_count": len(rows),
+            "first_at": rows[0]["at_iso"] if rows else None,
+            "last_at": rows[-1]["at_iso"] if rows else None,
+            "retention_days": replication.ACTIVITY_RETENTION_DAYS,
+            "field_notes": EXPORT_FIELD_NOTES,
+        },
+        "status_at_export": api_status(cur, {}),
+        "rows": rows,
+    }
+    return json.dumps(body, ensure_ascii=False, indent=1, default=str), "application/json; charset=utf-8", filename
 
 
 def _sent_peer_states(seq, peer_ack, dapps_ids):
@@ -406,10 +505,12 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         return False
 
-    def _send(self, status, body, content_type):
+    def _send(self, status, body, content_type, filename=None):
         data = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -422,6 +523,17 @@ class _Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path in ("/", "/index.html"):
             self._send(200, PAGE, "text/html; charset=utf-8")
+            return
+        if url.path == "/api/activity/export":
+            try:
+                conn = _connect()
+                try:
+                    body, content_type, filename = export_activity(conn.cursor(), parse_qs(url.query))
+                finally:
+                    conn.close()
+                self._send(200, body, content_type, filename)
+            except Exception as e:
+                self._send(500, json.dumps({"error": str(e)}), "application/json")
             return
         route = ROUTES.get(url.path)
         if route is None:
@@ -573,7 +685,11 @@ a.link { color: var(--accent); cursor: pointer; text-decoration: none; } a.link:
         <select id="f-status"><option value="">Any status</option></select>
         <select id="f-peer"><option value="">All peers</option></select>
         <label class="muted"><input type="checkbox" id="f-issues"> Problems only</label>
+        <select id="f-since"><option value="">All retained</option><option value="1">Last hour</option><option value="6">Last 6 hours</option><option value="24">Last 24 hours</option><option value="168">Last 7 days</option></select>
         <input type="search" id="f-q" placeholder="Search content / detail">
+        <span class="spacer"></span>
+        <button class="btn" id="dl-json" title="Every row matching these filters, with full message bodies and a snapshot of peer status - suited to analysis">Download JSON</button>
+        <button class="btn" id="dl-csv" title="Every row matching these filters, one per line">Download CSV</button>
       </div>
       <div class="table-wrap"><table id="activity"></table></div>
       <div class="more" id="activity-more"></div>
@@ -768,11 +884,18 @@ function makeList({ table, more, head, row, bind, fetchPage, cursor, empty }) {
   return { load, refresh: () => rows.length <= 100 ? load(false) : Promise.resolve() };
 }
 
+const activityFilters = () => ({ category: $("f-category").value, direction: $("f-direction").value, status: $("f-status").value,
+  peer: $("f-peer").value, issues: $("f-issues").checked ? 1 : "", since_hours: $("f-since").value, q: $("f-q").value });
+
+function downloadActivity(format) {
+  const params = Object.entries({ ...activityFilters(), format }).filter(([, v]) => v !== "" && v != null);
+  location.href = "/api/activity/export?" + new URLSearchParams(params).toString();
+}
+
 const activityList = makeList({
   table: "activity", more: "activity-more", head: activityHead, row: activityRow, bind: bindActivityRows, cursor: (r) => r.id,
   empty: "No activity matches these filters",
-  fetchPage: (p) => api("/api/activity", { ...p, category: $("f-category").value, direction: $("f-direction").value, status: $("f-status").value,
-    peer: $("f-peer").value, issues: $("f-issues").checked ? 1 : "", q: $("f-q").value }),
+  fetchPage: (p) => api("/api/activity", { ...p, ...activityFilters() }),
 });
 
 const receivedList = makeList({
@@ -869,7 +992,9 @@ document.querySelectorAll(".op-select").forEach((sel) => sel.innerHTML = `<optio
 
 let debounce;
 const onFilter = (list) => () => { clearTimeout(debounce); debounce = setTimeout(() => run(list.load), 250); };
-["f-category", "f-direction", "f-status", "f-peer", "f-issues"].forEach((id) => $(id).onchange = onFilter(activityList));
+$("dl-json").onclick = () => downloadActivity("json");
+$("dl-csv").onclick = () => downloadActivity("csv");
+["f-category", "f-direction", "f-status", "f-peer", "f-issues", "f-since"].forEach((id) => $(id).onchange = onFilter(activityList));
 $("f-q").oninput = onFilter(activityList);
 ["r-origin", "r-status", "r-op"].forEach((id) => $(id).onchange = onFilter(receivedList));
 $("r-q").oninput = onFilter(receivedList);
