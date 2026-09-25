@@ -306,14 +306,27 @@ EXPORT_FIELD_NOTES = {
 
 
 def export_activity(cur, query):
-    '''Returns (body, content_type, filename): every activity row matching the filters, oldest first.'''
+    '''Returns (body, content_type, filename): activity rows matching the filters, oldest first. Optional
+    scope: last=N keeps only the most recent N matching rows; since_ms=<epoch ms> keeps rows recorded at or after it.'''
     fmt = "csv" if _str_arg(query, "format") == "csv" else "json"
     now = _now_ms()
     rows = []
     if _has_table(cur, "replication_activity"):
         where, params = _activity_filters(query)
-        cur.execute(_ACTIVITY_SELECT + (f"WHERE {' AND '.join(where)} " if where else "") + "ORDER BY a.id ASC", params)
-        for r in cur.fetchall():
+        since_ms = _int_arg(query, "since_ms")
+        if since_ms is not None:
+            where.append("a.at >= ?")
+            params.append(since_ms)
+        sql = _ACTIVITY_SELECT + (f"WHERE {' AND '.join(where)} " if where else "")
+        last = _int_arg(query, "last")
+        if last and last > 0:
+            # Most recent N, still written oldest first.
+            cur.execute(sql + "ORDER BY a.id DESC LIMIT ?", (*params, last))
+            fetched = cur.fetchall()[::-1]
+        else:
+            cur.execute(sql + "ORDER BY a.id ASC", params)
+            fetched = cur.fetchall()
+        for r in fetched:
             row = dict(r)
             envelope = _parse_event(row.pop("event"))
             rows.append({
@@ -649,6 +662,16 @@ dl.kv dt { color: var(--muted); } dl.kv dd { margin: 0; font-family: var(--mono)
 pre.json { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; font: 12.5px/1.5 var(--mono); margin: 0; white-space: pre-wrap; word-break: break-word; }
 .timeline td { font-size: 13px; }
 a.link { color: var(--accent); cursor: pointer; text-decoration: none; } a.link:hover { text-decoration: underline; }
+dialog#dl-dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); padding: 0; width: min(420px, calc(100vw - 32px)); box-shadow: 0 12px 32px rgba(0,0,0,.2); }
+dialog#dl-dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog#dl-dialog h3 { margin: 0; padding: 14px 18px; font-size: 15px; border-bottom: 1px solid var(--line); }
+dialog#dl-dialog .content { padding: 16px 18px; display: grid; gap: 12px; }
+dialog#dl-dialog .opt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+dialog#dl-dialog input[type=number], dialog#dl-dialog input[type=datetime-local] { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+dialog#dl-dialog input[type=number] { width: 7em; }
+dialog#dl-dialog .actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
 @media (max-width: 700px) { main { padding: 12px; } header { padding: 10px 12px; } }
 </style>
 </head>
@@ -688,8 +711,8 @@ a.link { color: var(--accent); cursor: pointer; text-decoration: none; } a.link:
         <select id="f-since"><option value="">All retained</option><option value="1">Last hour</option><option value="6">Last 6 hours</option><option value="24">Last 24 hours</option><option value="168">Last 7 days</option></select>
         <input type="search" id="f-q" placeholder="Search content / detail">
         <span class="spacer"></span>
-        <button class="btn" id="dl-json" title="Every row matching these filters, with full message bodies and a snapshot of peer status - suited to analysis">Download JSON</button>
-        <button class="btn" id="dl-csv" title="Every row matching these filters, one per line">Download CSV</button>
+        <button class="btn" id="dl-json" title="Rows matching these filters, with full message bodies and a snapshot of peer status - suited to analysis">Download JSON</button>
+        <button class="btn" id="dl-csv" title="Rows matching these filters, one per line">Download CSV</button>
       </div>
       <div class="table-wrap"><table id="activity"></table></div>
       <div class="more" id="activity-more"></div>
@@ -725,6 +748,22 @@ a.link { color: var(--accent); cursor: pointer; text-decoration: none; } a.link:
     <div class="card"><h2>Events buffered ahead of a gap</h2><div class="table-wrap"><table id="pending"></table></div></div>
   </section>
 </main>
+
+<dialog id="dl-dialog">
+  <form method="dialog">
+    <h3 id="dl-title">Download</h3>
+    <div class="content">
+      <label class="opt"><input type="radio" name="dl-scope" value="all" checked> Everything</label>
+      <label class="opt"><input type="radio" name="dl-scope" value="last"> Last <input type="number" id="dl-last" min="1" step="1" value="1000"> rows</label>
+      <label class="opt"><input type="radio" name="dl-scope" value="since"> Everything since <input type="datetime-local" id="dl-since" step="1"></label>
+      <div class="muted" style="font-size:12px">The activity filters currently set on screen still apply.</div>
+    </div>
+    <div class="actions">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" id="dl-go" value="ok">Download</button>
+    </div>
+  </form>
+</dialog>
 
 <aside id="drawer" aria-hidden="true">
   <div class="head"><h3 id="drawer-title"></h3><button class="btn" id="drawer-close">Close</button></div>
@@ -887,9 +926,33 @@ function makeList({ table, more, head, row, bind, fetchPage, cursor, empty }) {
 const activityFilters = () => ({ category: $("f-category").value, direction: $("f-direction").value, status: $("f-status").value,
   peer: $("f-peer").value, issues: $("f-issues").checked ? 1 : "", since_hours: $("f-since").value, q: $("f-q").value });
 
-function downloadActivity(format) {
-  const params = Object.entries({ ...activityFilters(), format }).filter(([, v]) => v !== "" && v != null);
+function downloadActivity(format, scope = {}) {
+  const params = Object.entries({ ...activityFilters(), ...scope, format }).filter(([, v]) => v !== "" && v != null);
   location.href = "/api/activity/export?" + new URLSearchParams(params).toString();
+}
+
+// datetime-local wants local time without a zone: YYYY-MM-DDTHH:MM:SS
+const toLocalInput = (ms) => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 19); };
+
+let dlFormat = "json";
+function openDownloadDialog(format) {
+  dlFormat = format;
+  $("dl-title").textContent = `Download ${format.toUpperCase()}`;
+  if (!$("dl-since").value) $("dl-since").value = toLocalInput(Date.now() - 24 * 3600000);
+  $("dl-dialog").showModal();
+}
+
+function dlScope() {
+  const scope = document.querySelector('input[name="dl-scope"]:checked').value;
+  if (scope === "last") {
+    const n = parseInt($("dl-last").value, 10);
+    return n > 0 ? { last: n } : null;
+  }
+  if (scope === "since") {
+    const ms = new Date($("dl-since").value).getTime();
+    return Number.isFinite(ms) ? { since_ms: ms } : null;
+  }
+  return {};
 }
 
 const activityList = makeList({
@@ -992,8 +1055,16 @@ document.querySelectorAll(".op-select").forEach((sel) => sel.innerHTML = `<optio
 
 let debounce;
 const onFilter = (list) => () => { clearTimeout(debounce); debounce = setTimeout(() => run(list.load), 250); };
-$("dl-json").onclick = () => downloadActivity("json");
-$("dl-csv").onclick = () => downloadActivity("csv");
+$("dl-json").onclick = () => openDownloadDialog("json");
+$("dl-csv").onclick = () => openDownloadDialog("csv");
+// Picking a value selects its option.
+$("dl-last").addEventListener("focus", () => document.querySelector('input[name="dl-scope"][value="last"]').checked = true);
+$("dl-since").addEventListener("focus", () => document.querySelector('input[name="dl-scope"][value="since"]').checked = true);
+$("dl-go").onclick = (e) => {
+  const scope = dlScope();
+  if (!scope) { e.preventDefault(); return; }
+  downloadActivity(dlFormat, scope);
+};
 ["f-category", "f-direction", "f-status", "f-peer", "f-issues", "f-since"].forEach((id) => $(id).onchange = onFilter(activityList));
 $("f-q").oninput = onFilter(activityList);
 ["r-origin", "r-status", "r-op"].forEach((id) => $(id).onchange = onFilter(receivedList));
