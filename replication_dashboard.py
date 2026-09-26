@@ -188,6 +188,7 @@ def api_status(cur, _query):
             "inbox_fast_poll_seconds": replication.INBOX_FAST_POLL_SECONDS,
             "inbox_fast_poll_window_seconds": replication.INBOX_FAST_POLL_WINDOW_SECONDS,
             "ack_delay_seconds": replication.ACK_DELAY_SECONDS,
+            "batch_size": replication.BATCH_SIZE,
             "reconcile_interval_seconds": replication.RECONCILE_INTERVAL_SECONDS,
             "activity_retention_days": replication.ACTIVITY_RETENTION_DAYS,
             "bootstrap_from_ts": replication.BOOTSTRAP_FROM_TS,
@@ -302,7 +303,8 @@ EXPORT_FIELD_NOTES = {
     "summary": "One-line description of a data event's content.",
     "event": "The full replication envelope / control message. Envelope fields: v, origin, seq, epoch, ts (seconds "
              "for msg.* ops, milliseconds otherwise), op, key, data.",
-    "healthy pattern": "Each data event: out sent -> peer in applied -> peer out ack -> origin in ack. Acks are held "
+    "healthy pattern": "Each data event: out sent -> peer in applied -> peer out ack -> origin in ack. With batch_size > 1 a backlog goes "
+                       "as one DAPPS message: its events share a dapps_id and say 'In batch of N'. Acks are held "
                        "ack_delay_seconds and combined, so one ack can cover several seqs. Digests every reconcile "
                        "interval in both directions, skipped while recent traffic shows the peer is level. Gaps show as buffered + sync.request, then resent and "
                        "applied.",

@@ -65,6 +65,10 @@ RECONCILE_INTERVAL_SECONDS = REPLICATION_CONFIG.get('reconcileIntervalSeconds', 
 # Application acks are held this long and combined: one ack covers every seq up to it (see
 # _handle_app_ack), so a burst of events costs one DAPPS transfer back instead of one each.
 ACK_DELAY_SECONDS = REPLICATION_CONFIG.get('ackDelaySeconds', 30)
+# Up to this many consecutive events for a peer go in one DAPPS message when the outbox (or a
+# sync.request resend) has a backlog. 1 sends every event on its own, which peers running an
+# older version need: they can't read a batch, and it would sit unacked at the head of the stream.
+BATCH_SIZE = max(1, int(REPLICATION_CONFIG.get('batchSize', 1)))
 # Set only on a brand-new instance that should join mid-history rather than replay everything:
 # epoch-ms timestamp. Consulted once, at the first start with no replication_origin_cursor rows
 # yet - see _start_bootstrap_if_configured. Inert (and safe to leave in env.json) afterwards.
@@ -201,31 +205,85 @@ def _outbox_pump_tick():
         cur.execute(
             "SELECT o.seq, l.event, o.dapps_ids FROM replication_outbox o "
             "JOIN replication_log l ON l.origin = ? AND l.seq = o.seq "
-            "WHERE o.seq > ? ORDER BY o.seq ASC LIMIT 50",
-            (ORIGIN, submitted_seq)
+            "WHERE o.seq > ? ORDER BY o.seq ASC LIMIT ?",
+            (ORIGIN, submitted_seq, max(50, BATCH_SIZE))
         )
-        for seq, event_json, dapps_ids_json in cur.fetchall():
-            envelope = json.loads(event_json)
+        rows = [(seq, json.loads(event_json), dapps_ids_json) for seq, event_json, dapps_ids_json in cur.fetchall()]
+        for chunk in _batches(rows):
+            envelopes = [envelope for _, envelope, _ in chunk]
+            first_seq, last_seq = chunk[0][0], chunk[-1][0]
+            label = _events_label(ORIGIN, first_seq, last_seq)
+            # Any ack held for this peer rides along instead of costing its own DAPPS message
+            # later. Added per submission only - replication_log keeps the envelope without it.
+            carried = _take_held_acks(peer)
+            payload = _events_payload(envelopes, {origin: held_seq for origin, (held_seq, _) in carried.items()})
             try:
-                dapps_id = _dapps_submit(peer, envelope, stream_id=_stream_id_for(ORIGIN, envelope["epoch"]), gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS)
+                dapps_id = _dapps_submit(peer, payload, stream_id=_stream_id_for(ORIGIN, envelopes[0]["epoch"]), gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS)
             except Exception as e:
-                wps_logger("REPLICATION OUTBOX", ORIGIN, f"Submit seq={seq} to {peer} failed, will retry: {e}", "ERROR")
-                if _last_outbox_failure.get(peer) != seq:
-                    _last_outbox_failure[peer] = seq
-                    _record("out", "data", envelope.get("op"), "failed", peer=peer, origin=ORIGIN, seq=seq, detail=f"Submit to DAPPS failed, retrying every tick: {e}")
+                _restore_held_acks(carried)
+                wps_logger("REPLICATION OUTBOX", ORIGIN, f"Submit {label} to {peer} failed, will retry: {e}", "ERROR")
+                if _last_outbox_failure.get(peer) != first_seq:
+                    _last_outbox_failure[peer] = first_seq
+                    _record("out", "data", envelopes[0].get("op"), "failed", peer=peer, origin=ORIGIN, seq=first_seq, detail=f"Submit to DAPPS failed, retrying every tick: {e}")
                 break
 
-            dapps_ids = json.loads(dapps_ids_json) if dapps_ids_json else {}
-            dapps_ids[peer] = dapps_id
-            cur.execute("UPDATE replication_peer_ack SET submitted_seq = ? WHERE peer = ?", (seq, peer))
-            cur.execute(
-                "UPDATE replication_outbox SET dapps_ids = ?, submitted_at = ? WHERE seq = ?",
-                (json.dumps(dapps_ids), _now_ms() if all(p in dapps_ids for p in PEERS) else None, seq)
-            )
+            now = _now_ms()
+            for seq, _, dapps_ids_json in chunk:
+                dapps_ids = json.loads(dapps_ids_json) if dapps_ids_json else {}
+                dapps_ids[peer] = dapps_id
+                cur.execute(
+                    "UPDATE replication_outbox SET dapps_ids = ?, submitted_at = ? WHERE seq = ?",
+                    (json.dumps(dapps_ids), now if all(p in dapps_ids for p in PEERS) else None, seq)
+                )
+            cur.execute("UPDATE replication_peer_ack SET submitted_seq = ? WHERE peer = ?", (last_seq, peer))
             conn.commit()
             _last_outbox_failure.pop(peer, None)
             _last_data_sent_to[peer.upper()] = time.monotonic()
-            _record("out", "data", envelope.get("op"), "sent", peer=peer, origin=ORIGIN, seq=seq, dapps_id=dapps_id)
+            note = _batch_note(chunk)
+            for seq, envelope, _ in chunk:
+                _record("out", "data", envelope.get("op"), "sent", peer=peer, origin=ORIGIN, seq=seq, detail=note, dapps_id=dapps_id)
+            for origin, (held_seq, _) in carried.items():
+                _acked_up_to[origin] = max(_acked_up_to.get(origin, 0), held_seq)
+                ack = {"op": "ack", "origin": origin, "seq": held_seq, "by": DAPPS_CALLSIGN}
+                _record("out", "sync", "ack", "sent", peer=peer, origin=origin, seq=held_seq,
+                        detail=f"{_describe_control(ack)} - carried on {label}", dapps_id=dapps_id, event=ack)
+
+
+def _batches(rows):
+    '''
+    Splits (seq, envelope, ...) rows, already in seq order, into runs of up to BATCH_SIZE that
+    can each go as one DAPPS message. A run never spans an epoch change, since the stream id
+    (and so DAPPS's ordering) is per epoch.
+    '''
+    chunk = []
+    for row in rows:
+        if chunk and (len(chunk) >= BATCH_SIZE or row[1]["epoch"] != chunk[0][1]["epoch"]):
+            yield chunk
+            chunk = []
+        chunk.append(row)
+    if chunk:
+        yield chunk
+
+
+def _events_payload(envelopes, acks=None):
+    '''
+    The DAPPS payload for a run of our own consecutive events: the envelope itself for one,
+    otherwise a batch {"op": "batch", "origin", "epoch", "events": [...]}. `acks` held for the
+    recipient are added at this level either way.
+    '''
+    if len(envelopes) == 1:
+        payload = envelopes[0]
+    else:
+        payload = {"v": 1, "op": "batch", "origin": ORIGIN, "epoch": envelopes[0]["epoch"], "events": envelopes}
+    return dict(payload, acks=acks) if acks else payload
+
+
+def _events_label(origin, first_seq, last_seq):
+    return f"{origin}/{first_seq}" if first_seq == last_seq else f"{origin}/{first_seq}-{last_seq}"
+
+
+def _batch_note(chunk):
+    return f"In batch of {len(chunk)} ({chunk[0][0]}-{chunk[-1][0]})" if len(chunk) > 1 else None
 
 
 def _retire_acked_outbox_rows(cur, conn):
@@ -571,7 +629,43 @@ def _handle_inbound(msg):
         _dapps_ack(dapps_id)
         return
 
-    # A normal replicated data event (post.insert, post.edit, msg.insert, ...)
+    # A normal replicated data event (post.insert, post.edit, msg.insert, ...) or a batch of
+    # them, possibly carrying acks the sender held for us. Those are handled first, whatever
+    # becomes of the events. The DAPPS message is acked only once every event in it is dealt
+    # with: if one fails it is redelivered whole, and the ones already applied drop out as duplicates.
+    _handle_carried_acks(envelope, peer, dapps_id)
+
+    if op == "batch":
+        _handle_batch(envelope, peer, dapps_id)
+    else:
+        _handle_data_event(envelope, peer, dapps_id)
+    _dapps_ack(dapps_id)
+
+
+def _handle_batch(envelope, peer, dapps_id):
+    events = envelope.get("events")
+    if not isinstance(events, list) or not events:
+        _record("in", "data", "batch", "rejected", peer=peer, origin=envelope.get("origin"),
+                detail="Batch with no events list", dapps_id=dapps_id, event=envelope)
+        return
+    seqs = [e.get("seq") for e in events if isinstance(e, dict) and isinstance(e.get("seq"), int)]
+    note = f"In batch of {len(events)} ({min(seqs)}-{max(seqs)})" if seqs else f"In batch of {len(events)}"
+    for event in events:
+        # The batch's own origin was checked against the configured peers in _handle_inbound;
+        # every event in it must belong to that same stream and be a data event.
+        if (not isinstance(event, dict) or event.get("origin") != envelope.get("origin")
+                or not isinstance(event.get("seq"), int) or event.get("op") in _CONTROL_OPS or event.get("op") == "batch"):
+            _record("in", "data", event.get("op") if isinstance(event, dict) else None, "rejected", peer=peer,
+                    origin=envelope.get("origin"), seq=event.get("seq") if isinstance(event, dict) else None,
+                    detail=f"Not a data event of {envelope.get('origin')} - {note}", dapps_id=dapps_id,
+                    event=event if isinstance(event, dict) else None)
+            continue
+        _handle_data_event(event, peer, dapps_id, note)
+
+
+def _handle_data_event(envelope, peer, dapps_id, batch_note=None):
+    '''Applies, buffers or drops one data event. The caller acks the DAPPS message it came in.'''
+    op = envelope.get("op")
     origin = envelope["origin"]
     seq = envelope["seq"]
 
@@ -579,7 +673,6 @@ def _handle_inbound(msg):
         # Our own event came back somehow (e.g. a peer relayed it) - nothing to apply.
         _record("in", "data", op, "ignored", peer=peer, origin=origin, seq=seq, detail="Our own event echoed back",
                 dapps_id=dapps_id, event=envelope)
-        _dapps_ack(dapps_id)
         return
 
     # Data from a peer means someone there is active - keep polling fast for their follow-ups.
@@ -603,7 +696,6 @@ def _handle_inbound(msg):
         conn.commit()
         _record("in", "data", op, "buffered", peer=peer, origin=origin, seq=seq,
                 detail="Bootstrap for this origin still pending - held until seq_at.response arrives", dapps_id=dapps_id, event=envelope)
-        _dapps_ack(dapps_id)
         return
 
     cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
@@ -614,7 +706,6 @@ def _handle_inbound(msg):
         wps_logger("REPLICATION INBOX", ORIGIN, f"Duplicate delivery of {origin}/{seq}, already applied - ack and drop")
         _record("in", "data", op, "duplicate", peer=peer, origin=origin, seq=seq,
                 detail=f"Already applied up to {last_applied} - dropped", dapps_id=dapps_id, event=envelope)
-        _dapps_ack(dapps_id)
         return
 
     if seq > last_applied + 1:
@@ -626,14 +717,13 @@ def _handle_inbound(msg):
         conn.commit()
         _record("in", "data", op, "buffered", peer=peer, origin=origin, seq=seq,
                 detail=f"Gap: have {last_applied}, requesting {last_applied + 1}-{seq - 1}", dapps_id=dapps_id, event=envelope)
-        _dapps_ack(dapps_id)  # DAPPS delivered it fine - the gap is an application-level concern
+        # DAPPS delivered it fine - the gap is an application-level concern, so the message is still acked
         _request_sync(origin, last_applied + 1, seq - 1)
         return
 
     outcome = _apply_one(conn, cur, origin, seq, envelope)
-    _record("in", "data", op, outcome, peer=peer, origin=origin, seq=seq, dapps_id=dapps_id, event=envelope)
+    _record("in", "data", op, outcome, peer=peer, origin=origin, seq=seq, detail=batch_note, dapps_id=dapps_id, event=envelope)
     _drain_pending(conn, cur, origin)
-    _dapps_ack(dapps_id)
     _queue_app_ack(origin, seq)
 
 
@@ -671,6 +761,61 @@ def _flush_due_acks():
         except Exception as e:
             wps_logger("REPLICATION INBOX", ORIGIN, f"Failed to send app-level ack for {origin}/{seq}, will retry: {e}", "ERROR")
             _queue_app_ack(origin, seq)
+
+
+def _take_held_acks(peer):
+    '''
+    Removes and returns the held acks addressed to peer ({origin: [seq, held_since]}), for the
+    outbox pump to carry on a data event it is about to submit there. _restore_held_acks puts
+    them back if that submit fails.
+    '''
+    with _pending_acks_lock:
+        taken = {origin: held for origin, held in _pending_acks.items() if _dapps_for_origin(origin).upper() == peer.upper()}
+        for origin in taken:
+            del _pending_acks[origin]
+    return taken
+
+
+def _restore_held_acks(taken):
+    with _pending_acks_lock:
+        for origin, (seq, held_since) in taken.items():
+            held = _pending_acks.get(origin)
+            if held:
+                held[0] = max(held[0], seq)
+                held[1] = min(held[1], held_since)
+            else:
+                _pending_acks[origin] = [seq, held_since]
+
+
+_PEER_SPELLING = {p.upper(): p for p in PEERS}  # replication_peer_ack is keyed by the configured spelling
+
+
+def _handle_carried_acks(envelope, peer, dapps_id):
+    '''
+    Handles the `acks` a peer attached to a data event ({origin: seq}), exactly as if each had
+    arrived as its own ack. `by` is the peer DAPPS delivered it from, already checked in
+    _handle_inbound, so nothing in the envelope has to be trusted for it.
+    '''
+    acks = envelope.get("acks")
+    if not isinstance(acks, dict):
+        return
+    by = _PEER_SPELLING.get(peer.upper(), peer)
+    for origin, seq in acks.items():
+        if not isinstance(seq, int):
+            continue
+        ack = {"op": "ack", "origin": origin, "seq": seq, "by": by}
+        _record("in", "sync", "ack", "received", peer=peer, origin=origin, seq=seq,
+                detail=f"{_describe_control(ack)} - carried on {_carrier_label(envelope)}",
+                dapps_id=dapps_id, event=ack)
+        _handle_app_ack(ack)
+
+
+def _carrier_label(envelope):
+    if envelope.get("op") == "batch":
+        seqs = [e.get("seq") for e in envelope.get("events") or [] if isinstance(e, dict) and isinstance(e.get("seq"), int)]
+        if seqs:
+            return _events_label(envelope.get("origin"), min(seqs), max(seqs))
+    return f"{envelope.get('origin')}/{envelope.get('seq')}"
 
 
 def _handle_app_ack(envelope):
@@ -839,20 +984,26 @@ def _handle_sync_request(envelope):
         _record("out", "sync", "sync.request", "failed", peer=requester, origin=ORIGIN,
                 detail=f"Cannot serve {len(missing)} of {to_seq - from_seq + 1} requested seq(s), not in replication_log as {ORIGIN}: {shown}")
 
-    for seq, event_json in rows:
-        envelope_to_resend = json.loads(event_json)
+    for chunk in _batches([(seq, json.loads(event_json)) for seq, event_json in rows]):
+        envelopes = [envelope for _, envelope in chunk]
+        note = _batch_note(chunk)
         try:
             dapps_id = _dapps_submit(
-                requester, envelope_to_resend,
-                stream_id=_stream_id_for(ORIGIN, envelope_to_resend["epoch"]),
+                requester, _events_payload(envelopes),
+                stream_id=_stream_id_for(ORIGIN, envelopes[0]["epoch"]),
                 gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS
             )
-            _record("out", "data", envelope_to_resend.get("op"), "resent", peer=requester, origin=ORIGIN, seq=seq,
-                    detail=f"Re-sent for sync.request {from_seq}-{to_seq}", dapps_id=dapps_id)
         except Exception as e:
-            wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to re-send seq={seq} to {requester}: {e}", "ERROR")
-            _record("out", "data", envelope_to_resend.get("op"), "failed", peer=requester, origin=ORIGIN, seq=seq,
-                    detail=f"Re-send for sync.request {from_seq}-{to_seq} failed: {e}")
+            label = _events_label(ORIGIN, chunk[0][0], chunk[-1][0])
+            wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to re-send {label} to {requester}: {e}", "ERROR")
+            for seq, envelope in chunk:
+                _record("out", "data", envelope.get("op"), "failed", peer=requester, origin=ORIGIN, seq=seq,
+                        detail=f"Re-send for sync.request {from_seq}-{to_seq} failed: {e}")
+            continue
+        for seq, envelope in chunk:
+            detail = f"Re-sent for sync.request {from_seq}-{to_seq}" + (f" - {note}" if note else "")
+            _record("out", "data", envelope.get("op"), "resent", peer=requester, origin=ORIGIN, seq=seq,
+                    detail=detail, dapps_id=dapps_id)
 
 
 def _fill_gap_to_pending(origin):

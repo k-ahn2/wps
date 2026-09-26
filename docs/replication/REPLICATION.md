@@ -110,6 +110,7 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`inboxFastPollSeconds`|Number|`1`|Inbox poll interval while replication is active - see [Receive](#4-receive---the-inbox-pump)|
 |`inboxFastPollWindowSeconds`|Number|`300`|How long the fast inbox rate lasts after the most recent local write or inbound data event|
 |`reconcileIntervalSeconds`|Number|`300`|How often a digest is sent to each peer (skipped while recent traffic makes it redundant - see [Reconcile](#7-reconcile))|
+|`batchSize`|Number|`1`|Most events sent in one DAPPS message when there is a backlog - see [Batches](#batches). Leave at `1` until **every** peer runs a version that understands batches|
 |`ackDelaySeconds`|Number|`30`|How long application acks are held so several can be combined into one - see [Acknowledge](#6-acknowledge)|
 |`bootstrapFromTs`|Number (epoch ms)|`null`|Set only on a brand-new instance joining an existing mesh, to skip replaying full history - see [Bringing up a new instance](#bringing-up-a-new-instance). Leave `null` for a normal instance|
 |`activityRetentionDays`|Number|`7`|How long rows are kept in `replication_activity`, the history behind the [dashboard](#dashboard). Pruned every reconcile tick|
@@ -169,6 +170,27 @@ Every replicated change is one JSON envelope. `origin` and `seq` are its identit
 |`op`|One of the operations in [What Is Replicated](#what-is-replicated)|
 |`key`|Identifies the row: `{cid, ts}` for a post, `{_id}` for a message, `{callsign}` for a user|
 |`data`|What is needed to apply and broadcast it. For inserts, the whole post or message. For edits and reactions, only the changed fields. For `user.update`, `name`, `name_last_updated` and `callsign`|
+|`acks`|Optional, added at submit time and never stored in `replication_log`: `{origin: seq}` acks the sender was holding for the recipient - see [Acknowledge](#6-acknowledge)|
+
+### Batches
+
+With `batchSize` above 1, a backlog of consecutive events for a peer is sent as one DAPPS message rather than one each:
+
+```json
+{
+  "v": 1,
+  "op": "batch",
+  "origin": "M0LTE-7",
+  "epoch": 1,
+  "events": [ { "origin": "M0LTE-7", "seq": 4712, ... }, { "origin": "M0LTE-7", "seq": 4713, ... } ]
+}
+```
+
+`events` holds up to `batchSize` complete envelopes, in `seq` order, all from `origin` and one `epoch`, and the batch travels on that epoch's stream like a single event would. A lone event is still sent as a plain envelope. Held `acks` go on the batch itself. Nothing about a batch is stored: `replication_log` keeps each envelope as before.
+
+A batch forms only when events are waiting in WPS - the outbox has built up while DAPPS was unreachable, or a `sync.request` asks for a range. Events written while the link is idle reach DAPPS within about 100 ms, one per message, because the pump does not hold them back to wait for more.
+
+A peer running an older version cannot read a batch: it fails to handle it, never acknowledges it to DAPPS, and the strictly ordered stream stalls behind it. Raise `batchSize` only once every peer is upgraded.
 
 ### Control messages
 
@@ -234,7 +256,7 @@ Each time a local write captures an event, the pump is woken straight away (afte
 
 1. Read that peer's `submitted_seq` from `replication_peer_ack`.
 2. Select up to 50 outbox rows with a higher `seq`, in order, joined to their envelope in `replication_log`.
-3. Submit each to DAPPS with `POST /AppApi/outbound`:
+3. Submit them to DAPPS with `POST /AppApi/outbound`, up to `batchSize` consecutive events per message (see [Batches](#batches)):
     ```json
     {
       "app": "wps-repl",
@@ -245,7 +267,8 @@ Each time a local write captures an event, the pump is woken straight away (afte
       "streamGapTimeoutSeconds": 0
     }
     ```
-4. After each success, advance that peer's `submitted_seq` and record the returned DAPPS id on the outbox row.
+    Any application acks being held for that peer are added to the envelope (or batch) as `acks` (see [Acknowledge](#6-acknowledge)).
+4. After each success, advance that peer's `submitted_seq` and record the returned DAPPS id on each outbox row sent.
 5. **On the first failure, stop for that peer** and retry from the same event next tick.
 
 Per-peer cursors mean a peer that is down stalls only its own submissions. A healthy peer keeps receiving events, and events reach DAPPS for each peer in `seq` order. `streamGapTimeoutSeconds: 0` asks the receiving DAPPS for *strict* ordering: hold later messages until an earlier one arrives rather than skip it.
@@ -270,8 +293,9 @@ The pump calls `GET /AppApi/inbound/wps-repl` and handles each message in turn. 
 | - | - |
 |`ack`|Recorded, and outbox rows are retired - see [Acknowledge](#6-acknowledge)|
 |`digest`|Compared with the local cursor - see [Reconcile](#7-reconcile)|
-|`sync.request`|The requested range is re-sent from `replication_log`|
+|`sync.request`|The requested range is re-sent from `replication_log`, in batches of up to `batchSize`|
 |A data event (`post.insert`, `msg.edit`...)|Goes through the decision below|
+|`batch`|Each event in it goes through the decision below, in order. An event whose `origin` is not the batch's, or that is not a data event, is recorded as `rejected` and skipped. DAPPS is acknowledged once, after the last event; if one fails, the whole message is redelivered and the events already applied drop out as duplicates|
 
 **Step 3 - a data event.** Compare its `seq` with `last_applied_seq` for its `origin` in `replication_origin_cursor`:
 
@@ -308,6 +332,8 @@ Guards are *last-writer-wins on the change's own timestamp*, which gives every i
 ### 6. Acknowledge
 
 After a successful apply the inbox pump queues an ack for that origin. Once the first queued ack has waited `ackDelaySeconds`, one `{"op":"ack","origin":<stream owner>,"seq":N,"by":<this instance>}` goes back to the origin, where `N` is the highest `seq` applied in the meantime. An ack covers every `seq` up to `N`, so a burst of events costs one DAPPS transfer back rather than one per event - on a link that moves one message at a time, acks would otherwise queue in front of the next data. Nothing waits on acks except outbox retirement, so the delay only postpones that cleanup.
+
+If a data event is submitted to the origin while an ack for it is held, the ack goes with it instead: the outbox pump adds `"acks": {<origin>: N}` to that submission and the separate ack is not sent. The receiver handles each carried ack as if it had arrived on its own, before it deals with the event itself, with `by` taken from the peer DAPPS delivered the message from. A peer running an older version ignores `acks`, so its outbox row for `N` is retired only by the next ack; upgrade both ends together.
 
 When the origin receives it, it records `peer_acked_seq` for that peer (and advances `submitted_seq` to match, since the peer evidently has everything up to `N`). It then deletes every `replication_outbox` row with `seq <=` the **lowest** `peer_acked_seq` across all configured peers: a row is retired only once **every** peer has applied it. `replication_peer_ack` is seeded with a zero row for each configured peer at startup so that a peer that has not acknowledged anything yet still holds the minimum at zero.
 
@@ -441,7 +467,7 @@ The DAPPS dashboard shows the queues from the transport side: `/Inbound` (live i
 
 ### Timing
 
-Delivery latency is roughly DAPPS transit + one inbox poll interval, plus whatever the radio link imposes. New events reach DAPPS within about 100 ms of the write. The inbox wait is up to `inboxFastPollSeconds` during a conversation, and up to `inboxPollSeconds` for the first message after a quiet spell. DAPPS transit dominates on RF.
+Delivery latency is roughly DAPPS transit + one inbox poll interval, plus whatever the radio link imposes. New events reach DAPPS within about 100 ms of the write. A backlog goes `batchSize` events per DAPPS message, which matters on links that move one message at a time. The inbox wait is up to `inboxFastPollSeconds` during a conversation, and up to `inboxPollSeconds` for the first message after a quiet spell. DAPPS transit dominates on RF.
 
 ### Growth
 
