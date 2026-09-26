@@ -103,7 +103,8 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`inboxPollSeconds`|Number|`5`|How often DAPPS is polled for inbound events when replication is quiet|
 |`inboxFastPollSeconds`|Number|`1`|How often DAPPS is polled while replication is active|
 |`inboxFastPollWindowSeconds`|Number|`300`|How long the fast rate lasts after the latest local write or inbound data event|
-|`reconcileIntervalSeconds`|Number|`300`|How often each peer is told how far this instance has got, so gaps can be filled|
+|`reconcileIntervalSeconds`|Number|`300`|How often each peer is told how far this instance has got, so gaps can be filled. Skipped while recent traffic makes it redundant|
+|`ackDelaySeconds`|Number|`30`|How long acknowledgements are held so several can be combined into one|
 
 ### Sample `env.json`
 

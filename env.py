@@ -62,6 +62,7 @@ env_template = {
         "inboxFastPollSeconds": 1,
         "inboxFastPollWindowSeconds": 300,
         "reconcileIntervalSeconds": 300,
+        "ackDelaySeconds": 30,
         "bootstrapFromTs": None,
         "activityRetentionDays": 7,
         "dashboard": {

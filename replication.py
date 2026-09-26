@@ -62,6 +62,9 @@ INBOX_FAST_POLL_WINDOW_SECONDS = REPLICATION_CONFIG.get('inboxFastPollWindowSeco
 # pump waits this long after waking for the commit to land before it reads the outbox.
 OUTBOX_WAKE_SETTLE_SECONDS = 0.1
 RECONCILE_INTERVAL_SECONDS = REPLICATION_CONFIG.get('reconcileIntervalSeconds', 300)
+# Application acks are held this long and combined: one ack covers every seq up to it (see
+# _handle_app_ack), so a burst of events costs one DAPPS transfer back instead of one each.
+ACK_DELAY_SECONDS = REPLICATION_CONFIG.get('ackDelaySeconds', 30)
 # Set only on a brand-new instance that should join mid-history rather than replay everything:
 # epoch-ms timestamp. Consulted once, at the first start with no replication_origin_cursor rows
 # yet - see _start_bootstrap_if_configured. Inert (and safe to leave in env.json) afterwards.
@@ -221,6 +224,7 @@ def _outbox_pump_tick():
             )
             conn.commit()
             _last_outbox_failure.pop(peer, None)
+            _last_data_sent_to[peer.upper()] = time.monotonic()
             _record("out", "data", envelope.get("op"), "sent", peer=peer, origin=ORIGIN, seq=seq, dapps_id=dapps_id)
 
 
@@ -409,7 +413,7 @@ def _drain_pending(conn, cur, origin):
         conn.commit()
         _record("in", "data", envelope.get("op"), outcome, peer=_dapps_for_origin(origin), origin=origin, seq=seq,
                 detail="Applied from the out-of-order buffer", event=envelope)
-        _send_app_ack(origin, seq)
+        _queue_app_ack(origin, seq)
 
 
 # --- Inbox pump: DAPPS -> apply / control messages -----------------------------------------
@@ -418,6 +422,7 @@ def _inbox_pump_loop():
     while True:
         try:
             _inbox_pump_tick()
+            _flush_due_acks()
         except Exception as e:
             wps_logger("REPLICATION INBOX", ORIGIN, f"Tick error: {e}", "ERROR")
         fast = time.monotonic() < _inbox_fast_until
@@ -534,6 +539,7 @@ def _handle_inbound(msg):
 
     # Everything below is from a configured peer; record it against that peer's DAPPS callsign.
     peer = source or (claimed if claim_key != "origin" else _dapps_for_origin(claimed))
+    _last_heard_from[peer.upper()] = time.monotonic()
 
     if op in _CONTROL_OPS:
         _record("in", "sync", op, "received", peer=peer, origin=envelope.get("origin"),
@@ -628,16 +634,43 @@ def _handle_inbound(msg):
     _record("in", "data", op, outcome, peer=peer, origin=origin, seq=seq, dapps_id=dapps_id, event=envelope)
     _drain_pending(conn, cur, origin)
     _dapps_ack(dapps_id)
-    _send_app_ack(origin, seq)
+    _queue_app_ack(origin, seq)
 
 
 # --- Application-level acks: retire outbox rows once every peer has applied them ----------
 
-def _send_app_ack(origin, seq):
-    try:
-        _submit_control(_dapps_for_origin(origin), {"op": "ack", "origin": origin, "seq": seq, "by": DAPPS_CALLSIGN})
-    except Exception as e:
-        wps_logger("REPLICATION INBOX", ORIGIN, f"Failed to send app-level ack for {origin}/{seq}: {e}", "ERROR")
+_pending_acks = {}  # origin -> [highest applied seq not yet acked, time.monotonic() the first was held]
+_acked_up_to = {}   # origin -> highest seq an ack has been submitted for, since this process started
+_pending_acks_lock = threading.Lock()
+
+
+def _queue_app_ack(origin, seq):
+    '''
+    Holds an ack for origin/seq rather than sending it at once. _flush_due_acks sends a single
+    ack for the highest held seq once the first has waited ACK_DELAY_SECONDS. Nothing waits on
+    acks except outbox retirement, so the delay costs only a slightly later cleanup.
+    '''
+    with _pending_acks_lock:
+        held = _pending_acks.get(origin)
+        if held:
+            held[0] = max(held[0], seq)
+        else:
+            _pending_acks[origin] = [seq, time.monotonic()]
+
+
+def _flush_due_acks():
+    now = time.monotonic()
+    with _pending_acks_lock:
+        due = {origin: held[0] for origin, held in _pending_acks.items() if now - held[1] >= ACK_DELAY_SECONDS}
+        for origin in due:
+            del _pending_acks[origin]
+    for origin, seq in due.items():
+        try:
+            _submit_control(_dapps_for_origin(origin), {"op": "ack", "origin": origin, "seq": seq, "by": DAPPS_CALLSIGN})
+            _acked_up_to[origin] = max(_acked_up_to.get(origin, 0), seq)
+        except Exception as e:
+            wps_logger("REPLICATION INBOX", ORIGIN, f"Failed to send app-level ack for {origin}/{seq}, will retry: {e}", "ERROR")
+            _queue_app_ack(origin, seq)
 
 
 def _handle_app_ack(envelope):
@@ -681,12 +714,40 @@ def _send_digest():
     my_latest = cur.fetchone()[0]
 
     for peer in PEERS:
+        cur.execute("SELECT peer_acked_seq FROM replication_peer_ack WHERE peer = ?", (peer,))
+        row = cur.fetchone()
+        if _digest_redundant(peer, my_latest, row[0] if row else 0):
+            wps_logger("REPLICATION RECONCILE", ORIGIN, f"Skipping digest to {peer} - recent traffic already shows where we are")
+            continue
         try:
             # Short TTL: only the newest digest matters, so one that can't be delivered within a
             # couple of intervals should expire in DAPPS rather than queue behind a down peer.
             _submit_control(peer, {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
         except Exception as e:
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to send digest to {peer}: {e}", "ERROR")
+
+
+_last_heard_from = {}    # peer DAPPS callsign (upper) -> time.monotonic() anything was last received from it
+_last_data_sent_to = {}  # peer DAPPS callsign (upper) -> time.monotonic() a data event was last submitted to it
+
+
+def _digest_redundant(peer, my_latest, peer_acked_seq):
+    '''
+    A digest exists so a peer can spot events it missed. It adds nothing while traffic is
+    flowing: either the peer has acked everything we have, or events are in flight to it now
+    and will show any gap themselves. Requiring that we heard from the peer this interval keeps
+    a digest going out whenever the link is quiet or the peer may be down, so the dashboard's
+    "silent" check and TTL-expiry recovery are unaffected. A skipped tick delays gap detection
+    by at most one interval.
+    '''
+    now = time.monotonic()
+    heard = _last_heard_from.get(peer.upper())
+    if heard is None or now - heard > RECONCILE_INTERVAL_SECONDS:
+        return False
+    if peer_acked_seq >= my_latest:
+        return True
+    sent = _last_data_sent_to.get(peer.upper())
+    return sent is not None and now - sent <= RECONCILE_INTERVAL_SECONDS
 
 
 def _handle_digest(envelope):
@@ -712,6 +773,10 @@ def _handle_digest(envelope):
     if latest_seq > last_applied:
         wps_logger("REPLICATION RECONCILE", ORIGIN, f"Digest shows {origin} is at {latest_seq}, we're at {last_applied} - requesting sync")
         _request_sync(origin, last_applied + 1, latest_seq)
+    elif latest_seq == last_applied and last_applied > 0 and _acked_up_to.get(origin, 0) < last_applied:
+        # Level, but no ack for the latest has gone out from this process - one held when WPS
+        # last stopped would be lost with it, leaving the origin's outbox row un-retired.
+        _queue_app_ack(origin, last_applied)
     elif latest_seq < last_applied:
         wps_logger("REPLICATION RECONCILE", ORIGIN, f"Digest shows {origin} at seq {latest_seq} but we have already applied up to {last_applied} - "
                    f"{origin} looks restored or rebuilt; its new events will be dropped as duplicates until this is resolved (see docs/replication/REPLICATION.md)", "ERROR")

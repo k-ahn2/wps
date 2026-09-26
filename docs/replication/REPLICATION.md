@@ -109,7 +109,8 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`inboxPollSeconds`|Number|`5`|How often the inbox pump polls DAPPS for inbound messages when replication is quiet|
 |`inboxFastPollSeconds`|Number|`1`|Inbox poll interval while replication is active - see [Receive](#4-receive---the-inbox-pump)|
 |`inboxFastPollWindowSeconds`|Number|`300`|How long the fast inbox rate lasts after the most recent local write or inbound data event|
-|`reconcileIntervalSeconds`|Number|`300`|How often a digest is sent to each peer|
+|`reconcileIntervalSeconds`|Number|`300`|How often a digest is sent to each peer (skipped while recent traffic makes it redundant - see [Reconcile](#7-reconcile))|
+|`ackDelaySeconds`|Number|`30`|How long application acks are held so several can be combined into one - see [Acknowledge](#6-acknowledge)|
 |`bootstrapFromTs`|Number (epoch ms)|`null`|Set only on a brand-new instance joining an existing mesh, to skip replaying full history - see [Bringing up a new instance](#bringing-up-a-new-instance). Leave `null` for a normal instance|
 |`activityRetentionDays`|Number|`7`|How long rows are kept in `replication_activity`, the history behind the [dashboard](#dashboard). Pruned every reconcile tick|
 |`dashboard.enabled`|Boolean|`true`|Serve the read-only [replication dashboard](#dashboard) from inside WPS. Only takes effect when `enabled` is also `true`|
@@ -277,7 +278,7 @@ The pump calls `GET /AppApi/inbound/wps-repl` and handles each message in turn. 
 | Condition | Meaning | Action |
 | - | - | - |
 |`seq <= last_applied_seq`|Duplicate delivery|Acknowledge DAPPS and drop. Nothing is applied or broadcast twice|
-|`seq == last_applied_seq + 1`|Next in order|[Apply](#5-apply), then apply any buffered events that are now contiguous, acknowledge DAPPS, send an application ack|
+|`seq == last_applied_seq + 1`|Next in order|[Apply](#5-apply), then apply any buffered events that are now contiguous, acknowledge DAPPS, queue an application ack|
 |`seq > last_applied_seq + 1`|Gap - something earlier is missing|Store in `replication_pending`, acknowledge DAPPS (the transport did its job), send `sync.request` for exactly the missing range|
 
 ### 5. Apply
@@ -306,17 +307,21 @@ Guards are *last-writer-wins on the change's own timestamp*, which gives every i
 
 ### 6. Acknowledge
 
-After a successful apply the inbox pump sends `{"op":"ack","origin":<stream owner>,"seq":N,"by":<this instance>}` back to the origin.
+After a successful apply the inbox pump queues an ack for that origin. Once the first queued ack has waited `ackDelaySeconds`, one `{"op":"ack","origin":<stream owner>,"seq":N,"by":<this instance>}` goes back to the origin, where `N` is the highest `seq` applied in the meantime. An ack covers every `seq` up to `N`, so a burst of events costs one DAPPS transfer back rather than one per event - on a link that moves one message at a time, acks would otherwise queue in front of the next data. Nothing waits on acks except outbox retirement, so the delay only postpones that cleanup.
 
 When the origin receives it, it records `peer_acked_seq` for that peer (and advances `submitted_seq` to match, since the peer evidently has everything up to `N`). It then deletes every `replication_outbox` row with `seq <=` the **lowest** `peer_acked_seq` across all configured peers: a row is retired only once **every** peer has applied it. `replication_peer_ack` is seeded with a zero row for each configured peer at startup so that a peer that has not acknowledged anything yet still holds the minimum at zero.
 
-An acknowledgement that is lost costs nothing permanent: the next one for a later `seq` covers it.
+An acknowledgement that is lost costs nothing permanent: the next one for a later `seq` covers it. Held acks live in memory and are lost if WPS stops; to cover that, a digest showing the origin level with us triggers an ack for the latest `seq` if none has been sent for it since startup.
 
 ### 7. Reconcile
 
 Ordering and acknowledgement handle the normal case. Reconciliation handles everything else: an expired DAPPS TTL, a long outage, a lost message, a bug.
 
-Every `reconcileIntervalSeconds` each instance sends every peer a `digest`: `{"op":"digest","origin":<self>,"latest_seq":N}`, its own newest `seq`. A receiver compares it with its cursor for that origin:
+Every `reconcileIntervalSeconds` each instance sends every peer a `digest`: `{"op":"digest","origin":<self>,"latest_seq":N}`, its own newest `seq`.
+
+The digest to a peer is skipped when recent traffic already does its job: something was heard from that peer within the last interval, **and** either the peer has acked everything up to our latest `seq`, or we submitted a data event to it within the last interval (which will show any gap itself). On a quiet link, or with a peer that may be down, nothing has been heard and the digest goes out as before. A skipped tick delays gap detection by at most one interval.
+
+A receiver compares a digest with its cursor for that origin:
 
 ```mermaid
 sequenceDiagram

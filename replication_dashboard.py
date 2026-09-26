@@ -185,6 +185,9 @@ def api_status(cur, _query):
             "dapps_rest_url": replication.DAPPS_REST_URL,
             "outbox_poll_seconds": replication.OUTBOX_POLL_SECONDS,
             "inbox_poll_seconds": replication.INBOX_POLL_SECONDS,
+            "inbox_fast_poll_seconds": replication.INBOX_FAST_POLL_SECONDS,
+            "inbox_fast_poll_window_seconds": replication.INBOX_FAST_POLL_WINDOW_SECONDS,
+            "ack_delay_seconds": replication.ACK_DELAY_SECONDS,
             "reconcile_interval_seconds": replication.RECONCILE_INTERVAL_SECONDS,
             "activity_retention_days": replication.ACTIVITY_RETENTION_DAYS,
             "bootstrap_from_ts": replication.BOOTSTRAP_FROM_TS,
@@ -299,8 +302,9 @@ EXPORT_FIELD_NOTES = {
     "summary": "One-line description of a data event's content.",
     "event": "The full replication envelope / control message. Envelope fields: v, origin, seq, epoch, ts (seconds "
              "for msg.* ops, milliseconds otherwise), op, key, data.",
-    "healthy pattern": "Each data event: out sent -> peer in applied -> peer out ack -> origin in ack. Digests every "
-                       "reconcile interval in both directions. Gaps show as buffered + sync.request, then resent and "
+    "healthy pattern": "Each data event: out sent -> peer in applied -> peer out ack -> origin in ack. Acks are held "
+                       "ack_delay_seconds and combined, so one ack can cover several seqs. Digests every reconcile "
+                       "interval in both directions, skipped while recent traffic shows the peer is level. Gaps show as buffered + sync.request, then resent and "
                        "applied.",
 }
 
@@ -878,7 +882,7 @@ async function loadOverview() {
 }
 
 function peerHealth(p, s) {
-  // Every peer sends a digest each reconcile interval, so a few missed intervals means it's gone quiet.
+  // A peer skips its digest only if it heard from us that interval, so a few missed intervals means it's gone quiet.
   if (p.bootstrap_requested_at) return ["bootstrapping", "warn", "waiting for seq_at.response"];
   const staleAfter = s.config.reconcile_interval_seconds * 3 * 1000;
   if (!p.last_heard_at) return ["unknown", "", "nothing heard yet"];
