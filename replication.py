@@ -120,13 +120,49 @@ def _prune_activity():
         conn.close()
 
 
+# --- Wire format: short keys over the air, long names everywhere else ----------------------
+
+# Envelopes and control messages go over the air with short keys, WPS-protocol style, to save
+# bytes on slow links. Everything local - replication_log, replication_pending, the activity
+# log and the dashboard - keeps the long names, so only the DAPPS boundary translates. Only
+# top-level keys (and those of each batched event) are renamed, never inside `key` or `data`.
+_WIRE_KEYS = {"origin": "o", "seq": "s", "epoch": "e", "op": "a"}
+_WIRE_OPS = {"post.insert": "p.i", "post.edit": "p.ed", "post.emoji": "p.em"}
+_LONG_KEYS = {short: long for long, short in _WIRE_KEYS.items()}
+_LONG_OPS = {short: long for long, short in _WIRE_OPS.items()}
+
+
+def _to_wire(message):
+    wire = {_WIRE_KEYS.get(k, k): v for k, v in message.items()}
+    if "a" in wire:
+        wire["a"] = _WIRE_OPS.get(wire["a"], wire["a"])
+    if isinstance(wire.get("events"), list):
+        wire["events"] = [_to_wire(e) if isinstance(e, dict) else e for e in wire["events"]]
+    return wire
+
+
+def _from_wire(message):
+    '''Inverse of _to_wire. A message in the old long-key format (no `a`) passes through as is.'''
+    if not isinstance(message, dict) or "a" not in message:
+        return message
+    long = {_LONG_KEYS.get(k, k): v for k, v in message.items()}
+    long["op"] = _LONG_OPS.get(long["op"], long["op"])
+    if isinstance(long.get("events"), list):
+        long["events"] = [_from_wire(e) for e in long["events"]]
+    return long
+
+
+def _decode_payload(payload):
+    return _from_wire(json.loads(base64.b64decode(payload)))
+
+
 # --- DAPPS REST client --------------------------------------------------------------------
 
 def _dapps_submit(dest_callsign, payload_dict, stream_id=None, gap_timeout_seconds=None, ttl=None):
     body = {
         "app": APP_SLUG,
         "destCallsign": dest_callsign,
-        "payload": base64.b64encode(json.dumps(payload_dict, separators=(',', ':')).encode()).decode(),
+        "payload": base64.b64encode(json.dumps(_to_wire(payload_dict), separators=(',', ':')).encode()).decode(),
     }
     if ttl:
         body["ttl"] = ttl
@@ -308,12 +344,15 @@ def _retire_acked_outbox_rows(cur, conn):
 
 def _apply_and_broadcast(cur, envelope):
     op = envelope["op"]
-    key = envelope["key"]
+    key = envelope.get("key")  # absent on inserts, which apply from data alone
     data = envelope["data"]
 
     if op == "post.insert":
         post = dict(data)  # copy: the envelope itself is recorded as received, without the local `o`
         post["o"] = envelope["origin"]
+        # rt (replication time): ms between the origin stamping dts and this instance applying the post
+        if isinstance(post.get("dts"), (int, float)):
+            post["rt"] = round(time.time() * 1000) - post["dts"]
         insert_resp = db.dbInsertPost(cur, post)
         if insert_resp["result"] == "failure":
             raise RuntimeError(f"dbInsertPost failed: {insert_resp['error']}")
@@ -520,7 +559,7 @@ def _record_inbound_error(msg, error):
         _recorded_inbound_errors.clear()
     _recorded_inbound_errors[dapps_id] = str(error)
     try:
-        envelope = json.loads(base64.b64decode(msg["payload"]))
+        envelope = _decode_payload(msg["payload"])
     except Exception:
         envelope = None
     op = envelope.get("op") if isinstance(envelope, dict) else None
@@ -574,7 +613,7 @@ def _is_configured_peer_origin(origin):
 
 def _handle_inbound(msg):
     dapps_id = msg["id"]
-    envelope = json.loads(base64.b64decode(msg["payload"]))
+    envelope = _decode_payload(msg["payload"])
     op = envelope.get("op")
 
     # Anyone who can reach this node's DAPPS can address wps-repl@<our callsign>, and DAPPS

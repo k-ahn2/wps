@@ -62,9 +62,11 @@ def _replicate_capture(cursor, op, key, data, ts=None):
             "epoch": epoch,
             "ts": event_ts,
             "op": op,
-            "key": key,
-            "data": data,
         }
+        # Inserts carry no key: data is the whole row, which already holds cid/ts or _id
+        if key is not None:
+            event["key"] = key
+        event["data"] = data
         event_json = json.dumps(event, separators=(',', ':'))
         cursor.execute(
             "INSERT INTO replication_log (origin, seq, ts, op, event) VALUES (?, ?, ?, ?, ?)",
@@ -723,7 +725,7 @@ def dbInsertMessage(CONN_DB_CURSOR, message):
         params = [json.dumps(message, separators=(',', ':'))]
         db_logger("dbInsertMessage", "Query: " + ' '.join(insert_query.split()) + " | Params: " + str(params))
 
-        _replicate_capture(CONN_DB_CURSOR, "msg.insert", {"_id": message.get("_id")}, message, ts=message.get("lts"))
+        _replicate_capture(CONN_DB_CURSOR, "msg.insert", None, message, ts=message.get("lts"))
 
         CONN_DB_CURSOR.execute(insert_query, params)
         CONN_DB_CURSOR.connection.commit()
@@ -851,7 +853,7 @@ def dbInsertPost(CONN_DB_CURSOR, post):
         params = [json.dumps(post, separators=(',', ':'))]
         db_logger("dbInsertPost", "Query: " + ' '.join(insert_query.split()) + " | Params: " + str(params))
 
-        _replicate_capture(CONN_DB_CURSOR, "post.insert", {"cid": post.get("cid"), "ts": post.get("ts")}, post, ts=post.get("dts", post.get("ts")))
+        _replicate_capture(CONN_DB_CURSOR, "post.insert", None, post, ts=post.get("dts", post.get("ts")))
 
         CONN_DB_CURSOR.execute(insert_query, params)
         CONN_DB_CURSOR.connection.commit()
@@ -1122,11 +1124,12 @@ def dbGetPostsBatch(CONN_DB_CURSOR, channel_id, bach_size):
         for row in CONN_DB_CURSOR:
             result.append(json.loads(row[1]))
 
-        # Remove the Logged Timestamp field, not used by the client
+        # Remove the Logged Timestamp field, not used by the client - unless the post arrived
+        # via replication (has rt), where dts and rt are returned for display in the UI
         # Remove the type field, implicit in the cpb type
         # Remove the cid, it's in the header
         for post in result:
-            if 'dts' in post:
+            if 'dts' in post and 'rt' not in post:
                 del post['dts']
             del post['t']
             del post['cid']

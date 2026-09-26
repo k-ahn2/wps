@@ -1015,7 +1015,8 @@ async function openItem(origin, seq) {
   const it = await api("/api/item", { origin, seq });
   const ev = it.event;
   let html = `<h4>Item</h4><dl class="kv"><dt>origin / seq</dt><dd>${esc(origin)} / ${esc(seq)}</dd>`;
-  if (ev) html += `<dt>op</dt><dd>${esc(ev.op)}</dd><dt>event time</dt><dd>${esc(fmtTime(eventTs(ev.op, ev.ts)))}</dd><dt>epoch</dt><dd>${esc(ev.epoch)}</dd><dt>key</dt><dd>${esc(JSON.stringify(ev.key))}</dd>`;
+  if (ev) html += `<dt>op</dt><dd>${esc(ev.op)}</dd><dt>event time</dt><dd>${esc(fmtTime(eventTs(ev.op, ev.ts)))}</dd><dt>epoch</dt><dd>${esc(ev.epoch)}</dd>`;
+  if (ev && ev.key) html += `<dt>key</dt><dd>${esc(JSON.stringify(ev.key))}</dd>`;
   if (it.applied != null) html += `<dt>applied here</dt><dd>${it.applied ? "yes" : "no"}${it.pending ? " (buffered, waiting for earlier events)" : ""}</dd>`;
   if (it.in_outbox != null) html += `<dt>outbox</dt><dd>${it.in_outbox ? "still awaiting acknowledgement from every peer" : "retired - acknowledged by all peers"}</dd>`;
   html += `</dl>`;

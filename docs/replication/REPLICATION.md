@@ -168,9 +168,29 @@ Every replicated change is one JSON envelope. `origin` and `seq` are its identit
 |`epoch`|Currently always `1` unless changed by hand. Forms part of the DAPPS stream id - see [Rebuilding or Restoring an Instance](#rebuilding-or-restoring-an-instance)|
 |`ts`|When the change happened, in the **native precision of the thing changed**: seconds for messages (`lts`, `edts`, `ets`), milliseconds for posts (`dts`, `edts`, `ets`) and for `user.update`|
 |`op`|One of the operations in [What Is Replicated](#what-is-replicated)|
-|`key`|Identifies the row: `{cid, ts}` for a post, `{_id}` for a message, `{callsign}` for a user|
+|`key`|Identifies the row for edits, reactions and user updates: `{cid, ts}` for a post, `{_id}` for a message, `{callsign}` for a user. Omitted on `post.insert` and `msg.insert`, where `data` is the whole row and already holds it|
 |`data`|What is needed to apply and broadcast it. For inserts, the whole post or message. For edits and reactions, only the changed fields. For `user.update`, `name`, `name_last_updated` and `callsign`|
 |`acks`|Optional, added at submit time and never stored in `replication_log`: `{origin: seq}` acks the sender was holding for the recipient - see [Acknowledge](#6-acknowledge)|
+
+### Wire Format
+
+To save bytes over the air, envelopes and control messages are sent with short keys, like the WPS protocol. The event above goes to DAPPS as:
+
+```json
+{"v":1,"o":"M0LTE-7","s":4712,"e":1,"ts":1712345678901,"a":"p.ed","key":{"cid":4,"ts":1712345671000},"data":{"edts":1712345678901,"p":"corrected text"}}
+```
+
+| Long | Wire |
+| - | - |
+|`origin`|`o`|
+|`seq`|`s`|
+|`epoch`|`e`|
+|`op`|`a`|
+|`post.insert`|`p.i`|
+|`post.edit`|`p.ed`|
+|`post.emoji`|`p.em`|
+
+Only the top-level keys of a message, and of each event in a batch, are shortened. `key` and `data` are sent unchanged. Other ops and control-message fields keep their names. The translation happens only at the DAPPS boundary (`_to_wire` and `_from_wire` in `replication.py`). `replication_log`, `replication_pending`, the activity log and the dashboard all keep the long names used throughout this document. A receiver accepts both forms, telling them apart by the presence of `a`, so events already queued in DAPPS by an older version still apply.
 
 ### Batches
 
@@ -313,7 +333,7 @@ Each operation has a rule that makes it safe to apply twice and safe to apply ou
 
 | `op` | Rule |
 | - | - |
-|`post.insert`|Insert, with an `o` key added to the post holding the origin callsign (local DB and clients only - never replicated, as applying a remote event skips capture). A duplicate `(cid, ts)` is rejected by the unique index and ignored. First writer wins|
+|`post.insert`|Insert, with an `o` key added to the post holding the origin callsign, and an `rt` key (replication time) holding the milliseconds between the origin's `dts` and this instance applying the post (local DB and clients only - never replicated, as applying a remote event skips capture). Posts with `rt` are returned to clients with both `dts` and `rt`. A duplicate `(cid, ts)` is rejected by the unique index and ignored. First writer wins|
 |`post.edit`|Refused if the post is unknown (raises, so it is retried). Ignored if the stored `edts` is already `>=` the incoming one. Otherwise sets `p`, `edts` and `ed = 1`|
 |`post.emoji`|Refused if the post is unknown. Ignored if the stored `ets` is `>=` the incoming one. Otherwise sets the merged reaction list `e` and `ets`|
 |`msg.insert`|Insert. A duplicate `_id` is rejected by its unique index and ignored|
