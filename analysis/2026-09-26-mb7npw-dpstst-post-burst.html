@@ -39,6 +39,7 @@ p{margin:0;max-width:68ch}
 .eyebrow{font:500 .74rem/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
 header{display:flex;flex-direction:column;gap:10px}
 .lede{color:var(--ink-2)}
+a{color:var(--m);text-underline-offset:2px}
 code,.mono{font-family:var(--mono);font-size:.86em}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
 .tile{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:14px 16px;display:flex;flex-direction:column;gap:4px}
@@ -94,9 +95,9 @@ td.mono{font-family:var(--mono);font-size:.82rem}
   <ul class="findings">
     <li><b>The clocks agree to within about 1 s.</b> Digest transit times are about the same in both directions (median 8.2 s MB7NPW→DPSTST, 9.8 s back; minimum 5.6 s and 6.1 s). A skew of 0.2–0.8 s is all the data allows, so cross-node timings below are good to ±1 s.</li>
     <li><b>The software side is fast.</b> From user posting to DAPPS submit is 0.20–0.35 s, and apply is effectively instant. The <code>notify_local_event</code> wake-up works: posts are no longer waiting for the 5 s outbox tick.</li>
-    <li><b>A lone message takes 6–9 s.</b> That covers DAPPS forwarding plus the receiver's inbox poll. The idle digest latency has a sawtooth about 5 s high (chart 3), which is the 5 s idle inbox poll. During the burst the fast 1 s poll removes most of that.</li>
+    <li><b>A lone message takes 6–9 s.</b> Two 5 s cycles sit in series on that path: DAPPS's forwarding tick on the sending node, then WPS's idle inbox poll on the receiving node. As their timing drifts, the idle digest latency steps up and down by about 5 s (chart 3). During a burst WPS polls every 1 s, which removes most of the second wait. The DAPPS tick remains.</li>
     <li><b>In a burst, messages queue up on the link.</b> DPSTST handed 40, 41 and 42 to DAPPS within 1 s, and MB7NPW received them exactly 8.06 s apart. MB7NPW 57–60 arrived about 4–7 s apart. Payload size makes no difference (every post is ~200 bytes), so each message is paying a fixed per-message cost on the link.</li>
-    <li><b>The link carries one direction at a time.</b> From 07:48:04 both nodes had 4 posts queued. MB7NPW's 4 posts and an ack reached DPSTST first (07:48:11–07:48:28). DPSTST's 44, 45 and 46 only got through after that (07:48:36, 07:49:01, 07:49:14). That is why DPSTST/46 took 74 s from post to peer.</li>
+    <li><b>The link carries one direction at a time.</b> DAPPS will not dial a peer while a session with it is open in either direction, because a second connect would reset the live AX.25 link (<a href="https://github.com/packet-net/dapps/issues/178">DAPPS #178</a>). A queued message waits for the first 5 s forwarder tick after that session ends, so the two nodes' queues take turns instead of interleaving. From 07:48:04 both nodes had 4 posts queued. MB7NPW's 4 posts and an ack reached DPSTST first (07:48:11–07:48:28). DPSTST's 44, 45 and 46 only got through after that (07:48:36, 07:49:01, 07:49:14). That is why DPSTST/46 took 74 s from post to peer.</li>
     <li><b>Ack batching works as designed.</b> Every ack went out 30.2–30.7 s after the first event it covers was applied. 15 data events needed 6 acks (MB7NPW sent 4 covering 10 events; DPSTST sent 2 covering 5). Still, each ack takes a link slot, and in the congested minute 07:48 two of them were queued behind or between data.</li>
     <li><b>Digest suppression works.</b> No digests after 07:45 in either direction, because acks show both peers level.</li>
     <li><b>Both nodes restarted around 07:44.</b> Their digests were off the usual 5-minute cadence. After the restart, MB7NPW received DPSTST's digest (latest 36) and sent an ack for DPSTST/36, via the "level, but no ack from this process" path in <code>_handle_digest</code>. It is harmless, but it is one extra message.</li>
@@ -134,7 +135,7 @@ td.mono{font-family:var(--mono);font-size:.82rem}
 <section>
   <div class="eyebrow">Chart 3</div>
   <h2>Idle one-way latency from digests, 06:39–07:45</h2>
-  <p class="note">A single small message on a quiet link. The saw-tooth steps of about 5 s come from the 5 s idle inbox poll drifting against the 300 s digest timer. The floor, about 5.6 s, is the cost of DAPPS and the link itself.</p>
+  <p class="note">A single small message on a quiet link. The steps of about 5 s come from two 5 s cycles in series, DAPPS's forwarding tick on the sender and WPS's idle inbox poll on the receiver, drifting against the 300 s digest timer. The floor, about 5.6 s, is the cost of the DAPPS exchange and the link itself.</p>
   <div class="fig">
     <div class="legend">
       <span><i class="sw" style="background:var(--m)"></i>MB7NPW → DPSTST</span>
