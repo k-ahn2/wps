@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAPPS v0.42 Exchange Trace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f6f7f9; --surface:#fdfdfe; --ink:#14171c; --ink-2:#4a505b; --ink-3:#7a808b; --rule:#dde1e7; --grid:#e8ebef;
+  --m:#2a78d6; --d:#eb6834; --transit:#4a3aa7; --acktx:#1baf7a; --hold:#b9bec7; --ctl:#8b919c;
+  --warn-bg:#fff4e0; --warn-ink:#7a4a00;
+  --display:"Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"Source Sans 3",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#121417; --surface:#1a1c20; --ink:#f1f2f4; --ink-2:#b7bcc5; --ink-3:#868c97; --rule:#2d3138; --grid:#24272d;
+    --m:#3987e5; --d:#d95926; --transit:#9085e9; --acktx:#199e70; --hold:#4a4f58; --ctl:#7d838e;
+    --warn-bg:#3a2a10; --warn-ink:#f3c77a;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#121417; --surface:#1a1c20; --ink:#f1f2f4; --ink-2:#b7bcc5; --ink-3:#868c97; --rule:#2d3138; --grid:#24272d;
+  --m:#3987e5; --d:#d95926; --transit:#9085e9; --acktx:#199e70; --hold:#4a4f58; --ctl:#7d838e;
+  --warn-bg:#3a2a10; --warn-ink:#f3c77a;
+}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 var(--body);}
+.wrap{max-width:1120px;margin:0 auto;padding-inline:20px;padding-block:32px 64px;display:flex;flex-direction:column;gap:40px}
+h1,h2{font-family:var(--display);font-weight:600;text-wrap:balance;margin:0;letter-spacing:.005em}
+h1{font-size:2.1rem;line-height:1.15}
+h2{font-size:1.45rem;line-height:1.2}
+p{margin:0;max-width:68ch}
+.eyebrow{font:500 .74rem/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+header{display:flex;flex-direction:column;gap:10px}
+.lede{color:var(--ink-2)}
+a{color:var(--m);text-underline-offset:2px}
+code,.mono{font-family:var(--mono);font-size:.86em}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.tile{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:14px 16px;display:flex;flex-direction:column;gap:4px}
+.tile .v{font:600 1.7rem/1.1 var(--display);font-variant-numeric:tabular-nums}
+.tile .k{font-size:.88rem;color:var(--ink-2)}
+section{display:flex;flex-direction:column;gap:14px}
+.fig{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:16px 16px 10px;display:flex;flex-direction:column;gap:10px}
+.scroll{overflow-x:auto}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.86rem;color:var(--ink-2)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:18px;height:3px;border-radius:2px;display:inline-block}
+.sw.box{height:10px;width:14px;border-radius:2px}
+svg text{font-family:var(--mono);font-size:11px;fill:var(--ink-2)}
+svg .lane-label{font-family:var(--display);font-size:14px;font-weight:600;fill:var(--ink)}
+svg .axis{fill:var(--ink-3)}
+.note{font-size:.9rem;color:var(--ink-2)}
+ul.findings{margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:10px;max-width:74ch}
+ul.findings b{font-weight:600}
+table{border-collapse:collapse;font-size:.86rem;font-variant-numeric:tabular-nums;width:100%;min-width:820px}
+th,td{padding:6px 10px;text-align:right;border-bottom:1px solid var(--rule);white-space:nowrap}
+th{font-weight:600;color:var(--ink-2);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+td.mono{font-family:var(--mono);font-size:.82rem}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.bad{background:var(--warn-bg);color:var(--warn-ink);border-radius:3px;padding:0 4px}
+#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font:12px/1.45 var(--mono);padding:7px 9px;border-radius:4px;max-width:300px;z-index:9;white-space:pre-line}
+.hit{stroke:transparent;fill:none;cursor:default}
+.hit:hover + .vis,.vis.hl{stroke-width:3.5}
+.recs{counter-reset:r;margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:12px;max-width:74ch}
+.recs li{counter-increment:r;padding-left:2.1em;position:relative}
+.recs li::before{content:counter(r);position:absolute;left:0;top:.05em;font:600 .8rem/1.6 var(--mono);color:var(--ink-3);width:1.5em;text-align:center;border:1px solid var(--rule);border-radius:3px}
+@media (max-width:520px){h1{font-size:1.7rem}}
+:root{--band:#e9edf3}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--band:#262a31}}
+:root[data-theme="dark"]{--band:#262a31}
+.sw-dash{background:none;border-top:2px dashed var(--ink-2);height:0}
+table.cmp{min-width:560px}
+table.cmp th,table.cmp td{text-align:left}
+table.cmp td:first-child{color:var(--ink-2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="eyebrow">WPS replication · DAPPS v0.42.0 · 28 Sep 2026 · 21:24:48–21:25:06 UTC</div>
+  <h1>DAPPS v0.42 exchange: eight posts in about 9 seconds</h1>
+  <p class="lede">An AX.25 monitor trace from G5ALF-3 (DPSTST's DAPPS) during traffic-harness test 5: four posts into each WPS instance, 1.1 s apart. DAPPS v0.42.0 replaces the per-message session with a symmetric exchange (<a href="https://github.com/packet-net/dapps/pull/196">#196</a>, <a href="https://github.com/packet-net/dapps/pull/197">#197</a>, <a href="https://github.com/packet-net/dapps/pull/199">#199</a>). It is compared here with the same test on v0.40 (<a href="2026-09-26-dapps-v040-session-trace.html">earlier page</a>) and on v0.41.1, where the harness left 2 s between the two instances' first posts. The trace starts on a link that was already open.</p>
+</header>
+
+<div class="tiles">
+  <div class="tile"><span class="v">≈ 41 → 25 → 9 s</span><span class="k">First post queued to last post received: v0.40, v0.41.1, v0.42.0</span></div>
+  <div class="tile"><span class="v">78 → 31</span><span class="k">Frames for the same burst, v0.41.1 → v0.42.0, including all DAPPS acks</span></div>
+  <div class="tile"><span class="v">1.6 s</span><span class="k">Median post, queued to received (13 s on v0.41.1)</span></div>
+  <div class="tile"><span class="v">0</span><span class="k">Separate WPS ack messages: both rode on posts</span></div>
+</div>
+
+<section>
+  <div class="eyebrow">Findings</div>
+  <ul class="findings">
+    <li><b>One frame per post.</b> Each post goes as a single <code>msg</code> line with its payload, instead of <code>ihave</code> → <code>send</code> → <code>data</code> → <code>ack</code>. DPSTST 119 was queued at 21:24:47.8, on air at 21:24:48 and acknowledged at 21:24:49. On v0.41.1 each post took about 3 s of turnarounds before its payload moved.</li>
+    <li><b>Both directions share the link.</b> MB7NPW 584 went out at 21:24:51, in the middle of DPSTST's four posts, and the two nodes' posts and acks interleave from then on. On every earlier version the called node's traffic waited for the caller's whole batch. On v0.41.1 that wait was 10–13 s even after the called node sent <code>pending</code>.</li>
+    <li><b>Several frames per transmission.</b> G5ALF-3 sent DPSTST 121 and 122 in one key-up at 21:24:51. M0AHN-3 sent MB7NPW 586 (two frames) and the ack for 121 together at 21:24:56. Each key-up costs TX delay and usually an RR, so fewer key-ups is where most of the time went.</li>
+    <li><b>WPS acks rode on the posts.</b> MB7NPW 584 and 586 are 220 bytes rather than 198. The 22 extra bytes are exactly <code>,"acks":{"DPSTST":145}</code>, then <code>146</code>: WPS attaching its held application ack to an outgoing post. So neither node sent a separate WPS ack message during the burst. On v0.40 and v0.41.1 each WPS ack cost its own exchange, and on v0.40 its own connection.</li>
+    <li><b>The whole burst took 31 frames,</b> including a DAPPS <code>ack</code> for every post and two frames of AX.25 retry. The same burst took 78 frames on v0.41.1.</li>
+  </ul>
+</section>
+
+<section>
+  <div class="eyebrow">Chart 1</div>
+  <h2>Every frame, 21:24:48–21:25:06</h2>
+  <p class="note">Each line is one AX.25 frame from the sending station's lane to the receiver's. The trace records whole seconds, so frames within the same second are spread evenly across it. Hover a frame for its contents.</p>
+  <div class="fig">
+    <div class="legend">
+      <span><i class="sw" style="background:var(--d)"></i>DPSTST post (<code>msg</code>)</span>
+      <span><i class="sw" style="background:var(--m)"></i>MB7NPW post (<code>msg</code>)</span>
+      <span><i class="sw" style="background:var(--ink-2)"></i>DAPPS <code>ack</code></span>
+      <span><i class="sw" style="background:var(--hold)"></i>bare RR</span>
+      <span><i class="sw" style="background:var(--warn-ink)"></i>retry poll/reply</span>
+    </div>
+    <div class="scroll"><svg id="frames" role="img" aria-label="AX.25 frame sequence between G5ALF-3 and M0AHN-3"></svg></div>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">Chart 2</div>
+  <h2>The same four-and-four burst on three versions</h2>
+  <p class="note">One bar per post, from queued (the <code>s=</code> timestamp) to the second its payload frame appears on air, in seconds after the first post of its burst was queued. The trace records whole seconds, so each arrival is plotted at the middle of its second (±0.5 s). The v0.41.1 run had a 2 s gap between the two instances' first posts, which avoided the 60 s crossed-connect wait (<a href="https://github.com/packet-net/dapps/issues/198">#198</a>).</p>
+  <div class="fig">
+    <div class="legend">
+      <span><i class="sw box" style="background:var(--d)"></i>DPSTST post</span>
+      <span><i class="sw box" style="background:var(--m)"></i>MB7NPW post</span>
+      <span><i class="sw sw-dash"></i>last post received</span>
+    </div>
+    <div class="scroll"><svg id="burst" role="img" aria-label="Per-post latency on v0.40, v0.41.1 and v0.42.0"></svg></div>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">Table</div>
+  <h2>Three versions side by side</h2>
+  <div class="fig scroll"><table class="cmp">
+    <thead><tr><th></th><th>v0.40</th><th>v0.41.1 (2 s gap)</th><th>v0.42.0</th></tr></thead>
+    <tbody>
+      <tr><td>First post queued to last post received</td><td>≈ 41 s</td><td>≈ 25 s</td><td>≈ 9 s</td></tr>
+      <tr><td>Median post, queued to received</td><td id="med0"></td><td id="med1"></td><td id="med2"></td></tr>
+      <tr><td>Frames for the burst</td><td>77 (incl. connect)</td><td>78 (incl. connect and tail)</td><td>31 (link already open)</td></tr>
+      <tr><td>Exchanges per post</td><td>4 turnarounds</td><td>4 turnarounds</td><td>1 frame out, <code>ack</code> back later</td></tr>
+      <tr><td>Called node's posts</td><td>After caller's batch, via <code>rev</code></td><td>After caller's batch, via <code>rev</code></td><td>Interleaved</td></tr>
+      <tr><td>WPS acks</td><td>Own connection</td><td>Own exchange on held link</td><td>Carried on posts</td></tr>
+      <tr><td>Frames lost</td><td>1 (cost 16 s)</td><td>0</td><td>1 RR (cost 8 s, ack only)</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="eyebrow">Rough edges</div>
+  <ul class="findings">
+    <li><b>A lost RR held up one ack by 9 s.</b> At 21:24:57 G5ALF-3 sent the acks for MB7NPW 585 and 586, the second with the poll bit set. M0AHN-3's reply isn't in the trace. G5ALF-3 waited for its retry timer, polled at 21:25:05, got the reply at 21:25:06, and only then sent the ack for 587. The post itself had arrived at 21:24:57, so WPS users didn't see this. It only delayed M0AHN-3 learning that 587 was delivered. It's the same slow AX.25 recovery as in the v0.40 trace, but it now costs a late ack rather than a stalled burst.</li>
+    <li><b>The <code>msg</code> header is now the biggest thing on air.</b> It is 130 bytes, against 101–104 bytes of compressed post. The two 220-byte posts carrying a WPS ack each went as two I-frames, split partway through the header after 121 bytes. 198-byte posts fitted in one. It's worth checking where that split comes from. A shorter header (#187 proposal 7) would help every message either way.</li>
+    <li><b>Some bare RRs remain:</b> 11 of the 31 frames, plus 2 from the retry. Several are followed within the same second by an I-frame from the same station, so a longer RESPTIME would still fold some in. They matter far less now that each post is one frame.</li>
+  </ul>
+</section>
+
+<section>
+  <div class="eyebrow">Next test</div>
+  <ol class="recs">
+    <li><b>Run test 5 with no gap, starting with the link closed.</b> This trace starts on an open link, so it doesn't show a fresh connection or both nodes dialling at once. On #198, v0.42.0 is said to spot the crossing from BPQ's monitor and start the exchange straight away, with the caller also starting after 10 s of silence. A cold start with simultaneous posts would confirm how long that takes over the air.</li>
+    <li><b>Capture a longer quiet spell after the burst.</b> This would show the <code>hold</code> ending and the link closing, and how a WPS ack that comes due with no post to ride on is sent.</li>
+  </ol>
+</section>
+
+<p class="note">Sources: the G5ALF-3 AX.25 monitor traces for each version; <a href="https://github.com/packet-net/dapps/pull/187">DAPPS #187</a> for the original proposals. <a href="index.html">All analyses</a>.</p>
+</div>
+<div id="tip" hidden></div>
+
+<script>
+const NS='http://www.w3.org/2000/svg';
+function el(tag,attrs,parent,text){const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(text!=null)e.textContent=text;if(parent)parent.appendChild(e);return e;}
+const tip=document.getElementById('tip');
+function showTip(ev,txt){tip.textContent=txt;tip.hidden=false;const w=tip.offsetWidth,h=tip.offsetHeight;let x=ev.clientX+14,y=ev.clientY+14;if(x+w>innerWidth-8)x=ev.clientX-w-14;if(y+h>innerHeight-8)y=ev.clientY-h-14;tip.style.left=x+'px';tip.style.top=y+'px';}
+function hideTip(){tip.hidden=true;}
+const hhmmss=s=>`21:${String(24+Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+
+// Frames: second after 21:24:00, sender (G = G5ALF-3, M = M0AHN-3), kind, text.
+// Kinds: Dd/Dm post msg (DPSTST / MB7NPW), I DAPPS ack, RR, P retry poll/reply.
+const F=`48 G Dd msg bd92f65: DPSTST sn=119, len=198 clen=101, payload in the same frame
+49 M RR RR
+49 M I ack bd92f65 (DPSTST 119)
+49 G RR RR
+49 G Dd msg e04b6ce: DPSTST sn=120, len=198 clen=103
+51 M Dm msg a749aa7 (frame 1 of 2): MB7NPW sn=584, len=220 clen=110, carries WPS ack DPSTST/145
+51 M Dm msg a749aa7 (frame 2 of 2)
+51 G RR RR
+51 M RR RR R6: DPSTST 120 received
+51 G Dd msg 182ee35: DPSTST sn=121, len=198 clen=103
+51 G Dd msg b7eeab2: DPSTST sn=122, len=198 clen=101 (same key-up as 121)
+54 M I ack e04b6ce (DPSTST 120)
+54 G RR RR
+54 M Dm msg 3b78aac: MB7NPW sn=585, len=198 clen=102
+54 M RR RR R0: DPSTST 121 and 122 received
+54 G RR RR
+54 G I ack a749aa7 (MB7NPW 584)
+56 M Dm msg 50496f8 (frame 1 of 2): MB7NPW sn=586, len=220 clen=110, carries WPS ack DPSTST/146
+56 M Dm msg 50496f8 (frame 2 of 2)
+56 M I ack 182ee35 (DPSTST 121), same key-up
+57 G RR RR
+57 M Dm msg 486facd: MB7NPW sn=587, len=198 clen=102
+57 M I ack b7eeab2 (DPSTST 122), poll bit set
+57 G RR RR final
+57 M RR RR
+57 G I ack 3b78aac (MB7NPW 585)
+57 G I ack 50496f8 (MB7NPW 586), poll bit set; no reply appears
+65 G P RR poll: G5ALF-3's retry timer, 8 s later
+66 M P RR final R3: both acks had arrived
+66 G I ack 486facd (MB7NPW 587), 9 s after the post arrived
+66 M RR RR`.split('\n').map(l=>{const m=l.match(/^(\d+) ([GM]) (\S+) (.*)$/);return {t:+m[1],from:m[2],kind:m[3],text:m[4]};});
+
+// ---- Chart 1 ----
+(function(){
+  const svg=document.getElementById('frames');const W=1080,H=230,L=128,R=14,yG=74,yM=166,t0=47.5,t1=67;
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.style.width='100%';svg.style.minWidth='820px';
+  const x=t=>L+(t-t0)/(t1-t0)*(W-L-R);
+  el('rect',{x:x(58),y:14,width:x(66)-x(58),height:20,rx:3,fill:'var(--warn-bg)'},svg);
+  el('text',{x:(x(58)+x(66))/2,y:28,'text-anchor':'middle',style:'fill:var(--warn-ink)'},svg,'lost RR: 8 s retry timer');
+  for(let t=48;t<=66;t++){const X=x(t);const major=t%2===0;
+    el('line',{x1:X,x2:X,y1:yG-10,y2:yM+10,stroke:'var(--grid)','stroke-width':major?1:.5},svg);
+    if(major)el('text',{x:X,y:H-12,'text-anchor':'middle',class:'axis'},svg,hhmmss(t));}
+  [['G5ALF-3',yG,'DPSTST'],['M0AHN-3',yM,'MB7NPW']].forEach(([n,y,o])=>{
+    el('line',{x1:L,x2:W-R,y1:y,y2:y,stroke:'var(--ink-3)','stroke-width':1.2},svg);
+    el('text',{x:6,y:y-2,class:'lane-label'},svg,n);el('text',{x:6,y:y+13},svg,o);});
+  const bySec={};F.forEach(f=>(bySec[f.t]=bySec[f.t]||[]).push(f));
+  const style={Dd:['var(--d)',3.2],Dm:['var(--m)',3.2],I:['var(--ink-2)',1.8],RR:['var(--hold)',1.2],P:['var(--warn-ink)',1.8]};
+  const pxPerSec=(W-L-R)/(t1-t0);
+  Object.values(bySec).forEach(list=>list.forEach((f,i)=>{
+    const tt=f.t+(i+0.5)/list.length,X=x(tt),dx=Math.min(8,pxPerSec/list.length*0.7);
+    const y1=f.from==='G'?yG:yM,y2=f.from==='G'?yM:yG;const [c,w]=style[f.kind];
+    const g=el('g',{},svg);
+    el('line',{x1:X,y1,x2:X+dx,y2,stroke:c,'stroke-width':w,'stroke-linecap':'round'},g);
+    el('circle',{cx:X+dx,cy:y2,r:f.kind[0]==='D'?3.5:2,fill:c},g);
+    const hit=el('rect',{x:X-3,y:yG,width:dx+6,height:yM-yG,fill:'transparent'},g);
+    const who=f.from==='G'?'G5ALF-3 → M0AHN-3':'M0AHN-3 → G5ALF-3';
+    hit.addEventListener('mousemove',e=>showTip(e,`${hhmmss(f.t)}  ${who}\n${f.text}`));hit.addEventListener('mouseleave',hideTip);
+  }));
+  const labels=[[48,'119',0],[49,'120',4],[51,'584',0],[51,'121',9],[51,'122',10],[54,'585',13],[56,'586',17],[57,'587',21]];
+  const placed=[];
+  labels.forEach(([t,lab])=>{
+    const list=bySec[t];const f=list.find(f=>f.kind[0]==='D'&&f.text.includes(`sn=${lab}`));const i=list.indexOf(f);
+    const X=x(t+(i+0.5)/list.length)+3,below=f.from==='G';
+    const near=placed.filter(p=>p.below===below&&Math.abs(p.X-X)<24).length;placed.push({X,below});
+    const y=below?yM+22+near*13:yG-16-near*13;
+    el('text',{x:X,y,'text-anchor':'middle',style:'fill:var(--ink)'},svg,lab);});
+})();
+
+// ---- Chart 2 ----
+(function(){
+  // [version, origin, seq, queued epoch ms, second the payload frame was on air (epoch s)]
+  const runs=[
+    ['v0.40 · 26 Sep 20:40:51',[
+      ['DPSTST','62',1790455251546,1790455254],['DPSTST','63',1790455252646,1790455257],['DPSTST','64',1790455253743,1790455277],['DPSTST','65',1790455254844,1790455279],
+      ['MB7NPW','560',1790455251516,1790455284],['MB7NPW','561',1790455252615,1790455287],['MB7NPW','562',1790455253728,1790455290],['MB7NPW','563',1790455254834,1790455292]]],
+    ['v0.41.1 · 27 Sep 21:27:12',[
+      ['DPSTST','107',1790544432809,1790544435],['DPSTST','108',1790544433987,1790544440],['DPSTST','109',1790544434943,1790544443],['DPSTST','110',1790544436053,1790544446],
+      ['MB7NPW','576',1790544434929,1790544450],['MB7NPW','577',1790544436027,1790544452],['MB7NPW','578',1790544437141,1790544455],['MB7NPW','579',1790544438272,1790544458]]],
+    ['v0.42.0 · 28 Sep 21:24:47',[
+      ['DPSTST','119',1790630687793,1790630688],['DPSTST','120',1790630689128,1790630689],['DPSTST','121',1790630689974,1790630691],['DPSTST','122',1790630691081,1790630691],
+      ['MB7NPW','584',1790630689778,1790630691],['MB7NPW','585',1790630690888,1790630694],['MB7NPW','586',1790630692009,1790630696],['MB7NPW','587',1790630693089,1790630697]]],
+  ];
+  const svg=document.getElementById('burst');const rowH=18,gap=30,L=270,R=20,W=1080,top=8,xmax=45;
+  const nRows=runs.reduce((a,r)=>a+r[1].length,0);
+  const H=top+nRows*rowH+gap*(runs.length-1)+40;svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.style.width='100%';svg.style.minWidth='700px';
+  const x=v=>L+v/xmax*(W-L-R);
+  for(let v=0;v<=xmax;v+=5){el('line',{x1:x(v),x2:x(v),y1:top,y2:H-34,stroke:'var(--grid)'},svg);el('text',{x:x(v),y:H-16,'text-anchor':'middle',class:'axis'},svg,v+(v===xmax?' s':''));}
+  let y=top;
+  runs.forEach(([name,posts],ri)=>{
+    const base=Math.min(...posts.map(p=>p[2]));const y0=y;let end=0;const took=[];
+    el('text',{x:6,y:y+rowH/2+4,class:'lane-label'},svg,name.split(' · ')[0]);
+    el('text',{x:6,y:y+rowH/2+20,class:'axis'},svg,name.split(' · ')[1]);
+    posts.forEach(([o,seq,q,a])=>{
+      const qs=(q-base)/1000,as=(a*1000+500-base)/1000,cy=y+rowH/2,c=o==='DPSTST'?'var(--d)':'var(--m)';
+      end=Math.max(end,as);took.push(as-qs);
+      el('text',{x:L-10,y:cy+4,'text-anchor':'end'},svg,`${o} ${seq}`);
+      el('rect',{x:x(qs),y:cy-5,width:Math.max(2,x(as)-x(qs)),height:10,rx:2,fill:c},svg);
+      el('text',{x:x(as)+6,y:cy+4,class:'axis'},svg,`${(as-qs).toFixed(1)} s`);
+      const hit=el('rect',{x:L,y,width:W-L-R,height:rowH,fill:'transparent'},svg);
+      hit.addEventListener('mousemove',e=>showTip(e,`${name}\n${o}/${seq}\nqueued    +${qs.toFixed(1)} s\nreceived  +${as.toFixed(1)} s (±0.5)\ntook      ${(as-qs).toFixed(1)} s`));hit.addEventListener('mouseleave',hideTip);
+      y+=rowH;
+    });
+    el('line',{x1:x(end),x2:x(end),y1:y0-2,y2:y+2,stroke:'var(--ink)','stroke-width':1.2,'stroke-dasharray':'4 3'},svg);
+    took.sort((a,b)=>a-b);const med=(took[3]+took[4])/2;
+    const cell=document.getElementById('med'+ri);if(cell)cell.textContent=med.toFixed(1)+' s';
+    y+=gap;
+  });
+})();
+</script>
+</body>
+</html>
