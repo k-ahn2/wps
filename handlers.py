@@ -396,7 +396,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
         online_response["o"].append(C['callsign'])
 
     # Plus users online at replication peers, grouped by the origin they're online at:
-    # "or": [{"r": origin, "o": [callsigns]}]. Users connected here are only listed in "o".
+    # "or": [{"or": origin, "c": [callsigns]}]. Users connected here are only listed in "o".
     remote_online_users = db.dbGetRemoteOnlineUsers(CONN_DB_CURSOR)
     if remote_online_users['result'] == 'success':
         remote_by_origin = {}
@@ -405,7 +405,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
                 continue
             remote_by_origin.setdefault(remote_user['online_origin'], []).append(remote_user['callsign'])
         if remote_by_origin:
-            online_response["or"] = [{ "r": origin, "o": callsigns } for origin, callsigns in remote_by_origin.items()]
+            online_response["or"] = [{ "or": origin, "c": callsigns } for origin, callsigns in remote_by_origin.items()]
 
     if len(online_response["o"]) > 0 or "or" in online_response:
         wps_logger('ONLINE STATUS', callsign, f"Online users response: {online_response}")
@@ -1961,7 +1961,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     # not here - so send a uc with that origin instead of a ud
     online_origin = user_db_record.get('data', {}).get('online_origin') if user_db_record.get('result') == 'success' else None
     if online_origin:
-        disconnected_response = { "t": "uc", "c": callsign, "o": online_origin }
+        disconnected_response = { "t": "uc", "c": callsign, "or": online_origin }
     else:
         disconnected_response = { "t": "ud", "c": callsign }
 

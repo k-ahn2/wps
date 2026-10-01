@@ -507,7 +507,7 @@ def _apply_and_broadcast(cur, envelope):
         # a socket that hasn't sent its connect object yet isn't online here.
         connections_now = connections_snapshot()
         if online_origin != user.get("online_origin") and user.get("is_online") != 1:
-            presence_payload = {"t": "uc", "c": callsign, "o": online_origin} if online_origin else {"t": "ud", "c": callsign}
+            presence_payload = {"t": "uc", "c": callsign, "or": online_origin} if online_origin else {"t": "ud", "c": callsign, "or": origin}
             for C in connections_now:
                 handlers.socket_send_handler_other_connected_user(
                     cur, sending_callsign=callsign, sending_connection=None,

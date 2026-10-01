@@ -264,7 +264,7 @@ Sent by the server to all connected users when there is a new connect or disconn
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`uc` or `ud`|String|User Connect or User Disconnect
 |Callsign|`c`|`T3EST`|String|Callsign of user connecting or disconnecting
-|Origin|`o`|`M0XYZ`|String|`uc` only. Callsign of the WPS instance the user is online at, when that is a replication peer rather than this instance. Absent when the user is connected to this instance
+|Origin|`or`|`M0XYZ`|String|Callsign of the replication peer the user connected or disconnected at. Absent when the user connected to or disconnected from this instance
 
 ### JSON Example
 
@@ -281,17 +281,26 @@ Connect at a replication peer
 {
    "t": "uc",
    "c": "T3EST",
-   "o": "M0XYZ"
+   "or": "M0XYZ"
 }
 ```
 
-A `uc` with `o` is sent when a peer reports the user online, and in place of `ud` when a user disconnects here but is still online at a peer. A `ud` follows when the peer reports them offline. A user connected to this instance is always reported as local, without `o`.
+A `uc` with `or` is sent when a peer reports the user online, and in place of `ud` when a user disconnects here but is still online at a peer. A `ud` with `or` follows when the peer reports them offline. A user connected to this instance is always reported as local, without `or`.
 
 Disconenct
 ```json
 {
    "t": "ud",
    "c": "T3EST"
+}
+```
+
+Disconnect at a replication peer
+```json
+{
+   "t": "ud",
+   "c": "T3EST",
+   "or": "M0XYZ"
 }
 ```
 ## Type o - Online Users
@@ -305,7 +314,7 @@ Sent by the server as part of the connect sequence - contains an array of users 
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`o`|String|User Connect or User Disconnect
 |Callsign Array|`o`|`"M8ABC","T3EST"`|Array|Array of users currently online (i.e. connected) to this instance. May be empty when only `or` has users
-|Online Remote|`or`|`[{"r":"DPSTST","o":["G5ALF"]}]`|Array|Users online at replication peers, one object per peer: `r` is the peer's callsign, `o` the users online there. A user connected to this instance appears only in `o`. Absent when no users are online at peers
+|Online Remote|`or`|`[{"or":"DPSTST","c":["G5ALF"]}]`|Array|Users online at replication peers, one object per peer: `or` is the peer's origin callsign, `c` the callsigns of the users online there. A user connected to this instance appears only in `o`. Absent when no users are online at peers
 
 ### JSON Example
 
@@ -318,8 +327,8 @@ Sent by the server as part of the connect sequence - contains an array of users 
    ],
    "or": [
       {
-         "r": "DPSTST",
-         "o": ["G5ALF"]
+         "or": "DPSTST",
+         "c": ["G5ALF"]
       }
    ]
 }

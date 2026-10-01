@@ -140,7 +140,7 @@ On startup WPS prints one of:
 |`msg.edit`|Direct message edited|`messages`|Yes - `med` to the recipient if online|
 |`msg.emoji`|Direct message reaction changed|`messages`|No|
 |`user.update`|User's `name` changed|`users`|No - clients pick it up through the normal name-update watermark|
-|`user.online`|User's `is_online` changed: connect, last disconnect, and the reset of online users at startup|`users` - creates the user if unknown, sets `online_origin`|Yes - `uc` with `o` set to the origin, or `ud`, to all connected users, only when `online_origin` changes and the user isn't connected here|
+|`user.online`|User's `is_online` changed: connect, last disconnect, and the reset of online users at startup|`users` - creates the user if unknown, sets `online_origin`|Yes - `uc` or `ud` with `or` set to the origin, to all connected users, only when `online_origin` changes and the user isn't connected here|
 
 **Not replicated:** avatars, pairing state, channel subscriptions and paused channels, push tokens, `is_online`, `last_connected`, `last_client_version`, notification bookkeeping, and `channels.json`. `is_online` and push details are properties of one node; keep `channels.json` identical by hand. Presence crosses only as `user.online`, which a peer records as `online_origin` (see [Apply](#5-apply)). A user record is created by the user's first connect on an instance, or by a `user.online` from a peer for a callsign not yet known there. `user.update` never creates users.
 
