@@ -395,19 +395,21 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     for C in connections_snapshot():
         online_response["o"].append(C['callsign'])
 
-    if len(online_response["o"]) > 0:
-        wps_logger('ONLINE STATUS', callsign, f"Online users response: {online_response}")
-        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, online_response)
-
-    # And about users online at replication peers, with the origin they're online at
+    # Plus users online at replication peers, grouped by the origin they're online at:
+    # "or": [{"r": origin, "o": [callsigns]}]. Users connected here are only listed in "o".
     remote_online_users = db.dbGetRemoteOnlineUsers(CONN_DB_CURSOR)
     if remote_online_users['result'] == 'success':
+        remote_by_origin = {}
         for remote_user in remote_online_users['data']:
             if remote_user['callsign'] in online_response["o"]:
                 continue
-            remote_connected_response = { "t": "uc", "c": remote_user['callsign'], "o": remote_user['online_origin'] }
-            wps_logger('ONLINE STATUS', callsign, f"Remote online user: {remote_connected_response}")
-            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, remote_connected_response)
+            remote_by_origin.setdefault(remote_user['online_origin'], []).append(remote_user['callsign'])
+        if remote_by_origin:
+            online_response["or"] = [{ "r": origin, "o": callsigns } for origin, callsigns in remote_by_origin.items()]
+
+    if len(online_response["o"]) > 0 or "or" in online_response:
+        wps_logger('ONLINE STATUS', callsign, f"Online users response: {online_response}")
+        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, online_response)
 
     # Different handling if this is a connect from a new user or a new browser
     if connect_object["lm"] == 0 and len(client_channel_subscriptions) == 0:

@@ -502,10 +502,11 @@ def _apply_and_broadcast(cur, envelope):
         if update_resp["result"] == "failure":
             raise RuntimeError(f"dbSetOnlineOrigin failed: {update_resp['error']}")
 
-        # Tell connected clients, unless nothing changed or the user is also connected here -
-        # local presence wins, and its own uc/ud covers them
+        # Tell connected clients, unless nothing changed or the user is also online here -
+        # local presence wins, and its own uc/ud covers them. is_online, not an open socket:
+        # a socket that hasn't sent its connect object yet isn't online here.
         connections_now = connections_snapshot()
-        if online_origin != user.get("online_origin") and not any(C["callsign"] == callsign for C in connections_now):
+        if online_origin != user.get("online_origin") and user.get("is_online") != 1:
             presence_payload = {"t": "uc", "c": callsign, "o": online_origin} if online_origin else {"t": "ud", "c": callsign}
             for C in connections_now:
                 handlers.socket_send_handler_other_connected_user(

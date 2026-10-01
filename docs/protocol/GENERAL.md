@@ -285,7 +285,7 @@ Connect at a replication peer
 }
 ```
 
-A `uc` with `o` is sent when a peer reports the user online, after the `o` list during the connect sequence for each user online at a peer, and in place of `ud` when a user disconnects here but is still online at a peer. A `ud` follows when the peer reports them offline. A user connected to this instance is always reported as local, without `o`.
+A `uc` with `o` is sent when a peer reports the user online, and in place of `ud` when a user disconnects here but is still online at a peer. A `ud` follows when the peer reports them offline. A user connected to this instance is always reported as local, without `o`.
 
 Disconenct
 ```json
@@ -304,7 +304,8 @@ Sent by the server as part of the connect sequence - contains an array of users 
 | Friendly Name | Key | Sample Values | Data Type | Notes |
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`o`|String|User Connect or User Disconnect
-|Callsign Array|`o`|`"M8ABC","T3EST"`|Array|Array of users currently online (i.e. connected)
+|Callsign Array|`o`|`"M8ABC","T3EST"`|Array|Array of users currently online (i.e. connected) to this instance. May be empty when only `or` has users
+|Online Remote|`or`|`[{"r":"DPSTST","o":["G5ALF"]}]`|Array|Users online at replication peers, one object per peer: `r` is the peer's callsign, `o` the users online there. A user connected to this instance appears only in `o`. Absent when no users are online at peers
 
 ### JSON Example
 
@@ -314,6 +315,12 @@ Sent by the server as part of the connect sequence - contains an array of users 
    "o": [
       "M8ABC",
       "T3EST"
+   ],
+   "or": [
+      {
+         "r": "DPSTST",
+         "o": ["G5ALF"]
+      }
    ]
 }
 ```
@@ -663,8 +670,7 @@ Upon receipt, WPS returns:
    - new post edits, sent in batches of 4 as type `cpedb`
    - updated last seen times and name changes as type `u`, for Messaged users
    - updated name changes as type `he`, for Channel users
-   - online users as type `o`
-   - users online at replication peers, one type `uc` each with `o` set to the peer
+   - online users, local and at replication peers, as type `o`
    - if the client supplies `lcts` and the server's channel list is newer, WPS also sends a `chl` object - see [Type chl - Channel List](/docs/protocol/CHANNELS.md#type-chl---channel-list)
 
 
