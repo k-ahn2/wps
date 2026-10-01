@@ -367,6 +367,17 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
         user_updated_fields['name'] = name_from_client
         user_updated_fields['name_last_updated'] = connect_timestamp
 
+    # The client's view of its channel subscriptions is authoritative, so the server copy is
+    # overwritten with the channel ids presented in the connect object, plus the default channels
+    connect_channel_ids = list(dict.fromkeys(
+        [c['cid'] for c in client_channel_subscriptions if 'cid' in c] + env.get('autoSubscribeToChannelIds', [])
+    ))
+    server_channel_ids = user_database_record.get('channel_subscriptions', [])
+
+    if connect_channel_ids != server_channel_ids:
+        wps_logger("CONNECT HANDLER", callsign, f"Channel subscriptions updated from {server_channel_ids} to {connect_channel_ids}")
+        user_updated_fields['channel_subscriptions'] = connect_channel_ids
+
     user_db_update = db.dbUserUpdate(CONN_DB_CURSOR, callsign, user_updated_fields)
     wps_logger("CONNECT HANDLER", callsign, f"User update response: {user_db_update.get('result', None)}")
     close_connection(CONN_DB_CURSOR, callsign, CONN) if user_db_update['result'] == 'failure' else None
@@ -804,17 +815,9 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     # Process channels
     ### 
     
-    # Quit if no channels are subscribed
-    if 'cc' not in connect_object:
-        connect_object['cc'] = []
-    
-    user_server_channel_subscriptions = user_db_record.get('channel_subscriptions', [])
-
-    wps_logger('CONNECT HANDLER', callsign, f"Client Subscriptions: {connect_object['cc']}")
-    wps_logger('CONNECT HANDLER', callsign, f"Server Subscriptions: {user_server_channel_subscriptions}")
-    # Check for a mismatch between the server and client view of channel subscriptions
-    if len(connect_object['cc']) != len(user_server_channel_subscriptions):
-        wps_logger('CONNECT HANDLER', callsign, "Warn, mismatch in client and server channel subscriptions")
+    # Server subscriptions were synced to the client's connect object in connect_handler
+    wps_logger('CONNECT HANDLER', callsign, f"Client Subscriptions: {channel_subscriptions}")
+    wps_logger('CONNECT HANDLER', callsign, f"Server Subscriptions: {user_db_record.get('channel_subscriptions', [])}")
 
     wps_logger('CONNECT HANDLER', callsign, f"Starting channel posts return for channels: {channels_to_return_posts}")
     for channel_object in channels_to_return_posts:
