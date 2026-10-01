@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAPPS v0.40 Session Trace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f6f7f9; --surface:#fdfdfe; --ink:#14171c; --ink-2:#4a505b; --ink-3:#7a808b; --rule:#dde1e7; --grid:#e8ebef;
+  --m:#2a78d6; --d:#eb6834; --transit:#4a3aa7; --acktx:#1baf7a; --hold:#b9bec7; --ctl:#8b919c;
+  --warn-bg:#fff4e0; --warn-ink:#7a4a00;
+  --display:"Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"Source Sans 3",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#121417; --surface:#1a1c20; --ink:#f1f2f4; --ink-2:#b7bcc5; --ink-3:#868c97; --rule:#2d3138; --grid:#24272d;
+    --m:#3987e5; --d:#d95926; --transit:#9085e9; --acktx:#199e70; --hold:#4a4f58; --ctl:#7d838e;
+    --warn-bg:#3a2a10; --warn-ink:#f3c77a;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#121417; --surface:#1a1c20; --ink:#f1f2f4; --ink-2:#b7bcc5; --ink-3:#868c97; --rule:#2d3138; --grid:#24272d;
+  --m:#3987e5; --d:#d95926; --transit:#9085e9; --acktx:#199e70; --hold:#4a4f58; --ctl:#7d838e;
+  --warn-bg:#3a2a10; --warn-ink:#f3c77a;
+}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 var(--body);}
+.wrap{max-width:1120px;margin:0 auto;padding-inline:20px;padding-block:32px 64px;display:flex;flex-direction:column;gap:40px}
+h1,h2{font-family:var(--display);font-weight:600;text-wrap:balance;margin:0;letter-spacing:.005em}
+h1{font-size:2.1rem;line-height:1.15}
+h2{font-size:1.45rem;line-height:1.2}
+p{margin:0;max-width:68ch}
+.eyebrow{font:500 .74rem/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+header{display:flex;flex-direction:column;gap:10px}
+.lede{color:var(--ink-2)}
+a{color:var(--m);text-underline-offset:2px}
+code,.mono{font-family:var(--mono);font-size:.86em}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.tile{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:14px 16px;display:flex;flex-direction:column;gap:4px}
+.tile .v{font:600 1.7rem/1.1 var(--display);font-variant-numeric:tabular-nums}
+.tile .k{font-size:.88rem;color:var(--ink-2)}
+section{display:flex;flex-direction:column;gap:14px}
+.fig{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:16px 16px 10px;display:flex;flex-direction:column;gap:10px}
+.scroll{overflow-x:auto}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.86rem;color:var(--ink-2)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:18px;height:3px;border-radius:2px;display:inline-block}
+.sw.box{height:10px;width:14px;border-radius:2px}
+svg text{font-family:var(--mono);font-size:11px;fill:var(--ink-2)}
+svg .lane-label{font-family:var(--display);font-size:14px;font-weight:600;fill:var(--ink)}
+svg .axis{fill:var(--ink-3)}
+.note{font-size:.9rem;color:var(--ink-2)}
+ul.findings{margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:10px;max-width:74ch}
+ul.findings b{font-weight:600}
+table{border-collapse:collapse;font-size:.86rem;font-variant-numeric:tabular-nums;width:100%;min-width:820px}
+th,td{padding:6px 10px;text-align:right;border-bottom:1px solid var(--rule);white-space:nowrap}
+th{font-weight:600;color:var(--ink-2);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+td.mono{font-family:var(--mono);font-size:.82rem}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.bad{background:var(--warn-bg);color:var(--warn-ink);border-radius:3px;padding:0 4px}
+#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font:12px/1.45 var(--mono);padding:7px 9px;border-radius:4px;max-width:300px;z-index:9;white-space:pre-line}
+.hit{stroke:transparent;fill:none;cursor:default}
+.hit:hover + .vis,.vis.hl{stroke-width:3.5}
+.recs{counter-reset:r;margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:12px;max-width:74ch}
+.recs li{counter-increment:r;padding-left:2.1em;position:relative}
+.recs li::before{content:counter(r);position:absolute;left:0;top:.05em;font:600 .8rem/1.6 var(--mono);color:var(--ink-3);width:1.5em;text-align:center;border:1px solid var(--rule);border-radius:3px}
+@media (max-width:520px){h1{font-size:1.7rem}}
+:root{--band:#e9edf3}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--band:#262a31}}
+:root[data-theme="dark"]{--band:#262a31}
+.sw-dash{background:none;border-top:2px dashed var(--ink-2);height:0}
+table.cmp{min-width:560px}
+table.cmp th,table.cmp td{text-align:left}
+table.cmp td:first-child{color:var(--ink-2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="eyebrow">WPS replication · DAPPS v0.40 · 26 Sep 2026 · 20:40:52–20:41:41 UTC</div>
+  <h1>DAPPS v0.40 over the air: the same burst, half the connections</h1>
+  <p class="lede">An AX.25 monitor trace from G5ALF-3 (DPSTST's DAPPS) during traffic-harness test 5: four posts into each WPS instance at once, 1.1 s apart. DAPPS v0.40 includes <a href="https://github.com/packet-net/dapps/pull/188">#188</a> (one session per neighbour, a re-check of the queue before hanging up, and the <code>data</code> line and payload in one frame) and <a href="https://github.com/packet-net/dapps/pull/189">#189</a> (zstd compression with a shared dictionary). These put into effect proposals 1–3 and 10 from <a href="https://github.com/packet-net/dapps/pull/187">#187</a>. The baseline is the v0.39 trace in #187, plus the same four-and-four burst measured in the <a href="2026-09-26-mb7npw-dpstst-post-burst.html">earlier analysis</a>.</p>
+</header>
+
+<div class="tiles">
+  <div class="tile"><span class="v">6 → 2</span><span class="k">AX.25 connections (v0.39 trace → this one)</span></div>
+  <div class="tile"><span class="v">≈ 3 s</span><span class="k">Per message inside a session, down from ≈ 8 s with a connection each</span></div>
+  <div class="tile"><span class="v">197 → 100 B</span><span class="k">Post payload on air with <code>fmt=z1</code> compression</span></div>
+  <div class="tile"><span class="v">75.5 → 41.5 s</span><span class="k">First post queued to last post delivered, four posts each way</span></div>
+</div>
+
+<section>
+  <div class="eyebrow">Findings</div>
+  <ul class="findings">
+    <li><b>Batching works.</b> G5ALF-3 pushed all four DPSTST posts (sn 62–65) back to back on one connection. It then sent <code>rev</code> and pulled all four MB7NPW posts (sn 560–563) over the same link. With v0.39 that would have been eight connections, each costing SABM/UA, a prompt, <code>rev</code>, a closing prompt and DISC/UA.</li>
+    <li><b>Each message now costs about 3 s instead of about 8 s.</b> Inside the session, <code>ihave</code> → <code>send</code> → <code>data</code> → <code>ack</code> repeats every 3 s. The <code>data</code> line and its payload go out as one I-frame, as #188 intended.</li>
+    <li><b>Compression halves the post payload.</b> Each post went as <code>fmt=z1</code> with <code>len=197 clen=100</code> or <code>101</code>, 49% smaller. The 46-byte WPS ack stayed plain, as designed. The <code>ihave</code> header is now 131 bytes, larger than the payload it announces (#187 proposal 7).</li>
+    <li><b>The whole burst finishes 45% sooner, but the reverse direction waits longer.</b> The last post landed 41.5 s after the first was queued, against 75.5 s for the same burst on v0.39. MB7NPW's posts were queued by 20:40:55. M0AHN-3 couldn't dial, because G5ALF-3's session was open (<a href="https://github.com/packet-net/dapps/issues/178">#178</a>). So they went out only when G5ALF-3 sent <code>rev</code> after its own four pushes, 32–38 s after queueing. Median time from queue to delivery rose from 21 s to 29 s. The caller's direction is now fast and the callee's direction waits for the whole batch.</li>
+    <li><b>One lost frame cost 16 s.</b> M0AHN-3's <code>send aff373d</code> (for DPSTST sn 64) never reached G5ALF-3. G5ALF-3 polled at 20:41:07 and M0AHN-3's reply confirmed the offer had arrived. The lost <code>send</code> was only resent when M0AHN-3's own retry timer ran out at 20:41:16. Everything behind it moved 16 s later. Without the loss the burst would have finished in about 25 s.</li>
+    <li><b>A WPS ack needed a second connection.</b> MB7NPW's WPS held its ack for DPSTST/91 for the usual 30 s. It handed the ack to DAPPS at 20:41:26, while M0AHN-3 was still answering the <code>rev</code>. The drain ended at 20:41:34 without it: #188's re-check runs on the dialling side, not during the other side's <code>rev</code> drain. M0AHN-3 dialled back 2 s after the DISC and spent 18 frames and 5 s on a 46-byte ack. It couldn't travel with an outgoing post, because MB7NPW's posts had all gone before the ack was due.</li>
+    <li><b>Almost half the frames are bare RRs.</b> 45 of the 95 frames are RRs. 41 are bare acknowledgements, and 33 of those are followed within the same second by an I-frame from the same station. Raising BPQ's RESPTIME (T2), #187 proposal 6, would fold most of them into the I-frames.</li>
+  </ul>
+</section>
+
+<section>
+  <div class="eyebrow">Chart 1</div>
+  <h2>Every frame, 20:40:52–20:41:41</h2>
+  <p class="note">Each line is one AX.25 frame from the sending station's lane to the receiver's. The trace records whole seconds, so frames within the same second are spread evenly across it. Hover a frame for its contents. Not shown: G5ALF-1's ID beacon at 20:41:11.</p>
+  <div class="fig">
+    <div class="legend">
+      <span><i class="sw" style="background:var(--d)"></i>DPSTST post (<code>data</code>)</span>
+      <span><i class="sw" style="background:var(--m)"></i>MB7NPW post (<code>data</code>)</span>
+      <span><i class="sw" style="background:var(--acktx)"></i>WPS ack (<code>data</code>)</span>
+      <span><i class="sw" style="background:var(--ink-2)"></i>protocol I-frame</span>
+      <span><i class="sw" style="background:var(--hold)"></i>bare RR</span>
+      <span><i class="sw" style="background:var(--warn-ink)"></i>retry poll/reply</span>
+      <span><i class="sw sw-dash"></i>connect / disconnect</span>
+    </div>
+    <div class="scroll"><svg id="frames" role="img" aria-label="AX.25 frame sequence between G5ALF-3 and M0AHN-3"></svg></div>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">Chart 2</div>
+  <h2>The same four-and-four burst, v0.39 and v0.40</h2>
+  <p class="note">One bar per post, from queued to delivered, in seconds after the first post of its burst was queued. v0.39 is the 07:47:58 burst from the earlier analysis, measured to WPS apply. v0.40 is this trace, measured to the receiving node's DAPPS <code>ack</code>, which is at most 1 s before WPS applies it. Timings are to the nearest second.</p>
+  <div class="fig">
+    <div class="legend">
+      <span><i class="sw box" style="background:var(--d)"></i>DPSTST post</span>
+      <span><i class="sw box" style="background:var(--m)"></i>MB7NPW post</span>
+      <span><i class="sw sw-dash"></i>last post delivered</span>
+    </div>
+    <div class="scroll"><svg id="burst" role="img" aria-label="Per-post latency for v0.39 and v0.40 bursts"></svg></div>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">Chart 3</div>
+  <h2>Where the 95 frames went</h2>
+  <div class="fig">
+    <div class="scroll"><svg id="mix" role="img" aria-label="Frame type breakdown"></svg></div>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">Table</div>
+  <h2>v0.39 and v0.40 side by side</h2>
+  <div class="fig scroll"><table class="cmp">
+    <thead><tr><th></th><th>v0.39 (#187 trace)</th><th>v0.40 (this trace)</th></tr></thead>
+    <tbody>
+      <tr><td>Messages</td><td>11</td><td>9 (8 posts, 1 WPS ack)</td></tr>
+      <tr><td>Elapsed</td><td>77 s</td><td>49 s</td></tr>
+      <tr><td>AX.25 connections</td><td>6</td><td>2</td></tr>
+      <tr><td>Frames</td><td>≈ 150</td><td>95</td></tr>
+      <tr><td>Frames per message</td><td>≈ 13.6</td><td>10.6</td></tr>
+      <tr><td>Seconds per message</td><td>7.0</td><td>5.4 (3.7 without the lost frame)</td></tr>
+      <tr><td>Post payload on air</td><td>203 B plain</td><td>100–101 B, <code>fmt=z1</code></td></tr>
+      <tr><td><code>data</code> line and payload</td><td>2 I-frames</td><td>1 I-frame</td></tr>
+      <tr><td>Four posts each way, queue to last delivery</td><td>75.5 s</td><td>41.5 s</td></tr>
+      <tr><td>Median post, queue to delivery</td><td>21.4 s</td><td>29.3 s</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="eyebrow">What next</div>
+  <ol class="recs">
+    <li><b>Capture test 5 again on v0.41.</b> <a href="https://github.com/packet-net/dapps/pull/190">#190</a> wakes the forwarder when a message is queued, and <a href="https://github.com/packet-net/dapps/pull/191">#191</a> holds the link open after traffic. The WPS ack's second connection should go: the ack would go over the held link after a <code>pending</code> / <code>rev</code> exchange.</li>
+    <li><b>Let the other side's traffic in between pushes.</b> In #191 a <code>pending</code> from the far end is answered with <code>rev</code> when the caller is free. If "free" means after its whole batch, the reverse direction still waits 30 s or more in a burst like this. Answering <code>pending</code> after each pushed message would alternate the two directions. That suits a WPS conversation, where both sides feel the delay.</li>
+    <li><b>Re-check the queue at the end of a <code>rev</code> drain.</b> The side answering <code>rev</code> should pick up anything queued during the drain before it sends its prompt, as #188 already does for the dialling side. With the tail set to 0 this is the only thing that would have saved the second connection.</li>
+    <li><b>Raise RESPTIME (T2) on both nodes' port 2.</b> 33 bare RRs were followed within the same second by an I-frame from the same station.</li>
+    <li><b>Check FRACK on M0AHN-3's port.</b> Recovering one lost frame took 16 s. At 1200 baud a shorter retry timer would get the burst going again sooner, as long as it stays above the longest normal response time.</li>
+    <li><b>Next wire-level wins are pipelining and a shorter <code>ihave</code>.</b> Four turnarounds per message now cost most of each 3 s (#187 proposal 4), and the offer header is bigger than the compressed post (#187 proposal 7).</li>
+  </ol>
+</section>
+
+<p class="note">Sources: the G5ALF-3 AX.25 monitor trace; <a href="https://github.com/packet-net/dapps/pull/187">DAPPS #187</a> for the v0.39 baseline; the <a href="2026-09-26-mb7npw-dpstst-post-burst.html">07:44–07:50 WPS activity analysis</a> for the v0.39 burst. <a href="index.html">All analyses</a>.</p>
+</div>
+<div id="tip" hidden></div>
+
+<script>
+const NS='http://www.w3.org/2000/svg';
+function el(tag,attrs,parent,text){const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(text!=null)e.textContent=text;if(parent)parent.appendChild(e);return e;}
+const tip=document.getElementById('tip');
+function showTip(ev,txt){tip.textContent=txt;tip.hidden=false;const w=tip.offsetWidth,h=tip.offsetHeight;let x=ev.clientX+14,y=ev.clientY+14;if(x+w>innerWidth-8)x=ev.clientX-w-14;if(y+h>innerHeight-8)y=ev.clientY-h-14;tip.style.left=x+'px';tip.style.top=y+'px';}
+function hideTip(){tip.hidden=true;}
+const hhmmss=s=>`20:${String(40+Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+
+// Frames: second after 20:40:00, sender (G = G5ALF-3, M = M0AHN-3), kind, text.
+// Kinds: U link, I protocol, Dd/Dm/Da data (DPSTST post / MB7NPW post / WPS ack), RR, P retry poll/reply.
+const F=`52 G U SABM (connect)
+53 M U UA
+53 M I DAPPSv1> prompt
+53 G RR RR
+53 G I ihave 6f3c31c: DPSTST sn=62, len=197 clen=100 fmt=z1
+54 M RR RR
+54 M I send 6f3c31c
+54 G RR RR
+54 G Dd data 6f3c31c + 100 B payload (DPSTST post)
+55 M RR RR
+56 M I ack 6f3c31c
+56 G RR RR
+56 G I ihave 3e1d094: DPSTST sn=63, clen=101
+57 M RR RR
+57 M I send 3e1d094
+57 G RR RR
+57 G Dd data 3e1d094 + 101 B payload (DPSTST post)
+59 M RR RR
+59 M I ack 3e1d094
+59 G RR RR
+59 G I ihave aff373d: DPSTST sn=64, clen=101
+67 G P RR poll: G5ALF-3's retry timer, no reply to its offer
+67 M P RR final R5: M0AHN-3 has the offer; its own "send" is outstanding
+76 M P RR poll: M0AHN-3's retry timer, its "send" was never acknowledged
+76 G P RR final R5: G5ALF-3 never received the "send"
+76 M I send aff373d (resent)
+76 G RR RR
+77 G Dd data aff373d + 101 B payload (DPSTST post)
+78 M RR RR
+78 M I ack aff373d
+78 G RR RR
+78 G I ihave ba5470c: DPSTST sn=65, clen=100
+79 M RR RR
+79 M I send ba5470c
+79 G RR RR
+79 G Dd data ba5470c + 100 B payload (DPSTST post)
+80 M RR RR
+81 M I ack ba5470c
+81 G RR RR
+81 G I rev: anything queued for G5ALF-3?
+82 M RR RR
+82 M I ihave 1111266: MB7NPW sn=560, clen=101
+82 G RR RR
+82 G I send 1111266
+84 M RR RR
+84 M Dm data 1111266 + 101 B payload (MB7NPW post)
+84 G RR RR
+84 G I ack 1111266
+85 M RR RR
+86 M I ihave 4c65b87: MB7NPW sn=561, clen=101
+86 G RR RR
+86 G I send 4c65b87
+87 M RR RR
+87 M Dm data 4c65b87 + 101 B payload (MB7NPW post)
+87 G RR RR
+87 G I ack 4c65b87
+88 M RR RR
+88 M I ihave 2d940de: MB7NPW sn=562, clen=101
+88 G RR RR
+88 G I send 2d940de
+89 M RR RR
+90 M Dm data 2d940de + 101 B payload (MB7NPW post)
+90 G RR RR
+90 G I ack 2d940de
+91 M RR RR
+91 M I ihave 5349b48: MB7NPW sn=563, clen=101
+91 G RR RR
+91 G I send 5349b48
+92 M RR RR
+92 M Dm data 5349b48 + 101 B payload (MB7NPW post)
+92 G RR RR
+93 G I ack 5349b48
+94 M RR RR
+94 M I DAPPSv1> prompt: M0AHN-3's queue is empty (the WPS ack queued at 20:41:26 was missed)
+94 G RR RR
+94 G U DISC
+95 M U UA
+96 M U SABM: M0AHN-3 dials back
+96 G U UA
+96 G I DAPPSv1> prompt
+97 M RR RR
+97 M I ihave e4e33a6: 46 B plain (fmt=p)
+97 G RR RR
+97 G I send e4e33a6
+98 M RR RR
+98 M Da data e4e33a6 {"a":"ack","o":"DPSTST","s":91,"by":"M0AHN-3"}
+98 G RR RR
+98 G I ack e4e33a6
+100 M RR RR
+100 M I rev
+100 G RR RR
+100 G I DAPPSv1> prompt: nothing queued
+101 M RR RR
+101 M U DISC
+101 G U UA`.split('\n').map(l=>{const m=l.match(/^(\d+) ([GM]) (\S+) (.*)$/);return {t:+m[1],from:m[2],kind:m[3],text:m[4]};});
+
+// ---- Chart 1 ----
+(function(){
+  const svg=document.getElementById('frames');const W=1080,H=250,L=128,R=14,yG=92,yM=184,t0=51,t1=102;
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.style.width='100%';svg.style.minWidth='820px';
+  const x=t=>L+(t-t0)/(t1-t0)*(W-L-R);
+  // bands
+  const bands=[[52,81,'G5ALF-3 pushes DPSTST 62–65'],[81,94.9,'rev: MB7NPW 560–563'],[96,101.9,'WPS ack']];
+  bands.forEach(([a,b,lab],i)=>{el('rect',{x:x(a),y:14,width:x(b)-x(a),height:22,rx:3,fill:'var(--band)'},svg);el('text',{x:x(a)+6,y:29,style:'fill:var(--ink)'},svg,lab);});
+  el('rect',{x:x(59.8),y:40,width:x(76)-x(59.8),height:18,rx:3,fill:'var(--warn-bg)'},svg);
+  el('text',{x:(x(59.8)+x(76))/2,y:53,'text-anchor':'middle',style:'fill:var(--warn-ink)'},svg,'lost "send": 16 s');
+  for(let t=52;t<=101;t++){const X=x(t);const major=t%5===0;
+    el('line',{x1:X,x2:X,y1:yG-10,y2:yM+10,stroke:'var(--grid)','stroke-width':major?1:.5},svg);
+    if(major)el('text',{x:X,y:H-12,'text-anchor':'middle',class:'axis'},svg,hhmmss(t));}
+  [['G5ALF-3',yG,'DPSTST'],['M0AHN-3',yM,'MB7NPW']].forEach(([n,y,o])=>{
+    el('line',{x1:L,x2:W-R,y1:y,y2:y,stroke:'var(--ink-3)','stroke-width':1.2},svg);
+    el('text',{x:6,y:y-2,class:'lane-label'},svg,n);el('text',{x:6,y:y+13},svg,o);});
+  const bySec={};F.forEach(f=>(bySec[f.t]=bySec[f.t]||[]).push(f));
+  const style={Dd:['var(--d)',3.2,''],Dm:['var(--m)',3.2,''],Da:['var(--acktx)',3.2,''],I:['var(--ink-2)',1.6,''],RR:['var(--hold)',1.2,''],P:['var(--warn-ink)',1.8,''],U:['var(--ink-2)',1.6,'3 3']};
+  Object.values(bySec).forEach(list=>list.forEach((f,i)=>{
+    const tt=f.t+(i+0.5)/list.length,X=x(tt),dx=Math.min(6,(W-L-R)/(t1-t0)/list.length*0.8);
+    const y1=f.from==='G'?yG:yM,y2=f.from==='G'?yM:yG;const [c,w,dash]=style[f.kind];
+    const g=el('g',{},svg);
+    el('line',{x1:X,y1,x2:X+dx,y2,stroke:c,'stroke-width':w,'stroke-dasharray':dash,'stroke-linecap':'round'},g);
+    el('circle',{cx:X+dx,cy:y2,r:f.kind[0]==='D'?3.5:2,fill:c},g);
+    const hit=el('rect',{x:X-3,y:yG,width:dx+6,height:yM-yG,fill:'transparent'},g);
+    const who=f.from==='G'?'G5ALF-3 → M0AHN-3':'M0AHN-3 → G5ALF-3';
+    hit.addEventListener('mousemove',e=>showTip(e,`${hhmmss(f.t)}  ${who}\n${f.text}`));hit.addEventListener('mouseleave',hideTip);
+  }));
+  // seq labels on data frames
+  [[54,'62'],[57,'63'],[77,'64'],[79,'65'],[84,'560'],[87,'561'],[90,'562'],[92,'563'],[98,'ack']].forEach(([t,lab])=>{
+    const f=F.find(f=>f.t===t&&f.kind[0]==='D');const y=f.from==='G'?yM+22:yG-16;
+    el('text',{x:x(t+0.5),y,'text-anchor':'middle',style:'fill:var(--ink)'},svg,lab);});
+})();
+
+// ---- Chart 2 ----
+(function(){
+  const B=[ // group, origin, label, queued s, delivered s (relative to burst start)
+    ['v0.39 · 07:47:58','DPSTST','43',0,8.1],['v0.39 · 07:47:58','DPSTST','44',0.3,37.3],['v0.39 · 07:47:58','DPSTST','45',0.7,62.4],['v0.39 · 07:47:58','DPSTST','46',1.1,75.5],
+    ['v0.39 · 07:47:58','MB7NPW','57',4.5,12.9],['v0.39 · 07:47:58','MB7NPW','58',4.9,17.0],['v0.39 · 07:47:58','MB7NPW','59',5.2,24.2],['v0.39 · 07:47:58','MB7NPW','60',5.6,29.4],
+    ['v0.40 · 20:40:51','DPSTST','62',0.03,4.5],['v0.40 · 20:40:51','DPSTST','63',1.1,7.5],['v0.40 · 20:40:51','DPSTST','64',2.2,26.5],['v0.40 · 20:40:51','DPSTST','65',3.3,29.5],
+    ['v0.40 · 20:40:51','MB7NPW','560',0,32.5],['v0.40 · 20:40:51','MB7NPW','561',1.1,35.5],['v0.40 · 20:40:51','MB7NPW','562',2.2,38.5],['v0.40 · 20:40:51','MB7NPW','563',3.3,41.5],
+  ];
+  const svg=document.getElementById('burst');const rowH=20,gap=26,L=150,R=20,W=1080,top=8,xmax=80;
+  const H=top+B.length*rowH+gap+40;svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.style.width='100%';svg.style.minWidth='700px';
+  const x=v=>L+v/xmax*(W-L-R);
+  for(let v=0;v<=xmax;v+=10){el('line',{x1:x(v),x2:x(v),y1:top,y2:H-34,stroke:'var(--grid)'},svg);el('text',{x:x(v),y:H-16,'text-anchor':'middle',class:'axis'},svg,v+(v===xmax?' s':''));}
+  let y=top,prev=null;const ends={};
+  B.forEach(r=>{
+    if(prev&&prev!==r[0])y+=gap;
+    if(prev!==r[0])el('text',{x:6,y:y+rowH/2+4,class:'lane-label'},svg,r[0].split(' · ')[0]);
+    prev=r[0];const cy=y+rowH/2,c=r[1]==='DPSTST'?'var(--d)':'var(--m)';
+    el('text',{x:L-10,y:cy+4,'text-anchor':'end'},svg,`${r[1]} ${r[2]}`);
+    el('rect',{x:x(r[3]),y:cy-5,width:Math.max(2,x(r[4])-x(r[3])),height:10,rx:2,fill:c},svg);
+    el('text',{x:x(r[4])+6,y:cy+4,class:'axis'},svg,`${(r[4]-r[3]).toFixed(1)} s`);
+    const hit=el('rect',{x:L,y,width:W-L-R,height:rowH,fill:'transparent'},svg);
+    hit.addEventListener('mousemove',e=>showTip(e,`${r[0]}  ${r[1]}/${r[2]}\nqueued     +${r[3].toFixed(1)} s\ndelivered  +${r[4].toFixed(1)} s\ntook       ${(r[4]-r[3]).toFixed(1)} s`));hit.addEventListener('mouseleave',hideTip);
+    (ends[r[0]]=ends[r[0]]||{y0:y,end:0});ends[r[0]].y1=y+rowH;ends[r[0]].end=Math.max(ends[r[0]].end,r[4]);
+    y+=rowH;
+  });
+  Object.values(ends).forEach(g=>{el('line',{x1:x(g.end),x2:x(g.end),y1:g.y0-2,y2:g.y1+2,stroke:'var(--ink)','stroke-width':1.2,'stroke-dasharray':'4 3'},svg);});
+})();
+
+// ---- Chart 3 ----
+(function(){
+  const counts={Dd:0,Dm:0,Da:0,I:0,RR:0,P:0,U:0};F.forEach(f=>counts[f.kind]++);
+  const cats=[['Payload (posts and ack)',counts.Dd+counts.Dm+counts.Da,'var(--transit)'],['Protocol I-frames',counts.I,'var(--ink-2)'],['Bare RR',counts.RR,'var(--hold)'],['Retry poll/reply',counts.P,'var(--warn-ink)'],['Connect / disconnect',counts.U,'var(--ink-3)']];
+  const total=cats.reduce((a,c)=>a+c[1],0);
+  const svg=document.getElementById('mix');const W=1080,H=64,L=6,R=6;svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.style.width='100%';svg.style.minWidth='640px';
+  let x0=L;const scale=(W-L-R)/total;
+  cats.forEach(([name,n,c],i)=>{const w=n*scale;
+    el('rect',{x:x0+(i?1:0),y:10,width:w-(i?1:0),height:26,rx:2,fill:c},svg);
+    const anchorEnd=i===cats.length-1;
+    el('text',{x:anchorEnd?x0+w:x0+2,y:56,'text-anchor':anchorEnd?'end':'start',style:'fill:var(--ink);font-weight:500'},svg,String(n));
+    x0+=w;});
+  const lg=document.createElement('div');lg.className='legend';lg.innerHTML=cats.map(([n,v,c])=>`<span><i class="sw box" style="background:${c}"></i>${n}: ${v}</span>`).join('');
+  svg.parentElement.after(lg);
+})();
+</script>
+</body>
+</html>
