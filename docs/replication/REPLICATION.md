@@ -140,8 +140,9 @@ On startup WPS prints one of:
 |`msg.edit`|Direct message edited|`messages`|Yes - `med` to the recipient if online|
 |`msg.emoji`|Direct message reaction changed|`messages`|No|
 |`user.update`|User's `name` changed|`users`|No - clients pick it up through the normal name-update watermark|
+|`user.online`|User's `is_online` changed: connect, last disconnect, and the reset of online users at startup|`users` - creates the user if unknown, sets `online_origin`|Yes - `uc` with `o` set to the origin, or `ud`, to all connected users, only when `online_origin` changes and the user isn't connected here|
 
-**Not replicated:** avatars, pairing state, channel subscriptions and paused channels, push tokens, presence (`is_online`, `last_connected`, `last_client_version`), notification bookkeeping, and `channels.json`. Presence and push details are properties of one node; keep `channels.json` identical by hand. User records are created by a user's own first connect on each instance - replication updates names on users that already exist locally but never creates users.
+**Not replicated:** avatars, pairing state, channel subscriptions and paused channels, push tokens, `is_online`, `last_connected`, `last_client_version`, notification bookkeeping, and `channels.json`. `is_online` and push details are properties of one node; keep `channels.json` identical by hand. Presence crosses only as `user.online`, which a peer records as `online_origin` (see [Apply](#5-apply)). A user record is created by the user's first connect on an instance, or by a `user.online` from a peer for a callsign not yet known there. `user.update` never creates users.
 
 ## The Replication Event
 
@@ -169,7 +170,7 @@ Every replicated change is one JSON envelope. `origin` and `seq` are its identit
 |`ts`|When the change happened, in the **native precision of the thing changed**: seconds for messages (`lts`, `edts`, `ets`), milliseconds for posts (`dts`, `edts`, `ets`) and for `user.update`|
 |`op`|One of the operations in [What Is Replicated](#what-is-replicated)|
 |`key`|Identifies the row for edits, reactions and user updates: `{cid, ts}` for a post, `{_id}` for a message, `{callsign}` for a user. Omitted on `post.insert` and `msg.insert`, where `data` is the whole row and already holds it|
-|`data`|What is needed to apply and broadcast it. For inserts, the whole post or message. For edits and reactions, only the changed fields. For `user.update`, `name`, `name_last_updated` and `callsign`|
+|`data`|What is needed to apply and broadcast it. For inserts, the whole post or message. For edits and reactions, only the changed fields. For `user.update`, `name`, `name_last_updated` and `callsign`. For `user.online`, `callsign`, `name` and `is_online` (`1` or `0`), with no `key`|
 |`acks`|Optional, added at submit time and never stored in `replication_log`: `{origin: seq}` acks the sender was holding for the recipient - see [Acknowledge](#6-acknowledge)|
 
 ### Wire Format
@@ -189,6 +190,7 @@ To save bytes over the air, envelopes and control messages are sent with short k
 |`post.insert`|`p.i`|
 |`post.edit`|`p.ed`|
 |`post.emoji`|`p.em`|
+|`user.online`|`u.o`|
 
 Only the top-level keys of a message, and of each event in a batch, are shortened. `key` and `data` are sent unchanged. Other ops and control-message fields keep their names. The translation happens only at the DAPPS boundary (`_to_wire` and `_from_wire` in `replication.py`). `replication_log`, `replication_pending`, the activity log and the dashboard all keep the long names used throughout this document. A receiver accepts both forms, telling them apart by the presence of `a`, so events already queued in DAPPS by an older version still apply.
 
@@ -258,8 +260,9 @@ sequenceDiagram
 |`dbInsertMessage`|`msg.insert`|Always|
 |`dbUpdateMessage`|`msg.edit` or `msg.emoji`|Chosen by the update's shape: `m` present is an edit, `e` present is a reaction|
 |`dbUserUpdate`|`user.update`|Only if the update contains `name` or `name_last_updated`|
+|`dbUserUpdate`|`user.online`|Only if the update contains `is_online`. Captured after the update runs, so it carries the name just written|
 
-`dbUserUpdate` is called from many places (connect, disconnect, push, pairing, subscriptions...). Only the fields in `REPLICATED_USER_FIELDS` are captured, so those calls carry on without producing any event.
+`dbUserUpdate` is called from many places (connect, disconnect, push, pairing, subscriptions...). Only the fields in `REPLICATED_USER_FIELDS`, and changes to `is_online`, are captured, so the other calls carry on without producing any event.
 
 Capture allocates the next `seq` from `replication_self`, then inserts one row into `replication_log` (the full envelope) and one into `replication_outbox`. Because they share the write's transaction they commit together or not at all.
 
@@ -339,6 +342,7 @@ Each operation has a rule that makes it safe to apply twice and safe to apply ou
 |`msg.insert`|Insert. A duplicate `_id` is rejected by its unique index and ignored|
 |`msg.edit`, `msg.emoji`|As `post.edit` and `post.emoji`, keyed on `_id`|
 |`user.update`|Ignored if the user does not exist here. Ignored if the stored `name_last_updated` is `>=` the incoming one. Otherwise sets `name` and `name_last_updated`|
+|`user.online`|Creates the user if unknown, with `callsign`, `name`, `name_last_updated` (local time, seconds) and the default channel subscriptions, but no `last_connected`, so their first connect here is still handled as a new user's. Online: sets `online_origin` to the event's origin. Offline: sets `online_origin` to null if it holds this origin, otherwise ignored as stale, since the user may have since connected elsewhere. `online_origin` is also set to null for every user at startup, and is never replicated itself|
 
 Guards are *last-writer-wins on the change's own timestamp*, which gives every instance the same answer whatever order events arrive in.
 

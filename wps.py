@@ -437,9 +437,14 @@ def startup_and_listen():
         print(f"{timestamp()} Failed to get online users, something is wrong, exiting")
         return
 
+    # With replication on, each of these also sends peers a user.online offline status, so
+    # users left online by a crash or hard stop don't stay online at peers
     online_users = online_users_response['data']
     for online_user in online_users:
         db.dbUserUpdate(global_cursor, online_user['callsign'], { "is_online": 0 })
+
+    # Presence heard from peers before this restart can't be trusted
+    db.dbClearOnlineOrigins(global_cursor)
 
     try:
         while True:

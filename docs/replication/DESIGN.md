@@ -279,6 +279,8 @@ Packet radio is high-latency, so concurrent edits on two instances *will* happen
 
 Presence is per-node truth. If instances must show each other's online users, gossip it on a separate short-TTL channel marked non-authoritative - never through the ordered replication stream.
 
+> **As built:** presence does go through the ordered stream, as a `user.online` event whenever `is_online` changes. A peer records it in a separate node-local field, `online_origin`, never in `is_online`, and clears it at startup. See `user.online` in [REPLICATION.md](REPLICATION.md).
+
 ## Schema Additions
 
 ```sql

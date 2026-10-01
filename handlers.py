@@ -332,7 +332,10 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
             if 'lastseen' in user_database_record:
                 user_database_record['last_connected'] = user_database_record['lastseen']
             else:
+                # Never connected here - created from a peer's replicated online status - so
+                # still a new user on this instance
                 user_database_record['last_connected'] = connect_timestamp
+                is_new_user = 1
                 
             db.dbCleanupDepracatedLastSeenKey(CONN_DB_CURSOR, callsign)
 
@@ -359,7 +362,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     wps_logger("CONNECT HANDLER", callsign, f"User is now marked as online")
     wps_logger("CONNECT HANDLER", callsign, f"Is New User = {is_new_user}") if is_new_user == 1 else None
     
-    if is_new_user == 0 and user_database_record['name'] != name_from_client:
+    if user_database_record['name'] != name_from_client:
         wps_logger("CONNECT HANDLER", callsign, f"Name Update from {user_database_record['name']} to {name_from_client}")        
         user_updated_fields['name'] = name_from_client
         user_updated_fields['name_last_updated'] = connect_timestamp
@@ -395,6 +398,16 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     if len(online_response["o"]) > 0:
         wps_logger('ONLINE STATUS', callsign, f"Online users response: {online_response}")
         socket_send_handler(CONN_DB_CURSOR, CONN, callsign, online_response)
+
+    # And about users online at replication peers, with the origin they're online at
+    remote_online_users = db.dbGetRemoteOnlineUsers(CONN_DB_CURSOR)
+    if remote_online_users['result'] == 'success':
+        for remote_user in remote_online_users['data']:
+            if remote_user['callsign'] in online_response["o"]:
+                continue
+            remote_connected_response = { "t": "uc", "c": remote_user['callsign'], "o": remote_user['online_origin'] }
+            wps_logger('ONLINE STATUS', callsign, f"Remote online user: {remote_connected_response}")
+            socket_send_handler(CONN_DB_CURSOR, CONN, callsign, remote_connected_response)
 
     # Different handling if this is a connect from a new user or a new browser
     if connect_object["lm"] == 0 and len(client_channel_subscriptions) == 0:
@@ -1942,13 +1955,16 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
         wps_logger("DISCONNECT HANDLER", callsign, "Skipping disconnect broadcast because user still has active connection(s)")
         return
 
+    # If a replication peer has reported the user online there, they're still online - just
+    # not here - so send a uc with that origin instead of a ud
+    online_origin = user_db_record.get('data', {}).get('online_origin') if user_db_record.get('result') == 'success' else None
+    if online_origin:
+        disconnected_response = { "t": "uc", "c": callsign, "o": online_origin }
+    else:
+        disconnected_response = { "t": "ud", "c": callsign }
+
     for C in connections_snapshot():
-        wps_logger("ONLINE STATUS", callsign, f"Disconnect sent to: {C['callsign']}")
-        
-        disconnected_response = {
-            "t": "ud",
-            "c": callsign
-        }
+        wps_logger("ONLINE STATUS", callsign, f"Disconnect sent to: {C['callsign']}: {disconnected_response}")
         
         # socket_send_handler(CONN_DB_CURSOR, C['socket'], callsign, disconnected_response)
         socket_send_handler_other_connected_user(CONN_DB_CURSOR,

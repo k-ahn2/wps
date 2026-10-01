@@ -127,7 +127,7 @@ def _prune_activity():
 # log and the dashboard - keeps the long names, so only the DAPPS boundary translates. Only
 # top-level keys (and those of each batched event) are renamed, never inside `key` or `data`.
 _WIRE_KEYS = {"origin": "o", "seq": "s", "epoch": "e", "op": "a"}
-_WIRE_OPS = {"post.insert": "p.i", "post.edit": "p.ed", "post.emoji": "p.em"}
+_WIRE_OPS = {"post.insert": "p.i", "post.edit": "p.ed", "post.emoji": "p.em", "user.online": "u.o"}
 _LONG_KEYS = {short: long for long, short in _WIRE_KEYS.items()}
 _LONG_OPS = {short: long for long, short in _WIRE_OPS.items()}
 
@@ -465,6 +465,54 @@ def _apply_and_broadcast(cur, envelope):
         update_resp = db.dbUserUpdate(cur, callsign, {k: v for k, v in data.items() if k in db.REPLICATED_USER_FIELDS})
         if update_resp["result"] == "failure":
             raise RuntimeError(f"dbUserUpdate failed: {update_resp['error']}")
+
+    elif op == "user.online":
+        callsign = data["callsign"]
+        existing = db.dbUserSearch(cur, callsign)
+        if existing["result"] != "success":
+            raise RuntimeError(f"dbUserSearch failed: {existing['error']}")
+        user = existing["data"]
+        if user is None:
+            # Unlike user.update, an online status creates the user, so they're known here
+            # before their first connect. No last_connected: connect_handler treats the first
+            # local connect as a new user's. name_last_updated is local time, so clients
+            # pick the name up through the normal name-update watermark.
+            user = {
+                "callsign": callsign,
+                "name": data.get("name") or "-",
+                "name_last_updated": round(time.time()),
+                "channel_subscriptions": env.get('autoSubscribeToChannelIds', []),
+            }
+            wps_logger("REPLICATION APPLY", ORIGIN, f"user.online for unknown user {callsign}, creating: {user}")
+            create_resp = db.dbCreateNewUser(cur, user)
+            if create_resp["result"] == "failure":
+                raise RuntimeError(f"dbCreateNewUser failed: {create_resp['error']}")
+
+        # online_origin is the origin the user was last reported online at. An offline status
+        # clears it only if it came from that same origin - the user may since have connected
+        # at another peer.
+        origin = envelope["origin"]
+        if data.get("is_online"):
+            online_origin = origin
+        elif user.get("online_origin") == origin:
+            online_origin = None
+        else:
+            return "stale"
+        update_resp = db.dbSetOnlineOrigin(cur, callsign, online_origin)
+        if update_resp["result"] == "failure":
+            raise RuntimeError(f"dbSetOnlineOrigin failed: {update_resp['error']}")
+
+        # Tell connected clients, unless nothing changed or the user is also connected here -
+        # local presence wins, and its own uc/ud covers them
+        connections_now = connections_snapshot()
+        if online_origin != user.get("online_origin") and not any(C["callsign"] == callsign for C in connections_now):
+            presence_payload = {"t": "uc", "c": callsign, "o": online_origin} if online_origin else {"t": "ud", "c": callsign}
+            for C in connections_now:
+                handlers.socket_send_handler_other_connected_user(
+                    cur, sending_callsign=callsign, sending_connection=None,
+                    receiving_callsign=C["callsign"], receiving_connection=C["socket"],
+                    payload=presence_payload
+                )
 
     else:
         wps_logger("REPLICATION APPLY", ORIGIN, f"Unknown op '{op}', ignoring", "ERROR")

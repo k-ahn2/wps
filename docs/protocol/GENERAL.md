@@ -264,6 +264,7 @@ Sent by the server to all connected users when there is a new connect or disconn
 | - | :-: | :-: | :-: | - |
 |Type|`t`|`uc` or `ud`|String|User Connect or User Disconnect
 |Callsign|`c`|`T3EST`|String|Callsign of user connecting or disconnecting
+|Origin|`o`|`M0XYZ`|String|`uc` only. Callsign of the WPS instance the user is online at, when that is a replication peer rather than this instance. Absent when the user is connected to this instance
 
 ### JSON Example
 
@@ -274,6 +275,17 @@ Connect
    "c": "T3EST"
 }
 ```
+
+Connect at a replication peer
+```json
+{
+   "t": "uc",
+   "c": "T3EST",
+   "o": "M0XYZ"
+}
+```
+
+A `uc` with `o` is sent when a peer reports the user online, after the `o` list during the connect sequence for each user online at a peer, and in place of `ud` when a user disconnects here but is still online at a peer. A `ud` follows when the peer reports them offline. A user connected to this instance is always reported as local, without `o`.
 
 Disconenct
 ```json
@@ -652,6 +664,7 @@ Upon receipt, WPS returns:
    - updated last seen times and name changes as type `u`, for Messaged users
    - updated name changes as type `he`, for Channel users
    - online users as type `o`
+   - users online at replication peers, one type `uc` each with `o` set to the peer
    - if the client supplies `lcts` and the server's channel list is newer, WPS also sends a `chl` object - see [Type chl - Channel List](/docs/protocol/CHANNELS.md#type-chl---channel-list)
 
 

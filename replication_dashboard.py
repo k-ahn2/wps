@@ -83,6 +83,8 @@ def _summarise(envelope):
         return _clip(f"reactions on {target}: {json.dumps(data.get('e'), ensure_ascii=False)}")
     if op == "user.update":
         return _clip(f"{key.get('callsign', data.get('callsign', '?'))} name → {data.get('name', '')}")
+    if op == "user.online":
+        return _clip(f"{data.get('callsign', '?')} ({data.get('name', '')}) {'online' if data.get('is_online') else 'offline'}")
     return ""
 
 
@@ -290,7 +292,7 @@ EXPORT_FIELD_NOTES = {
     "at / at_iso": "When this instance recorded the row (epoch ms / UTC ISO-8601).",
     "direction": "in = received from a peer via DAPPS; out = submitted to local DAPPS for a peer.",
     "category": "data = a replicated change (post.insert, post.edit, post.emoji, msg.insert, msg.edit, msg.emoji, "
-                "user.update); sync = control message (ack, digest, sync.request, seq_at.request, seq_at.response); "
+                "user.update, user.online); sync = control message (ack, digest, sync.request, seq_at.request, seq_at.response); "
                 "system = local DAPPS polling failed/recovered.",
     "peer": "The other instance's DAPPS callsign (sender for in, destination for out).",
     "origin / seq": "The instance that originated the data event and its sequence number - together they identify "
@@ -777,7 +779,7 @@ button.btn.primary:hover { filter: brightness(1.08); background: var(--accent); 
 </aside>
 
 <script>
-const OPS = ["post.insert", "post.edit", "post.emoji", "msg.insert", "msg.edit", "msg.emoji", "user.update"];
+const OPS = ["post.insert", "post.edit", "post.emoji", "msg.insert", "msg.edit", "msg.emoji", "user.update", "user.online"];
 const STATUSES = ["applied", "sent", "resent", "received", "buffered", "duplicate", "stale", "ignored", "failed", "error", "rejected", "recovered"];
 const STATUS_CLASS = { applied: "ok", sent: "info", resent: "info", received: "", recovered: "ok", acked: "ok", submitted: "info",
   buffered: "warn", duplicate: "", stale: "", ignored: "", queued: "", failed: "bad", error: "bad", rejected: "bad" };

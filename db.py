@@ -16,8 +16,9 @@ DB_FILENAME = env['dbFilename']
 # same SQLite transaction as the write itself, so the event commits if and only if the write
 # does. See replication.py for what happens to that event next (outbox pump -> DAPPS ->
 # peer's inbox pump -> apply). Only a hand-picked subset of user fields is portable between
-# instances (see REPLICATED_USER_FIELDS) - presence, push tokens, pairing state etc. are
-# node-local and never captured.
+# instances (see REPLICATED_USER_FIELDS) - push tokens, pairing state etc. are node-local and
+# never captured. Presence is captured only as a user.online event when is_online changes
+# (see _replicate_online_status); is_online itself stays node-local.
 REPLICATION_CONFIG = env.get('replication', {})
 REPLICATION_ENABLED = REPLICATION_CONFIG.get('enabled', False)
 REPLICATION_ORIGIN = REPLICATION_CONFIG.get('originCallsign') or REPLICATION_CONFIG.get('dappsCallsign')  # this node's replication identity, stamped as `o` on posts at the receiver
@@ -80,6 +81,22 @@ def _replicate_capture(cursor, op, key, data, ts=None):
             replication.notify_local_event()
     except Exception as e:
         db_logger("_replicate_capture", f"Failed to capture replication event for op {op}: {e}", "ERROR")
+
+def _replicate_online_status(cursor, callsign, is_online):
+    '''
+    Captures a user.online event carrying the user's callsign and current name, so a peer can
+    create the user if it has never seen them and record where they are online (online_origin).
+    Called after the UPDATE has run, so the name read here is the one just written.
+    '''
+    if not REPLICATION_ENABLED or _is_applying_remote():
+        return
+    try:
+        cursor.execute("SELECT json_extract(user, '$.name') FROM users WHERE json_extract(user, '$.callsign') = ?", (callsign,))
+        row = cursor.fetchone()
+    except Exception as e:
+        db_logger("_replicate_online_status", f"Failed to read name for {callsign}: {e}", "ERROR")
+        return
+    _replicate_capture(cursor, "user.online", None, {"callsign": callsign, "name": row[0] if row else None, "is_online": 1 if is_online else 0})
 
 def get_db_connection():
     '''
@@ -338,6 +355,10 @@ def dbUserUpdate(CONN_DB_CURSOR, callsign, update_object):
             _replicate_capture(CONN_DB_CURSOR, "user.update", {"callsign": callsign}, {**replicated_fields, "callsign": callsign})
 
         CONN_DB_CURSOR.execute(update_query, params)
+
+        if "is_online" in update_object:
+            _replicate_online_status(CONN_DB_CURSOR, callsign, update_object["is_online"])
+
         CONN_DB_CURSOR.connection.commit()
 
         user_search = dbUserSearch(CONN_DB_CURSOR, callsign)
@@ -601,6 +622,104 @@ def dbGetPostEmojis(CONN_DB_CURSOR, channel_id, last_post_emoji, last_post):
             "params": [channel_id, last_post, last_post_emoji]
         }
         db_logger("dbGetPostEmojis", "Return: " + str(return_error), 'ERROR')
+        return return_error
+
+def dbSetOnlineOrigin(CONN_DB_CURSOR, callsign, origin):
+    '''
+    Sets online_origin, the replication origin a user was last reported online at, or JSON null
+    when origin is None. Node-local and never replicated itself.
+    '''
+    try:
+        update_query = """
+        UPDATE users
+        SET user = json_set(user, '$.online_origin', ?)
+        WHERE json_extract(user, '$.callsign') = ?
+        """
+        params = [origin, callsign]
+        db_logger("dbSetOnlineOrigin", "Query: " + ' '.join(update_query.split()) + " | Params: " + str(params))
+
+        CONN_DB_CURSOR.execute(update_query, params)
+        CONN_DB_CURSOR.connection.commit()
+
+        return_success = {
+            "result": "success",
+            "data": None,
+        }
+        db_logger("dbSetOnlineOrigin", "Return: " + str(return_success))
+        return return_success
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbSetOnlineOrigin",
+            "params": [ callsign, origin ]
+        }
+        db_logger("dbSetOnlineOrigin", "Return: " + str(return_error), 'ERROR')
+        return return_error
+
+def dbClearOnlineOrigins(CONN_DB_CURSOR):
+    '''
+    Sets online_origin to null on every user. Called at startup, since presence heard from
+    peers before a restart can't be trusted afterwards.
+    '''
+    try:
+        update_query = """
+        UPDATE users
+        SET user = json_set(user, '$.online_origin', NULL)
+        WHERE json_extract(user, '$.online_origin') IS NOT NULL
+        """
+        db_logger("dbClearOnlineOrigins", "Query: " + ' '.join(update_query.split()))
+
+        CONN_DB_CURSOR.execute(update_query)
+        CONN_DB_CURSOR.connection.commit()
+
+        return_success = {
+            "result": "success",
+            "data": None,
+        }
+        db_logger("dbClearOnlineOrigins", "Return: " + str(return_success))
+        return return_success
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbClearOnlineOrigins",
+            "params": []
+        }
+        db_logger("dbClearOnlineOrigins", "Return: " + str(return_error), 'ERROR')
+        return return_error
+
+def dbGetRemoteOnlineUsers(CONN_DB_CURSOR):
+    '''
+    Returns [{"callsign", "online_origin"}] for every user a peer has reported online.
+    '''
+    try:
+        select_query = """
+        SELECT json_extract(user, '$.callsign'), json_extract(user, '$.online_origin')
+        FROM users
+        WHERE json_extract(user, '$.online_origin') IS NOT NULL
+        """
+        db_logger("dbGetRemoteOnlineUsers", "Query: " + ' '.join(select_query.split()))
+
+        CONN_DB_CURSOR.execute(select_query)
+
+        return_success = {
+            "result": "success",
+            "data": [{"callsign": i[0], "online_origin": i[1]} for i in CONN_DB_CURSOR],
+        }
+        db_logger("dbGetRemoteOnlineUsers", "Return: " + str(return_success))
+        return return_success
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbGetRemoteOnlineUsers",
+            "params": []
+        }
+        db_logger("dbGetRemoteOnlineUsers", "Return: " + str(return_error), 'ERROR')
         return return_error
 
 def dbGetOnlineUsers(CONN_DB_CURSOR):
