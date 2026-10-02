@@ -38,7 +38,7 @@ Version 1 implements the proposal's core: capture, publish, receive and apply, a
 |Receiving from DAPPS|MQTT subscribe or REST poll|REST poll only|
 |Digest|A version vector: highest `seq` seen per origin|Each instance reports **only its own** `latest_seq` to each peer. Sufficient for a full mesh; a version vector would be needed to relay through intermediate instances|
 |Peer trust|Not covered|Inbound messages are accepted only from configured peers|
-|Emoji reactions|Applied and fanned out live (`cpem`, `mem`)|Applied to the database only; no live push. The captured event has the merged reaction list, not the add/remove delta the live objects need|
+|Emoji reactions|Applied and fanned out live (`cpem`, `mem`)|Applied and pushed live. Messages: `mem`, which already carries the full list. Posts: the event has the merged reaction list, so the apply compares it with the stored list and sends one `cpem` per reaction added or removed|
 |`user.update`|`name` and other portable fields|`name` and `name_last_updated`, guarded by `name_last_updated`. Unknown users are ignored|
 |Avatars|`avatar.update` operation|Not implemented|
 |Edit or reaction before its insert|Buffered until the insert arrives|Handled by `seq` ordering and gap buffering. An edit that still finds no post raises and is retried|
@@ -96,7 +96,7 @@ One envelope for every replicated change. `origin` and `seq` are the application
 Channel definitions come from `channels.json`. Treat that as configuration managed out of band, not as replicated data.
 
 > [!NOTE]
-> **As built:** reactions have no live fan-out, `user.update` has none either, and `avatar.update` is not implemented. See [Status](#status).
+> **As built:** post reactions fan out as `cpem` objects worked out from the merged list, `user.update` has no live fan-out, and `avatar.update` is not implemented. See [Status](#status).
 
 ## Pipeline
 

@@ -450,10 +450,30 @@ def _apply_and_broadcast(cur, envelope):
         update_resp = db.dbUpdatePost(cur, key["cid"], key["ts"], {"e": data["e"], "ets": data["ets"]})
         if update_resp["result"] == "failure":
             raise RuntimeError(f"dbUpdatePost failed: {update_resp['error']}")
-        # v1 deliberately does not push a live update to connected clients for emoji - the
-        # captured event only carries the merged reaction set, not the single add/remove
-        # delta the 'cpem' wire type expects, and emoji are already documented as best-effort/
-        # no-ack in WPS. The DB still converges; connected clients pick it up next resync.
+
+        # The event carries the merged reaction set, but live clients expect the single add/remove
+        # 'cpem' that post_emoji_handler relays. Diff the stored set against the incoming one, one
+        # (emoji, callsign) pair at a time - normally a single change, more if earlier events were stale.
+        def reaction_pairs(emojis):
+            return {(emoji["e"], c) for emoji in emojis for c in emoji.get("c", [])}
+        old_pairs = reaction_pairs(existing["data"].get("e", []))
+        new_pairs = reaction_pairs(data["e"])
+        changes = [(0, pair) for pair in sorted(old_pairs - new_pairs)] + [(1, pair) for pair in sorted(new_pairs - old_pairs)]
+
+        # "" as the sending callsign: the post's author should see reactions too.
+        subscribers_resp = db.dbChannelSubscribers(cur, "", key["cid"]) if changes else None
+        if subscribers_resp and subscribers_resp["result"] == "success":
+            subscribing_callsigns = [s["callsign"] for s in subscribers_resp["data"]]
+            for action, (emoji, reactor) in changes:
+                broadcast_payload = {"t": "cpem", "a": action, "ts": key["ts"], "cid": key["cid"], "ets": data["ets"], "e": emoji, "fc": reactor}
+                for C in connections_snapshot():
+                    # As post_emoji_handler: everyone subscribed except the reactor, who already has it.
+                    if C["callsign"] != reactor and C["callsign"] in subscribing_callsigns:
+                        handlers.socket_send_handler_other_connected_user(
+                            cur, sending_callsign=reactor, sending_connection=None,
+                            receiving_callsign=C["callsign"], receiving_connection=C["socket"],
+                            payload=broadcast_payload
+                        )
 
     elif op == "msg.insert":
         insert_resp = db.dbInsertMessage(cur, data)
@@ -509,7 +529,18 @@ def _apply_and_broadcast(cur, envelope):
         update_resp = db.dbUpdateMessage(cur, key["_id"], {"e": data["e"], "ets": data["ets"]})
         if update_resp["result"] == "failure":
             raise RuntimeError(f"dbUpdateMessage failed: {update_resp['error']}")
-        # Same v1 scope note as post.emoji above - DB converges, no live push.
+        reacted_message = update_resp["data"]
+
+        # 'mem' already carries the full reaction set, so relay it as message_emoji_handler
+        # does - to the message's author, the only other party to a reaction on it.
+        broadcast_payload = {"t": "mem", "_id": key["_id"], "e": data["e"], "ets": data["ets"]}
+        for C in connections_snapshot():
+            if C["callsign"] == reacted_message["fc"]:
+                handlers.socket_send_handler_other_connected_user(
+                    cur, sending_callsign=reacted_message["tc"], sending_connection=None,
+                    receiving_callsign=C["callsign"], receiving_connection=C["socket"],
+                    payload=broadcast_payload
+                )
 
     elif op == "user.update":
         callsign = key["callsign"]

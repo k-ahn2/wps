@@ -135,10 +135,10 @@ On startup WPS prints one of:
 | - | - | - | - |
 |`post.insert`|New channel post (including bot posts)|`posts`|Yes - `cp` to subscribed, online, un-paused users, excluding the author|
 |`post.edit`|Channel post edited|`posts`|Yes - `cped` to subscribed, online users|
-|`post.emoji`|Channel post reaction changed|`posts`|No - see [Known Limitations](#known-limitations)|
+|`post.emoji`|Channel post reaction changed|`posts`|Yes - `cpem` to subscribed, online users except the reactor, one per reaction added or removed (worked out by comparing the stored reaction list with the replicated one)|
 |`msg.insert`|New direct message|`messages`|Yes - to the recipient if online|
 |`msg.edit`|Direct message edited|`messages`|Yes - `med` to the recipient if online|
-|`msg.emoji`|Direct message reaction changed|`messages`|No|
+|`msg.emoji`|Direct message reaction changed|`messages`|Yes - `mem` with the full reaction list to the message's author if online|
 |`user.update`|User's `name` changed|`users`|No - clients pick it up through the normal name-update watermark|
 |`user.online`|User's `is_online` changed: connect, last disconnect, and the reset of online users at startup|`users` - creates the user if unknown, sets `online_origin`|Yes - `uc` or `ud` with `or` set to the origin, to all connected users, only when `online_origin` changes and the user isn't connected here|
 
@@ -553,7 +553,6 @@ Anything that happened after the copy is then filled in by digests.
 
 ## Known Limitations
 
-- **Emoji reactions do not push live.** They are written to the database on every instance, but connected clients only see them after their next sync. The captured event carries the merged reaction list, not the single add/remove that WPS's live `cpem` and `mem` objects expect.
 - **No push notifications for replicated content.** A replicated post or message is applied and broadcast to online users only; the OneSignal push logic runs only for a user's own instance.
 - **Catch-up watermarks.** Clients fetch missed messages and posts on connect by the item's own `ts` being newer than what they last saw. A replicated item that reaches a peer *after* a roaming user connected there, with a `ts` older than that user's watermark, is not sent to them. Users who stay on one home instance are unaffected.
 - **Users are not created by replication**, and a name change for a user unknown on a peer is ignored there.
