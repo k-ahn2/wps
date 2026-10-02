@@ -428,7 +428,7 @@ Also added: a unique index `idx_unique_post_cid_ts` on posts, so a replicated po
 |Message from an unconfigured callsign|Logged at `ERROR`, acknowledged, dropped|
 |Replication tables missing or broken|Capture logs to `db.log` and skips; the user's write still succeeds, but that change is never logged, so it is not replicated and reconciliation cannot recover it. Repair the tables promptly|
 |WPS restarts|All state is in the database. Pumps resume from their cursors|
-|`db.py` or `handlers.py` warm-reloaded|Picked up on the next tick. The pumps themselves are not reloaded|
+|`db.py`, `handlers.py` or `replication.py` warm-reloaded|Picked up on each pump's next pass, without restarting the threads. In-memory state (held acks, throttles) carries over; `env.json` settings are not re-read|
 
 ## Monitoring and Operations
 

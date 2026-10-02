@@ -72,6 +72,21 @@ def reload_db():
     except Exception as reload_e:
         console_log(f"ERROR: failed to reload db module: {reload_e}", "ERROR")
 
+def reload_replication():
+    '''
+    Warm-reloads the replication module - the DAPPS outbox/inbox/reconcile pumps - in place via
+    importlib.reload, without restarting its threads. Each pump thread is a bare trampoline
+    that fetches its per-pass function from the module dict every time round, so the next pass
+    runs the new code. In-memory replication state (held acks, wake event, sync throttles...)
+    is carried over by the module itself, and env.json is not re-read: replication settings
+    still need a restart.
+    '''
+    try:
+        importlib.reload(replication)
+        console_log("Reloaded replication module (replication logic)")
+    except Exception as reload_e:
+        console_log(f"ERROR: failed to reload replication module: {reload_e}", "ERROR")
+
 def reload_bots():
     '''
     Warm-reloads every loaded bot module's code in place via importlib.reload, without
@@ -100,17 +115,19 @@ def reload_bots():
 
 def reload_code():
     '''
-    Warm-reloads all reloadable code - db.py, handlers.py, and any loaded bot modules - in one
-    go. db.py is reloaded first since handlers.py (and bots, indirectly) depend on it.
+    Warm-reloads all reloadable code - db.py, handlers.py, replication.py, and any loaded bot
+    modules - in one go. db.py is reloaded first since handlers.py, replication.py (and bots,
+    indirectly) depend on it.
     '''
     reload_db()
     reload_handlers()
+    reload_replication()
     reload_bots()
 
 def code_reload_key_listener():
     '''
     Background thread: watches the terminal for the 'r' key (no Enter needed) and warm-
-    reloads db.py, handlers.py and all bot modules via reload_code() when pressed. Only
+    reloads db.py, handlers.py, replication.py and all bot modules via reload_code() when pressed. Only
     meaningful when stdin is an interactive TTY - callers should check sys.stdin.isatty()
     before starting this thread.
     '''
@@ -375,8 +392,8 @@ def startup_and_listen():
     db.dbInit(global_cursor)
 
     # Start instance-to-instance replication over DAPPS (outbox/inbox/reconcile pumps).
-    # No-ops (loudly) if replication.enabled isn't set in env.json. Not warm-reloadable -
-    # these are process-lifetime threads, same as the bot tick threads below.
+    # No-ops (loudly) if replication.enabled isn't set in env.json. Process-lifetime threads,
+    # same as the bot tick threads below, whose per-pass code is warm-reloadable.
     replication.start()
 
     # Read-only replication status dashboard over HTTP (replication.dashboard in env.json).

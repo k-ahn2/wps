@@ -16,14 +16,32 @@ from logger import wps_logger
 # messages back into local writes + live broadcasts (inbox pump), and periodically checking
 # every peer is still level (reconcile pump).
 #
-# Deliberately NOT warm-reloadable like db.py/handlers.py - these are process-lifetime
-# background threads, started once from wps.py. They call handlers.<func>(...) and
-# db.<func>(...) by module attribute, same as wps.py does, so a warm reload of either of
-# those modules is still picked up on the next tick without restarting these threads.
+# Warm-reloadable like db.py/handlers.py (see wps.py's reload_replication). The three pumps
+# are process-lifetime threads started once by start(), but each runs a bare trampoline that
+# looks its per-pass function up in this module's dict every time round, so a reload changes
+# what the next pass does without restarting the threads. They call handlers.<func>(...) and
+# db.<func>(...) by module attribute, so a reload of either of those is picked up on the next
+# tick too.
+#
+# reload() re-executes this file in the same module dict, so every piece of in-memory state
+# below is bound through _kept(), which reuses the value already there instead of resetting
+# it. env.json is kept the same way: its settings were acted on by start() (peer rows,
+# bootstrap, which threads exist), so a reload changes code only and settings need a restart.
 
-env_source = open("env.json")
-env = json.load(env_source)
-env_source.close()
+
+def _kept(name, make):
+    '''
+    The module-level value of name from before a warm reload if there is one, else make().
+    '''
+    return globals()[name] if name in globals() else make()
+
+
+def _load_env():
+    with open("env.json") as env_source:
+        return json.load(env_source)
+
+
+env = _kept('env', _load_env)
 
 REPLICATION_CONFIG = env.get('replication', {})
 ENABLED = REPLICATION_CONFIG.get('enabled', False)
@@ -106,9 +124,9 @@ def _record(direction, category, op, status, peer=None, origin=None, seq=None, d
 
 # Pumps retry failures every tick; these remember what has already been recorded so a peer or
 # DAPPS being down produces one activity row per failure, not one every few seconds.
-_last_outbox_failure = {}       # peer -> seq whose submit failure was last recorded
-_recorded_inbound_errors = {}   # dapps_id -> error text last recorded for it
-_dapps_poll_ok = True
+_last_outbox_failure = _kept('_last_outbox_failure', dict)       # peer -> seq whose submit failure was last recorded
+_recorded_inbound_errors = _kept('_recorded_inbound_errors', dict)   # dapps_id -> error text last recorded for it
+_dapps_poll_ok = _kept('_dapps_poll_ok', lambda: True)
 
 
 def _prune_activity():
@@ -192,8 +210,8 @@ def _stream_id_for(origin, epoch):
 
 # --- Wake-ups: submit new events promptly, poll the inbox faster while a conversation is on -
 
-_outbox_wake = threading.Event()
-_inbox_fast_until = 0.0  # time.monotonic() deadline; the inbox polls at the fast rate until then
+_outbox_wake = _kept('_outbox_wake', threading.Event)
+_inbox_fast_until = _kept('_inbox_fast_until', float)  # time.monotonic() deadline; the inbox polls at the fast rate until then
 
 
 def notify_local_event():
@@ -211,18 +229,43 @@ def _extend_fast_inbox():
     _inbox_fast_until = time.monotonic() + INBOX_FAST_POLL_WINDOW_SECONDS
 
 
+# --- Pump threads: process-lifetime loops whose per-pass code is warm-reloadable ----------
+
+# How long a trampoline waits before retrying a pass that raised past its own error handling
+# (e.g. a reload landing mid-pass), so the thread survives without spinning.
+_TRAMPOLINE_RETRY_SECONDS = 5
+
+
+def _trampoline(log_label, pass_name):
+    '''
+    Body of every pump thread. A thread's target is fixed when it starts and a reload cannot
+    replace it, so this stays a bare loop that fetches the pass function (which does the work
+    and the wait) from the module dict by name every time round. Everything but this loop is
+    therefore warm-reloadable; changing the loop itself needs a restart.
+    '''
+    while True:
+        try:
+            globals()[pass_name]()
+        except Exception as e:
+            wps_logger(log_label, ORIGIN, f"Pass error: {e}", "ERROR")
+            time.sleep(_TRAMPOLINE_RETRY_SECONDS)
+
+
 # --- Outbox pump: replication_log/outbox (captured by db.py) -> DAPPS ---------------------
 
 def _outbox_pump_loop():
-    while True:
-        try:
-            _outbox_pump_tick()
-        except Exception as e:
-            wps_logger("REPLICATION OUTBOX", ORIGIN, f"Tick error: {e}", "ERROR")
-        # The timeout still matters: it retries submissions that DAPPS refused last tick.
-        if _outbox_wake.wait(OUTBOX_POLL_SECONDS):
-            _outbox_wake.clear()
-            time.sleep(OUTBOX_WAKE_SETTLE_SECONDS)
+    _trampoline("REPLICATION OUTBOX", "_outbox_pump_pass")
+
+
+def _outbox_pump_pass():
+    try:
+        _outbox_pump_tick()
+    except Exception as e:
+        wps_logger("REPLICATION OUTBOX", ORIGIN, f"Tick error: {e}", "ERROR")
+    # The timeout still matters: it retries submissions that DAPPS refused last tick.
+    if _outbox_wake.wait(OUTBOX_POLL_SECONDS):
+        _outbox_wake.clear()
+        time.sleep(OUTBOX_WAKE_SETTLE_SECONDS)
 
 
 def _outbox_pump_tick():
@@ -590,14 +633,17 @@ def _drain_pending(conn, cur, origin):
 # --- Inbox pump: DAPPS -> apply / control messages -----------------------------------------
 
 def _inbox_pump_loop():
-    while True:
-        try:
-            _inbox_pump_tick()
-            _flush_due_acks()
-        except Exception as e:
-            wps_logger("REPLICATION INBOX", ORIGIN, f"Tick error: {e}", "ERROR")
-        fast = time.monotonic() < _inbox_fast_until
-        time.sleep(INBOX_FAST_POLL_SECONDS if fast else INBOX_POLL_SECONDS)
+    _trampoline("REPLICATION INBOX", "_inbox_pump_pass")
+
+
+def _inbox_pump_pass():
+    try:
+        _inbox_pump_tick()
+        _flush_due_acks()
+    except Exception as e:
+        wps_logger("REPLICATION INBOX", ORIGIN, f"Tick error: {e}", "ERROR")
+    fast = time.monotonic() < _inbox_fast_until
+    time.sleep(INBOX_FAST_POLL_SECONDS if fast else INBOX_POLL_SECONDS)
 
 
 def _inbox_pump_tick():
@@ -857,9 +903,9 @@ def _handle_data_event(envelope, peer, dapps_id, batch_note=None):
 
 # --- Application-level acks: retire outbox rows once every peer has applied them ----------
 
-_pending_acks = {}  # origin -> [highest applied seq not yet acked, time.monotonic() the first was held]
-_acked_up_to = {}   # origin -> highest seq an ack has been submitted for, since this process started
-_pending_acks_lock = threading.Lock()
+_pending_acks = _kept('_pending_acks', dict)  # origin -> [highest applied seq not yet acked, time.monotonic() the first was held]
+_acked_up_to = _kept('_acked_up_to', dict)   # origin -> highest seq an ack has been submitted for, since this process started
+_pending_acks_lock = _kept('_pending_acks_lock', threading.Lock)
 
 
 def _queue_app_ack(origin, seq):
@@ -969,16 +1015,19 @@ def _handle_app_ack(envelope):
 # --- Reconciliation: periodic digest + on-demand sync.request/response --------------------
 
 def _reconcile_loop():
-    while True:
-        try:
-            _retry_bootstrap_pending()
-            _send_online_requests()
-            _send_digest()
-            _log_backlog()
-            _prune_activity()
-        except Exception as e:
-            wps_logger("REPLICATION RECONCILE", ORIGIN, f"Tick error: {e}", "ERROR")
-        time.sleep(RECONCILE_INTERVAL_SECONDS)
+    _trampoline("REPLICATION RECONCILE", "_reconcile_pass")
+
+
+def _reconcile_pass():
+    try:
+        _retry_bootstrap_pending()
+        _send_online_requests()
+        _send_digest()
+        _log_backlog()
+        _prune_activity()
+    except Exception as e:
+        wps_logger("REPLICATION RECONCILE", ORIGIN, f"Tick error: {e}", "ERROR")
+    time.sleep(RECONCILE_INTERVAL_SECONDS)
 
 
 def _send_digest():
@@ -1001,8 +1050,8 @@ def _send_digest():
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to send digest to {peer}: {e}", "ERROR")
 
 
-_last_heard_from = {}    # peer DAPPS callsign (upper) -> time.monotonic() anything was last received from it
-_last_data_sent_to = {}  # peer DAPPS callsign (upper) -> time.monotonic() a data event was last submitted to it
+_last_heard_from = _kept('_last_heard_from', dict)    # peer DAPPS callsign (upper) -> time.monotonic() anything was last received from it
+_last_data_sent_to = _kept('_last_data_sent_to', dict)  # peer DAPPS callsign (upper) -> time.monotonic() a data event was last submitted to it
 
 
 def _digest_redundant(peer, my_latest, peer_acked_seq):
@@ -1059,8 +1108,8 @@ def _handle_digest(envelope):
 # origin -> (from_seq, to_seq, monotonic time) of the last sync.request sent. Live events keep
 # arriving while a gap is being filled, and each one would otherwise fire its own overlapping
 # request (2-43, 2-44, 2-45, ...), making the origin re-send the same range over and over.
-_last_sync_request = {}
-_last_sync_request_lock = threading.Lock()
+_last_sync_request = _kept('_last_sync_request', dict)
+_last_sync_request_lock = _kept('_last_sync_request_lock', threading.Lock)
 
 
 def _request_sync(origin, from_seq, to_seq):
@@ -1277,8 +1326,8 @@ def _retry_bootstrap_pending():
 
 # Peer origins we've asked who is online but not yet had a usable answer from. In memory only:
 # a restart clears every online_origin and asks again anyway.
-_online_request_pending = set()
-_online_request_lock = threading.Lock()
+_online_request_pending = _kept('_online_request_pending', set)
+_online_request_lock = _kept('_online_request_lock', threading.Lock)
 
 
 def request_online_users():
