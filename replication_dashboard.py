@@ -134,6 +134,11 @@ def api_status(cur, _query):
         their_latest = None
         if last_digest:
             their_latest = (_parse_event(last_digest["event"]) or {}).get("latest_seq")
+        pend = pending.get(origin_u)
+        # The digest is only periodic; events applied or buffered since then prove the peer is at least that far along.
+        seen = max(applied or 0, pend["hi"] if pend else 0)
+        if their_latest is not None or seen:
+            their_latest = max(their_latest or 0, seen)
         last_in = activity_one("SELECT MAX(at) AS at FROM replication_activity WHERE direction = 'in' AND UPPER(peer) = ?", (dapps_u,))
         last_out = activity_one("SELECT MAX(at) AS at FROM replication_activity WHERE direction = 'out' AND status IN ('sent', 'resent') AND UPPER(peer) = ?", (dapps_u,))
         issues = activity_one(
@@ -141,7 +146,6 @@ def api_status(cur, _query):
             (now - 86400000, dapps_u, *ISSUE_STATUSES))
         acked = ack.get("peer_acked_seq", 0)
         submitted = ack.get("submitted_seq", 0)
-        pend = pending.get(origin_u)
         peers.append({
             **pair,
             "submitted_seq": submitted,
@@ -848,7 +852,7 @@ async function loadOverview() {
       const theirs = p.bootstrap_requested_at ? `<span class="pill warn">bootstrapping</span> since ${esc(ago(p.bootstrap_requested_at))}`
         : `applied ${num(p.applied_seq ?? 0)}${p.their_latest != null ? ` of ${num(p.their_latest)}` : ""}` +
           (p.behind > 0 ? ` <span class="pill warn">${num(p.behind)} behind</span>` : "") +
-          `<div class="muted">latest from digest ${esc(ago(p.last_digest_at))}</div>`;
+          `<div class="muted">last digest ${esc(ago(p.last_digest_at))}</div>`;
       return `<tr>
         <td><a class="link" data-peer="${esc(p.dapps)}"><b>${esc(p.origin)}</b></a><div class="muted mono">${esc(p.dapps)}</div></td>
         <td><span class="pill ${health[1]}">${esc(health[0])}</span><div class="muted">${esc(health[2])}</div></td>
