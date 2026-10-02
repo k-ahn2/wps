@@ -1,4 +1,5 @@
 import copy, json, os
+from state import console_log
 
 # Check or Create the Environemnt variables file, env.json
 
@@ -85,7 +86,7 @@ def _merge_defaults(env, template):
     changed = False
     for key, value in template.items():
         if key not in env:
-            print(f"{key} missing from env.json, adding with default value {value}")
+            console_log(f"{key} missing from env.json, adding with default value {value}")
             env[key] = copy.deepcopy(value)
             changed = True
         elif isinstance(value, dict) and isinstance(env.get(key), dict):
@@ -105,7 +106,7 @@ if os.path.exists("env.json"):
         with open("env.json", "w") as f:
             json.dump(env, f, indent=4)
 else:
-    print("env.json not found, creating default env.json")
+    console_log("env.json not found, creating default env.json")
     env = copy.deepcopy(env_template)
     with open("env.json", "w") as f:
         json.dump(env, f, indent=4)

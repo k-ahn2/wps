@@ -1,4 +1,5 @@
 from env import *
+from state import syslog_log
 import logging
 from logging.handlers import TimedRotatingFileHandler
 
@@ -26,7 +27,14 @@ def get_wps_logger():
 
     return logger
 
+# Errors are always mirrored to syslog, even when file logging is disabled, so they are visible
+# when running headless
+SYSLOG_LEVELS = ("ERROR", "CRITICAL")
+
 def wps_logger(function_name, callsign, log, log_entry_level="INFO"):
+
+    if log_entry_level.upper() in SYSLOG_LEVELS:
+        syslog_log(f"{callsign} {function_name} {log}", log_entry_level)
 
     if not env.get('wpsLoggingEnabled', True):
         return
@@ -66,6 +74,9 @@ def get_db_logger():
     return logger
 
 def db_logger(function_name, log, log_entry_level="INFO"):
+
+    if log_entry_level.upper() in SYSLOG_LEVELS:
+        syslog_log(f"DB {function_name} {log}", log_entry_level)
 
     if not env.get('dbLoggingEnabled', True):
         return

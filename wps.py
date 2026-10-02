@@ -23,16 +23,16 @@ import sys
 # per-connection threads. Shared state that must survive that reload (CONNECTIONS, BOTS,
 # CHANNELS_CACHE, ...) lives in state.py, imported by both this module and handlers.py.
 
-print(f"{timestamp()} ### WPS Starting ###")
+console_log("### WPS Starting ###")
 
 # Environment Variables
 env_source = open("env.json", "r")
 env = json.load(env_source)
 env_source.close()
 
-print(f"{timestamp()} WPS Event Logging: {'Enabled' if env.get('events', {}).get('enableWpsEvents', False) else 'Disabled'}")
-print(f"{timestamp()} BPQ Queue Monitoring: {'Enabled' if env.get('events', {}).get('enableBpqEvents', False) else 'Disabled'}")
-print(f"{timestamp()} Bots: {'Enabled' if env.get('botsEnabled', False) else 'Disabled'}")
+console_log(f"WPS Event Logging: {'Enabled' if env.get('events', {}).get('enableWpsEvents', False) else 'Disabled'}")
+console_log(f"BPQ Queue Monitoring: {'Enabled' if env.get('events', {}).get('enableBpqEvents', False) else 'Disabled'}")
+console_log(f"Bots: {'Enabled' if env.get('botsEnabled', False) else 'Disabled'}")
 
 # TCP Socket Setup
 HOST = '0.0.0.0'
@@ -53,9 +53,9 @@ def reload_handlers():
     '''
     try:
         importlib.reload(handlers)
-        print(f"{timestamp()} Reloaded handlers module (processing logic)")
+        console_log("Reloaded handlers module (processing logic)")
     except Exception as reload_e:
-        print(f"{timestamp()} ERROR: failed to reload handlers module: {reload_e}")
+        console_log(f"ERROR: failed to reload handlers module: {reload_e}", "ERROR")
 
 def reload_db():
     '''
@@ -68,9 +68,9 @@ def reload_db():
     '''
     try:
         importlib.reload(db)
-        print(f"{timestamp()} Reloaded db module (database logic)")
+        console_log("Reloaded db module (database logic)")
     except Exception as reload_e:
-        print(f"{timestamp()} ERROR: failed to reload db module: {reload_e}")
+        console_log(f"ERROR: failed to reload db module: {reload_e}", "ERROR")
 
 def reload_bots():
     '''
@@ -94,9 +94,9 @@ def reload_bots():
     for cid, mod in BOTS.items():
         try:
             importlib.reload(mod)
-            print(f"{timestamp()} Reloaded bot module '{mod.__name__}' (channel {cid})")
+            console_log(f"Reloaded bot module '{mod.__name__}' (channel {cid})")
         except Exception as reload_e:
-            print(f"{timestamp()} ERROR: failed to reload bot module '{mod.__name__}': {reload_e}")
+            console_log(f"ERROR: failed to reload bot module '{mod.__name__}': {reload_e}", "ERROR")
 
 def reload_code():
     '''
@@ -135,7 +135,7 @@ def code_reload_key_listener():
             if ready and sys.stdin.read(1).lower() == 'r':
                 reload_code()
     except Exception as exc:
-        print(f"{timestamp()} Code reload key listener stopped: {exc}")
+        console_log(f"Code reload key listener stopped: {exc}")
     finally:
         restore_terminal()
 
@@ -212,7 +212,7 @@ def connected_session_handler(CONN, ADDR):
 
     for C in existing_connections:
         wps_logger("CONNECTED SESSION HANDLER", callsign, "Callsign already connected, silently removing existing connection")
-        print(f"{timestamp()} {callsign} reconnected, silently removing existing connection")
+        console_log(f"{callsign} reconnected, silently removing existing connection")
         try:
             C['socket'].shutdown(socket.SHUT_RDWR)
             C['socket'].close()
@@ -223,7 +223,7 @@ def connected_session_handler(CONN, ADDR):
     rc = []
     for c in connections_snapshot():
         rc.append(c['callsign'])
-    print(f"{timestamp()} Connections After Connect: {str(rc)}")
+    console_log(f"Connections After Connect: {str(rc)}")
     
     # Create an empty buffer and start listening for the first data
     CONNECTION_RX_BUFFER = ''
@@ -360,16 +360,16 @@ def connected_session_handler(CONN, ADDR):
             break
 
 def startup_and_listen():
-    print(f"{timestamp()} Using database {env['dbFilename']}")
-    print(f"{timestamp()} Listening on TCP Port {env['socketTcpPort']}")
+    console_log(f"Using database {env['dbFilename']}")
+    console_log(f"Listening on TCP Port {env['socketTcpPort']}")
 
     global_cursor = db.get_db_connection().cursor()
 
     # Output the SQLite version to the console
     global_cursor.execute('''select sqlite_version()''')
     version = [i[0] for i in global_cursor]
-    print(f"{timestamp()} SQLite Version " + version[0])
-    print(f"{timestamp()} ### WPS Started ###")
+    console_log("SQLite Version " + version[0])
+    console_log("### WPS Started ###")
 
     # Create the database tables, if they don't exist
     db.dbInit(global_cursor)
@@ -419,13 +419,13 @@ def startup_and_listen():
                     cid,
                 )
                 BOTS[cid] = mod
-                print(f"{timestamp()} Bot '{bot_name}' enabled on channel {cid}")
+                console_log(f"Bot '{bot_name}' enabled on channel {cid}")
             except Exception as bot_init_e:
-                print(f"{timestamp()} ERROR: failed to load bot '{bot_name}': {bot_init_e}")
+                console_log(f"ERROR: failed to load bot '{bot_name}': {bot_init_e}", "ERROR")
 
     if sys.stdin.isatty():
         threading.Thread(target=code_reload_key_listener, daemon=True, name='code_reload_key_listener').start()
-        print(f"{timestamp()} Press 'r' in this terminal to warm-reload db and processing code{' and bots' if BOTS else ''} without disconnecting users")
+        console_log(f"Press 'r' in this terminal to warm-reload db and processing code{' and bots' if BOTS else ''} without disconnecting users")
 
     # Confirm users are subscribed to the default channels
     handlers.check_auto_subscriptions(global_cursor)
@@ -434,7 +434,7 @@ def startup_and_listen():
     online_users_response = db.dbGetOnlineUsers(global_cursor)
     if online_users_response['result'] == 'failure':
         wps_logger("HANDLER", "-----", "Failed to get online users, something is wrong, exiting")
-        print(f"{timestamp()} Failed to get online users, something is wrong, exiting")
+        console_log("Failed to get online users, something is wrong, exiting", "ERROR")
         return
 
     # With replication on, each of these also sends peers a user.online offline status, so
@@ -463,11 +463,11 @@ def startup_and_listen():
 
     except KeyboardInterrupt:
         wps_logger("CONNECTION HANDLER", "-----", "Stopped by Ctrl+C")
-        print(f"{timestamp()} Stopped by Ctrl+C, closing down WPS")
+        console_log("Stopped by Ctrl+C, closing down WPS")
 
         if S:
             wps_logger("CONNECTION HANDLER", "-----", "Closing TCP socket listener")
-            print(f"{timestamp()} Closing TCP socket listener")
+            console_log("Closing TCP socket listener")
             S.close()
 
         while (len(CONNECTIONS) > 0):
@@ -476,7 +476,7 @@ def startup_and_listen():
             time.sleep(2)
 
         wps_logger("CONNECTION HANDLER", "-----", "WPS Exited")
-        print(f"{timestamp()} WPS Exited")
+        console_log("WPS Exited")
         return
 
 if __name__ == "__main__":

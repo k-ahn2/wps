@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import replication
-from state import timestamp
+from state import timestamp, console_log
 
 # replication_dashboard.py serves a read-only web view of the replication tables: per-peer
 # status, the replication_activity log (data received, sync traffic in both directions), and
@@ -584,11 +584,11 @@ def start(force=False):
     try:
         server = ThreadingHTTPServer((host, port), _Handler)
     except OSError as e:
-        print(f"{timestamp()} Replication dashboard failed to start on {host}:{port}: {e}")
+        console_log(f"Replication dashboard failed to start on {host}:{port}: {e}", "ERROR")
         return None
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True, name="replication_dashboard").start()
-    print(f"{timestamp()} Replication dashboard on http://{host}:{port}/")
+    console_log(f"Replication dashboard on http://{host}:{port}/")
     return server
 
 
@@ -1104,4 +1104,4 @@ if __name__ == "__main__":
         try:
             threading.Event().wait()
         except KeyboardInterrupt:
-            print(f"{timestamp()} Replication dashboard stopped")
+            console_log("Replication dashboard stopped")

@@ -13,6 +13,33 @@ def timestamp():
 def timestamp_milliseconds():
     return round(time.time() * 1000)
 
+# Console output is mirrored to syslog under the "WPS" ident so it stays visible when running
+# headless (e.g. under systemd with no attached terminal). syslog is Unix-only, so on platforms
+# without it console_log just prints.
+try:
+    import syslog
+    syslog.openlog(ident="WPS", logoption=syslog.LOG_PID, facility=syslog.LOG_USER)
+    SYSLOG_PRIORITIES = {
+        "DEBUG": syslog.LOG_DEBUG,
+        "INFO": syslog.LOG_INFO,
+        "WARNING": syslog.LOG_WARNING,
+        "ERROR": syslog.LOG_ERR,
+        "CRITICAL": syslog.LOG_CRIT
+    }
+except ImportError:
+    syslog = None
+
+def console_log(message, level="INFO"):
+    print(f"{timestamp()} {message}")
+    syslog_log(message, level)
+
+def syslog_log(message, level="INFO"):
+    if syslog:
+        try:
+            syslog.syslog(SYSLOG_PRIORITIES.get(level.upper(), syslog.LOG_INFO), str(message))
+        except Exception:
+            pass
+
 # Threads spawned per accepted TCP connection
 ALL_THREADS = []
 

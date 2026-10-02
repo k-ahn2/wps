@@ -6,7 +6,7 @@ import requests
 
 import db
 import handlers
-from state import connections_snapshot, timestamp
+from state import connections_snapshot, timestamp, console_log
 from logger import wps_logger
 
 # replication.py is the DAPPS-facing half of instance-to-instance replication. db.py captures
@@ -1462,11 +1462,11 @@ def start():
     if replication isn't configured, so it's always safe to call.
     '''
     if not ENABLED:
-        print(f"{timestamp()} Replication disabled (set replication.enabled=true in env.json to turn on)")
+        console_log("Replication disabled (set replication.enabled=true in env.json to turn on)")
         return
 
     if not DAPPS_CALLSIGN or not PEERS:
-        print(f"{timestamp()} Replication enabled but replication.dappsCallsign/peers are not configured in env.json - not starting")
+        console_log("Replication enabled but replication.dappsCallsign/peers are not configured in env.json - not starting")
         return
 
     conn = db.get_db_connection()
@@ -1483,4 +1483,4 @@ def start():
     threading.Thread(target=_inbox_pump_loop, daemon=True, name="replication_inbox_pump").start()
     threading.Thread(target=_reconcile_loop, daemon=True, name="replication_reconcile_pump").start()
 
-    print(f"{timestamp()} Replication started: origin={ORIGIN} app={APP_SLUG} peers={PEERS} dapps={DAPPS_REST_URL}")
+    console_log(f"Replication started: origin={ORIGIN} app={APP_SLUG} peers={PEERS} dapps={DAPPS_REST_URL}")

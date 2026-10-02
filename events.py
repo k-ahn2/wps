@@ -1,5 +1,6 @@
 from env import *
 import sqlite3
+from state import console_log
 
 # Environment Variables
 env_source = open("env.json", "r")
@@ -55,7 +56,7 @@ def event_logger(timestamp, event_type, callsign, event=None, meta=None):
             return
 
         except Exception as e:
-            print(f"Error logging event: {e}")
+            console_log(f"Error logging event: {e}", "ERROR")
     
     return None
 

@@ -239,7 +239,7 @@ def sync_channels_from_file(CONN_DB_CURSOR):
     '''
 
     if not os.path.exists("channels.json"):
-        print(f"{timestamp()} channels.json not found, creating default with a General group and Lounge channel")
+        console_log("channels.json not found, creating default with a General group and Lounge channel")
         wps_logger("CHANNELS SYNC", "-----", "channels.json not found, creating default with a General group and Lounge channel")
         with open("channels.json", "w") as channels_out:
             json.dump(CHANNELS_JSON_DEFAULT, channels_out, indent=4)
@@ -424,10 +424,10 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
 
     # Different handling if this is a connect from a new user or a new browser
     if connect_object["lm"] == 0 and len(client_channel_subscriptions) == 0:
-        print(f"{timestamp()} {callsign} {client_version} Connect New {'User' if is_new_user == 1 else 'Browser'}")
+        console_log(f"{callsign} {client_version} Connect New {'User' if is_new_user == 1 else 'Browser'}")
         first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, is_new_user)
     else:
-        print(f"{timestamp()} {callsign} {client_version} Existing Connect")
+        console_log(f"{callsign} {client_version} Existing Connect")
         existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, user_db_record, previous_connect_timestamp)
 
 def first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, is_new_user):
@@ -1901,7 +1901,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
 
     wps_logger("DISCONNECT HANDLER", callsign, "Starting")
     
-    print(f"{timestamp()} {callsign} disconnected")
+    console_log(f"{callsign} disconnected")
     disconnect_timestamp = round(time.time())
 
     wps_logger("DISCONNECT HANDLER", callsign, f"All connections BEFORE disconnect: {[c['callsign'] for c in connections_snapshot()]}")
@@ -1984,7 +1984,7 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
     for c in connections_snapshot():
         rc.append(c['callsign'])
 
-    print(f"{timestamp()} Connections After Disconnect: {str(rc)}")
+    console_log(f"Connections After Disconnect: {str(rc)}")
     
 def service_monitor_handler():
     ###
