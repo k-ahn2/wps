@@ -784,8 +784,8 @@ def dbGetMessagedUsers(CONN_DB_CURSOR, callsign):
             result.append({
                 "callsign": row[0],
                 "name": row[1],
-                "last_connected": row[2] if row[2] is not None else row[5],
-                "last_disconnected": row[3] if row[3] is not None else row[5],
+                "last_connected": row[2] if row[2] is not None else (row[5] or 0),
+                "last_disconnected": row[3] if row[3] is not None else (row[5] or 0),
                 "name_last_updated": row[4] if row[4] is not None else 0,
             })
 

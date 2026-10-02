@@ -244,7 +244,7 @@ Ordered by trigger. Each entry lists the keys that call adds or updates.
 
 | Key | Replacement | Removal |
 | - | - | - |
-| `lastseen` | `last_connected` / `last_disconnected` | [`dbCleanupDepracatedLastSeenKey`](/db.py#L490), triggered from `connect_handler` when a record has no `last_connected`. Still read as a fallback in [`dbGetMessagedUsers`](/db.py#L444) for records not yet migrated |
+| `lastseen` | `last_connected` / `last_disconnected` | [`dbCleanupDepracatedLastSeenKey`](/db.py#L490), triggered from `connect_handler` when a record has no `last_connected`. Still read as a fallback in [`dbGetMessagedUsers`](/db.py#L444) for records not yet migrated, which falls back to `0` when neither is present (e.g. users created by a replicated `user.online`) |
 
 ## Read-only consumers
 
