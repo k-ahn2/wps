@@ -485,58 +485,65 @@ def _apply_and_broadcast(cur, envelope):
             raise RuntimeError(f"dbUserUpdate failed: {update_resp['error']}")
 
     elif op == "user.online":
-        callsign = data["callsign"]
-        existing = db.dbUserSearch(cur, callsign)
-        if existing["result"] != "success":
-            raise RuntimeError(f"dbUserSearch failed: {existing['error']}")
-        user = existing["data"]
-        if user is None:
-            # Unlike user.update, an online status creates the user, so they're known here
-            # before their first connect. No last_connected: connect_handler treats the first
-            # local connect as a new user's. name_last_updated is local time, so clients
-            # pick the name up through the normal name-update watermark.
-            user = {
-                "callsign": callsign,
-                "name": data.get("name") or "-",
-                "name_last_updated": round(time.time()),
-                "channel_subscriptions": env.get('autoSubscribeToChannelIds', []),
-            }
-            wps_logger("REPLICATION APPLY", ORIGIN, f"user.online for unknown user {callsign}, creating: {user}")
-            create_resp = db.dbCreateNewUser(cur, user)
-            if create_resp["result"] == "failure":
-                raise RuntimeError(f"dbCreateNewUser failed: {create_resp['error']}")
-
-        # online_origin is the origin the user was last reported online at. An offline status
-        # clears it only if it came from that same origin - the user may since have connected
-        # at another peer.
-        origin = envelope["origin"]
-        if data.get("is_online"):
-            online_origin = origin
-        elif user.get("online_origin") == origin:
-            online_origin = None
-        else:
-            return "stale"
-        update_resp = db.dbSetOnlineOrigin(cur, callsign, online_origin)
-        if update_resp["result"] == "failure":
-            raise RuntimeError(f"dbSetOnlineOrigin failed: {update_resp['error']}")
-
-        # Tell connected clients, unless nothing changed or the user is also online here -
-        # local presence wins, and its own uc/ud covers them. is_online, not an open socket:
-        # a socket that hasn't sent its connect object yet isn't online here.
-        connections_now = connections_snapshot()
-        if online_origin != user.get("online_origin") and user.get("is_online") != 1:
-            presence_payload = {"t": "uc", "c": callsign, "or": online_origin} if online_origin else {"t": "ud", "c": callsign, "or": origin}
-            for C in connections_now:
-                handlers.socket_send_handler_other_connected_user(
-                    cur, sending_callsign=callsign, sending_connection=None,
-                    receiving_callsign=C["callsign"], receiving_connection=C["socket"],
-                    payload=presence_payload
-                )
+        return _apply_online_status(cur, envelope["origin"], data["callsign"], data.get("name"), data.get("is_online"))
 
     else:
         wps_logger("REPLICATION APPLY", ORIGIN, f"Unknown op '{op}', ignoring", "ERROR")
         return "ignored"
 
+    return "applied"
+
+
+def _apply_online_status(cur, origin, callsign, name, is_online):
+    '''
+    Records that callsign is (or is no longer) online at origin, and tells connected clients.
+    Shared by a user.online event and an online.response snapshot. Returns "applied" or "stale".
+    '''
+    existing = db.dbUserSearch(cur, callsign)
+    if existing["result"] != "success":
+        raise RuntimeError(f"dbUserSearch failed: {existing['error']}")
+    user = existing["data"]
+    if user is None:
+        # Unlike user.update, an online status creates the user, so they're known here
+        # before their first connect. No last_connected: connect_handler treats the first
+        # local connect as a new user's. name_last_updated is local time, so clients
+        # pick the name up through the normal name-update watermark.
+        user = {
+            "callsign": callsign,
+            "name": name or "-",
+            "name_last_updated": round(time.time()),
+            "channel_subscriptions": env.get('autoSubscribeToChannelIds', []),
+        }
+        wps_logger("REPLICATION APPLY", ORIGIN, f"Online status for unknown user {callsign}, creating: {user}")
+        create_resp = db.dbCreateNewUser(cur, user)
+        if create_resp["result"] == "failure":
+            raise RuntimeError(f"dbCreateNewUser failed: {create_resp['error']}")
+
+    # online_origin is the origin the user was last reported online at. An offline status
+    # clears it only if it came from that same origin - the user may since have connected
+    # at another peer.
+    if is_online:
+        online_origin = origin
+    elif user.get("online_origin") == origin:
+        online_origin = None
+    else:
+        return "stale"
+    update_resp = db.dbSetOnlineOrigin(cur, callsign, online_origin)
+    if update_resp["result"] == "failure":
+        raise RuntimeError(f"dbSetOnlineOrigin failed: {update_resp['error']}")
+
+    # Tell connected clients, unless nothing changed or the user is also online here -
+    # local presence wins, and its own uc/ud covers them. is_online, not an open socket:
+    # a socket that hasn't sent its connect object yet isn't online here.
+    connections_now = connections_snapshot()
+    if online_origin != user.get("online_origin") and user.get("is_online") != 1:
+        presence_payload = {"t": "uc", "c": callsign, "or": online_origin} if online_origin else {"t": "ud", "c": callsign, "or": origin}
+        for C in connections_now:
+            handlers.socket_send_handler_other_connected_user(
+                cur, sending_callsign=callsign, sending_connection=None,
+                receiving_callsign=C["callsign"], receiving_connection=C["socket"],
+                payload=presence_payload
+            )
     return "applied"
 
 
@@ -636,7 +643,7 @@ def _record_inbound_error(msg, error):
             detail=f"Not acked, DAPPS will redeliver: {error}", dapps_id=dapps_id, event=envelope)
 
 
-_CONTROL_OPS = {"ack", "digest", "sync.request", "seq_at.request", "seq_at.response"}
+_CONTROL_OPS = {"ack", "digest", "sync.request", "seq_at.request", "seq_at.response", "online.request", "online.response"}
 
 
 def _describe_control(envelope):
@@ -651,6 +658,11 @@ def _describe_control(envelope):
         return f"{envelope.get('requested_by')} asks {envelope.get('origin')} for seq at ts={envelope.get('ts')}"
     if op == "seq_at.response":
         return f"{envelope.get('origin')} answers seq={envelope.get('seq')} for {envelope.get('requested_by')}"
+    if op == "online.request":
+        return f"{envelope.get('requested_by')} asks who is online"
+    if op == "online.response":
+        users = envelope.get("users")
+        return f"{envelope.get('origin')} has {len(users) if isinstance(users, list) else '?'} online at seq={envelope.get('seq')}"
     return None
 
 
@@ -689,7 +701,7 @@ def _handle_inbound(msg):
     # present) and the identity claimed inside the envelope must be a peer. Anything else is
     # logged and dropped (acked, so it doesn't sit in the queue and get re-polled forever).
     # `by` and `requested_by` carry the sender's DAPPS callsign; `origin` carries its origin callsign.
-    claim_key = {"ack": "by", "sync.request": "requested_by", "seq_at.request": "requested_by"}.get(op, "origin")
+    claim_key = {"ack": "by", "sync.request": "requested_by", "seq_at.request": "requested_by", "online.request": "requested_by"}.get(op, "origin")
     claimed = envelope.get(claim_key)
     source = msg.get("sourceCallsign")
     claimed_ok = _is_configured_peer(claimed) if claim_key != "origin" else _is_configured_peer_origin(claimed)
@@ -732,6 +744,16 @@ def _handle_inbound(msg):
 
     if op == "seq_at.response":
         _handle_seq_at_response(envelope)
+        _dapps_ack(dapps_id)
+        return
+
+    if op == "online.request":
+        _handle_online_request(envelope)
+        _dapps_ack(dapps_id)
+        return
+
+    if op == "online.response":
+        _handle_online_response(envelope)
         _dapps_ack(dapps_id)
         return
 
@@ -950,6 +972,7 @@ def _reconcile_loop():
     while True:
         try:
             _retry_bootstrap_pending()
+            _send_online_requests()
             _send_digest()
             _log_backlog()
             _prune_activity()
@@ -1248,6 +1271,111 @@ def _retry_bootstrap_pending():
             _submit_control(_dapps_for_origin(peer), {"op": "seq_at.request", "origin": peer, "requested_by": DAPPS_CALLSIGN, "ts": BOOTSTRAP_FROM_TS}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
         except Exception as e:
             wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request to {peer} failed, will retry: {e}", "ERROR")
+
+
+# --- Presence snapshot: online.request/response, to learn who is online at peers after a start ---
+
+# Peer origins we've asked who is online but not yet had a usable answer from. In memory only:
+# a restart clears every online_origin and asks again anyway.
+_online_request_pending = set()
+_online_request_lock = threading.Lock()
+
+
+def request_online_users():
+    '''
+    Called once from wps.py's startup_and_listen(), after db.dbClearOnlineOrigins() has wiped
+    the presence heard before this restart. Asks every peer for the users online there now,
+    rather than leaving them looking offline until each next connects or disconnects.
+    Re-sent every reconcile tick until each peer answers (see _send_online_requests).
+    '''
+    if not ENABLED or not DAPPS_CALLSIGN or not PEERS:
+        return
+    with _online_request_lock:
+        _online_request_pending.update(origin for origin, _ in _PEER_PAIRS)
+    _send_online_requests()
+
+
+def _send_online_requests():
+    with _online_request_lock:
+        pending = list(_online_request_pending)
+    for origin in pending:
+        try:
+            _submit_control(_dapps_for_origin(origin), {"op": "online.request", "requested_by": DAPPS_CALLSIGN}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+        except Exception as e:
+            wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.request to {origin} failed, will retry: {e}", "ERROR")
+
+
+def _handle_online_request(envelope):
+    '''
+    A peer has just started and wants to know who is online here. Answered with every user
+    connected here, plus our latest seq so the requester can tell whether user.online events
+    it has already applied are newer than this snapshot.
+    '''
+    requester = envelope["requested_by"]
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT next_seq - 1 FROM replication_self WHERE id = 1")
+    my_latest = cur.fetchone()[0]
+    online_resp = db.dbGetOnlineUsers(cur)
+    if online_resp["result"] != "success":
+        raise RuntimeError(f"dbGetOnlineUsers failed: {online_resp['error']}")
+    users = [{"callsign": u["callsign"], "name": u.get("name")} for u in online_resp["data"]]
+
+    wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.request from {requester}: answering {len(users)} user(s) at seq={my_latest}")
+    try:
+        _submit_control(requester, {"op": "online.response", "origin": ORIGIN, "seq": my_latest, "requested_by": requester, "users": users}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+    except Exception as e:
+        wps_logger("REPLICATION PRESENCE", ORIGIN, f"Failed to send online.response to {requester}: {e}", "ERROR")
+
+
+def _handle_online_response(envelope):
+    '''
+    A peer's answer to our online.request: the users online there as of its seq. Applied as
+    the whole truth for that origin - listed users are marked online there, anyone else we
+    have as online there is cleared.
+
+    Its user.online events reach us separately, in order. Any up to seq that we haven't applied
+    yet will still be applied after this and end in the same state. But if we're already past
+    seq, the snapshot is older than presence we've applied, so it's discarded and asked for again.
+    '''
+    origin = envelope["origin"]
+    if envelope.get("requested_by") != DAPPS_CALLSIGN:
+        return  # a response to someone else's request
+    with _online_request_lock:
+        if origin not in _online_request_pending:
+            return  # a duplicate, or not something we asked for
+
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
+    row = cur.fetchone()
+    last_applied = row[0] if row else 0
+    if last_applied > envelope["seq"]:
+        wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response from {origin} is at seq={envelope['seq']} but we've applied up to {last_applied} - discarding, will ask again")
+        return
+
+    online = {u["callsign"]: u.get("name") for u in envelope["users"]}
+    remote_resp = db.dbGetRemoteOnlineUsers(cur)
+    if remote_resp["result"] != "success":
+        raise RuntimeError(f"dbGetRemoteOnlineUsers failed: {remote_resp['error']}")
+    gone = [u["callsign"] for u in remote_resp["data"] if u["online_origin"] == origin and u["callsign"] not in online]
+
+    db.set_applying_remote(True)
+    try:
+        for callsign, name in online.items():
+            _apply_online_status(cur, origin, callsign, name, True)
+        for callsign in gone:
+            _apply_online_status(cur, origin, callsign, None, False)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        db.set_applying_remote(False)
+
+    with _online_request_lock:
+        _online_request_pending.discard(origin)
+    wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response from {origin}: {len(online)} online, {len(gone)} cleared")
 
 
 def _log_backlog():

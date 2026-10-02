@@ -446,6 +446,9 @@ def startup_and_listen():
     # Presence heard from peers before this restart can't be trusted
     db.dbClearOnlineOrigins(global_cursor)
 
+    # ... so ask peers who is online at each of them now. After the clear, so an answer can't be wiped by it
+    replication.request_online_users()
+
     try:
         while True:
             wps_logger("CONNECTION HANDLER", "-----", "Wating for next connection ..")

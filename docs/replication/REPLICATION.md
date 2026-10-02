@@ -216,7 +216,7 @@ A peer running an older version cannot read a batch: it fails to handle it, neve
 
 ### Control messages
 
-Five more message types travel over the same DAPPS queue. They carry no `seq` and are not stored in `replication_log`.
+Seven more message types travel over the same DAPPS queue. They carry no `seq` and are not stored in `replication_log`.
 
 | `op` | Sent by | Purpose | Fields |
 | - | - | - | - |
@@ -225,6 +225,10 @@ Five more message types travel over the same DAPPS queue. They carry no `seq` an
 |`sync.request`|An instance that is behind|Asks the origin to re-send a range|`origin` (whose stream), `from_seq`, `to_seq`, `requested_by`|
 |`seq_at.request`|A new instance with `bootstrapFromTs` set|Asks a peer "what seq should I start from to get everything from timestamp `ts` onward?"|`origin` (whose stream - the recipient), `requested_by`, `ts` (epoch ms)|
 |`seq_at.response`|A peer, answering `seq_at.request`|Tells the requester the `last_applied_seq` to seed for the responder's own stream|`origin` (the responder, i.e. the stream), `seq`, `requested_by`|
+|`online.request`|Every instance, at startup|Asks a peer who is online there now, since startup clears all `online_origin`. Re-sent every reconcile tick until answered|`requested_by`|
+|`online.response`|A peer, answering `online.request`|The users connected at the responder, as of its latest `seq`. The requester sets `online_origin` to the responder for each listed user and clears it for anyone else it holds as online there. If it has already applied the responder's stream beyond `seq`, the snapshot is older than presence it holds, so it is discarded and asked for again|`origin` (the responder), `seq`, `requested_by`, `users` (`[{callsign, name}]`)|
+
+A peer running an older version doesn't recognise `online.request`: it falls through to the data-event path, fails on the missing `seq`, and never acknowledges it to DAPPS, while the requester re-sends one every reconcile tick. Upgrade every peer before restarting any one of them on this version.
 
 ## Processing
 
@@ -342,7 +346,7 @@ Each operation has a rule that makes it safe to apply twice and safe to apply ou
 |`msg.insert`|Insert. A duplicate `_id` is rejected by its unique index and ignored|
 |`msg.edit`, `msg.emoji`|As `post.edit` and `post.emoji`, keyed on `_id`|
 |`user.update`|Ignored if the user does not exist here. Ignored if the stored `name_last_updated` is `>=` the incoming one. Otherwise sets `name` and `name_last_updated`|
-|`user.online`|Creates the user if unknown, with `callsign`, `name`, `name_last_updated` (local time, seconds) and the default channel subscriptions, but no `last_connected`, so their first connect here is still handled as a new user's. Online: sets `online_origin` to the event's origin. Offline: sets `online_origin` to null if it holds this origin, otherwise ignored as stale, since the user may have since connected elsewhere. `online_origin` is also set to null for every user at startup, and is never replicated itself|
+|`user.online`|Creates the user if unknown, with `callsign`, `name`, `name_last_updated` (local time, seconds) and the default channel subscriptions, but no `last_connected`, so their first connect here is still handled as a new user's. Online: sets `online_origin` to the event's origin. Offline: sets `online_origin` to null if it holds this origin, otherwise ignored as stale, since the user may have since connected elsewhere. `online_origin` is also set to null for every user at startup, then rebuilt from each peer's `online.response` (see [Control messages](#control-messages)), and is never replicated itself|
 
 Guards are *last-writer-wins on the change's own timestamp*, which gives every instance the same answer whatever order events arrive in.
 
@@ -435,7 +439,7 @@ Also added: a unique index `idx_unique_post_cid_ts` on posts, so a replicated po
 | Tab | Shows |
 | - | - |
 |Overview|Our latest `seq` and outbox backlog; per peer: health, how far they have acknowledged our stream, how far we have applied theirs (against the `latest_seq` in their last digest), buffered gaps, when we last heard from and sent to them; last-24h counts by direction/category/status; recent failures|
-|Activity log|Every data event received or sent and every sync message (`ack`, `digest`, `sync.request`, `seq_at.*`) in both directions, plus local DAPPS going unreachable and recovering. Filter by category, direction, status, peer, problems only, or free text over content|
+|Activity log|Every data event received or sent and every sync message (`ack`, `digest`, `sync.request`, `seq_at.*`, `online.*`) in both directions, plus local DAPPS going unreachable and recovering. Filter by category, direction, status, peer, problems only, or free text over content|
 |Received items|Each inbound data delivery and its outcome: `applied`, `buffered` (gap or bootstrap), `duplicate`, `stale` (older than what we hold), `ignored`, `rejected` (unconfigured sender) or `error` (apply failed, will retry)|
 |Sent items|Every event this instance originated (`replication_log`), with each peer's state: `queued` (not yet in DAPPS), `submitted`, `acked`|
 |Buffered|The current contents of `replication_pending`|
@@ -566,8 +570,8 @@ Anything that happened after the copy is then filled in by digests.
 | File | What it holds |
 | - | - |
 |`db.py`|Replication tables (in `dbInit`), `_replicate_capture`, `set_applying_remote`, `REPLICATED_USER_FIELDS`, and the capture calls inside `dbInsertPost`, `dbUpdatePost`, `dbInsertMessage`, `dbUpdateMessage`, `dbUserUpdate`|
-|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); activity recording for the dashboard (`_record`, `_submit_control`, `_prune_activity`); `start()`|
+|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); the startup presence snapshot (`request_online_users`, `_handle_online_request`, `_handle_online_response`); activity recording for the dashboard (`_record`, `_submit_control`, `_prune_activity`); `start()`|
 |`replication_dashboard.py`|The read-only HTTP dashboard: JSON API over the replication tables plus the single-page UI. `start()` is called from `wps.py`; also runnable standalone|
-|`wps.py`|Calls `replication.start()` and `replication_dashboard.start()` at boot, after `db.dbInit`|
+|`wps.py`|Calls `replication.start()` and `replication_dashboard.start()` at boot, after `db.dbInit`, and `replication.request_online_users()` after clearing `online_origin`|
 |`env.py`|Default `replication` block added to `env.json`|
 |`requirements.txt`|`requests`|

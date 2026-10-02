@@ -292,7 +292,7 @@ EXPORT_FIELD_NOTES = {
     "at / at_iso": "When this instance recorded the row (epoch ms / UTC ISO-8601).",
     "direction": "in = received from a peer via DAPPS; out = submitted to local DAPPS for a peer.",
     "category": "data = a replicated change (post.insert, post.edit, post.emoji, msg.insert, msg.edit, msg.emoji, "
-                "user.update, user.online); sync = control message (ack, digest, sync.request, seq_at.request, seq_at.response); "
+                "user.update, user.online); sync = control message (ack, digest, sync.request, seq_at.request, seq_at.response, online.request, online.response); "
                 "system = local DAPPS polling failed/recovered.",
     "peer": "The other instance's DAPPS callsign (sender for in, destination for out).",
     "origin / seq": "The instance that originated the data event and its sequence number - together they identify "
