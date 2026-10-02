@@ -363,8 +363,14 @@ def _apply_and_broadcast(cur, envelope):
 
     elif op == "post.edit":
         existing = db.dbPostSearch(cur, key["cid"], key["ts"])
-        if existing["result"] != "success" or existing["data"] is None:
-            raise RuntimeError(f"post.edit for unknown post cid={key['cid']} ts={key['ts']}")
+        if existing["result"] != "success":
+            raise RuntimeError(f"dbPostSearch failed: {existing['error']}")
+        if existing["data"] is None:
+            # Not something waiting will fix: the target predates this instance's bootstrap point
+            # (or was never replicated). Raising would leave the event unacked and block every
+            # later seq from this origin behind it, so skip it and let the cursor move on.
+            wps_logger("REPLICATION APPLY", ORIGIN, f"Unknown post cid={key['cid']} ts={key['ts']} for post.edit - target never replicated here, skipping", "WARNING")
+            return "ignored"
         if existing["data"].get("edts", 0) >= data["edts"]:
             wps_logger("REPLICATION APPLY", ORIGIN, f"Stale post.edit for cid={key['cid']} ts={key['ts']}, ignoring")
             return "stale"
@@ -388,8 +394,12 @@ def _apply_and_broadcast(cur, envelope):
 
     elif op == "post.emoji":
         existing = db.dbPostSearch(cur, key["cid"], key["ts"])
-        if existing["result"] != "success" or existing["data"] is None:
-            raise RuntimeError(f"post.emoji for unknown post cid={key['cid']} ts={key['ts']}")
+        if existing["result"] != "success":
+            raise RuntimeError(f"dbPostSearch failed: {existing['error']}")
+        if existing["data"] is None:
+            # See post.edit above - skip rather than block the origin's stream.
+            wps_logger("REPLICATION APPLY", ORIGIN, f"Unknown post cid={key['cid']} ts={key['ts']} for post.emoji - target never replicated here, skipping", "WARNING")
+            return "ignored"
         if existing["data"].get("ets", 0) >= data["ets"]:
             wps_logger("REPLICATION APPLY", ORIGIN, f"Stale post.emoji for cid={key['cid']} ts={key['ts']}, ignoring")
             return "stale"
@@ -417,8 +427,12 @@ def _apply_and_broadcast(cur, envelope):
 
     elif op == "msg.edit":
         existing = db.dbMessageSearch(cur, key["_id"])
-        if existing["result"] != "success" or existing["data"] is None:
-            raise RuntimeError(f"msg.edit for unknown message _id={key['_id']}")
+        if existing["result"] != "success":
+            raise RuntimeError(f"dbMessageSearch failed: {existing['error']}")
+        if existing["data"] is None:
+            # See post.edit above - skip rather than block the origin's stream.
+            wps_logger("REPLICATION APPLY", ORIGIN, f"Unknown message _id={key['_id']} for msg.edit - target never replicated here, skipping", "WARNING")
+            return "ignored"
         if existing["data"].get("edts", 0) >= data["edts"]:
             wps_logger("REPLICATION APPLY", ORIGIN, f"Stale msg.edit for _id={key['_id']}, ignoring")
             return "stale"
@@ -439,8 +453,12 @@ def _apply_and_broadcast(cur, envelope):
 
     elif op == "msg.emoji":
         existing = db.dbMessageSearch(cur, key["_id"])
-        if existing["result"] != "success" or existing["data"] is None:
-            raise RuntimeError(f"msg.emoji for unknown message _id={key['_id']}")
+        if existing["result"] != "success":
+            raise RuntimeError(f"dbMessageSearch failed: {existing['error']}")
+        if existing["data"] is None:
+            # See post.edit above - skip rather than block the origin's stream.
+            wps_logger("REPLICATION APPLY", ORIGIN, f"Unknown message _id={key['_id']} for msg.emoji - target never replicated here, skipping", "WARNING")
+            return "ignored"
         if existing["data"].get("ets", 0) >= data["ets"]:
             wps_logger("REPLICATION APPLY", ORIGIN, f"Stale msg.emoji for _id={key['_id']}, ignoring")
             return "stale"
