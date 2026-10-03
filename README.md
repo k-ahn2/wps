@@ -272,12 +272,16 @@ WPS separates the TCP layer from the message-processing/business logic specifica
 
 **How it works:** `wps.py` owns the listening socket, the accept loop, and every open connection's raw receive/buffer/framing loop - it never contains processing or database logic itself. All message handling (connect, messages, posts, channels, avatars, stats, dispatch/routing, bot broadcast, etc.) lives in `handlers.py`, and every database interaction lives in `db.py`. `wps.py` and `handlers.py` only ever call these via `handlers.<function>(...)` / `db.<function>(...)`. Every open connection's read loop looks the function up on the module fresh for each incoming packet, so swapping `handlers.py`'s or `db.py`'s code in place (`importlib.reload`) is picked up by every connection's *next* message - no restart, no dropped socket. `get_db_connection()` opens a fresh SQLite connection per call rather than caching one at module level, so there's no stale connection to worry about across a `db.py` reload. Loaded bot modules in `bots/` work the same way and are reloaded alongside `handlers.py` and `db.py`. State that must survive a reload (open connections, loaded bots, the channel cache) lives in `state.py`, which is never itself reloaded.
 
-**To trigger it:** with WPS running attached to an interactive terminal (`python3 wps.py`), press `r` in that terminal - no Enter needed. This warm-reloads `db.py`, `handlers.py`, `replication.py`, and every currently loaded bot module in one go (in that order) and prints a confirmation for each.
+**To trigger it:** either
+- with WPS running attached to an interactive terminal (`python3 wps.py`), press `r` in that terminal - no Enter needed, or
+- send the WPS process a `SIGHUP` - when running as a service, `sudo systemctl reload wps` (see [Running WPS as a Service](docs/installation/INSTALLATION.md#running-wps-as-a-service)), otherwise `kill -HUP <pid>`
 
-> [!WARNING]
-> The `r` key listener only starts when WPS's stdin is an interactive TTY. **It is not available when WPS is run as a service** (e.g. via systemd with no attached terminal) or with stdin redirected/piped - in those setups, deploying a `db.py`, `handlers.py`, `replication.py` or bot change requires a normal restart.
+Either way, this warm-reloads `db.py`, `handlers.py`, `replication.py`, and every currently loaded bot module in one go (in that order) and prints a confirmation for each. Reloads are serialised, so triggers arriving close together run one after the other.
 
-### What is included (reloadable via `r`, no restart, no disconnect)
+> [!NOTE]
+> The `r` key listener only starts when WPS's stdin is an interactive TTY, so it isn't available as a service or with stdin redirected/piped - use `SIGHUP` there. Both triggers reload exactly the same code.
+
+### What is included (reloadable via `r` or `SIGHUP`, no restart, no disconnect)
 - Everything in `handlers.py` - all message type handlers, the `t`-keyed dispatch logic, push notification logic, compression helpers, and channel cache sync logic
 - Everything in `db.py` - every database query and schema-touching function (`dbUserSearch`, `dbInsertPost`, `dbInit`, etc.)
 - Everything in `replication.py` - the outbox, inbox and reconcile pumps' per-tick logic, inbound/control message handling, and acks. The pump threads keep running; each one looks up its per-pass function afresh every time round, so its next pass runs the new code. In-memory replication state (held acks, sync-request throttles, pending presence requests) carries over the reload

@@ -12,13 +12,15 @@ import time
 import importlib
 import os
 import sys
+import signal
 
 # wps.py is the TCP layer: it owns the listening socket and every open connection's raw
 # recv/buffer/framing loop. It never contains message-processing/business logic itself - that
 # all lives in handlers.py, and every database interaction lives in db.py. Both are called only
 # via `handlers.<func>(...)` / `db.<func>(...)` (module-attribute lookup at call time, never
 # `from handlers import *` / `from db import *`) so that a warm reload of either
-# (importlib.reload, triggered by pressing 'r' - see code_reload_key_listener below) swaps in
+# (importlib.reload, triggered by pressing 'r' or by SIGHUP - see code_reload_key_listener and
+# reload_signal_handler below) swaps in
 # new code for every open connection without ever touching this file's socket, accept loop, or
 # per-connection threads. Shared state that must survive that reload (CONNECTIONS, BOTS,
 # CHANNELS_CACHE, ...) lives in state.py, imported by both this module and handlers.py.
@@ -113,16 +115,32 @@ def reload_bots():
         except Exception as reload_e:
             console_log(f"ERROR: failed to reload bot module '{mod.__name__}': {reload_e}", "ERROR")
 
+# Serialises warm reloads, so an 'r' keypress and a SIGHUP (or two SIGHUPs) arriving close
+# together run one after the other rather than reloading the same modules concurrently.
+RELOAD_LOCK = threading.Lock()
+
 def reload_code():
     '''
     Warm-reloads all reloadable code - db.py, handlers.py, replication.py, and any loaded bot
     modules - in one go. db.py is reloaded first since handlers.py, replication.py (and bots,
     indirectly) depend on it.
     '''
-    reload_db()
-    reload_handlers()
-    reload_replication()
-    reload_bots()
+    with RELOAD_LOCK:
+        reload_db()
+        reload_handlers()
+        reload_replication()
+        reload_bots()
+
+def reload_signal_handler(signum, frame):
+    '''
+    SIGHUP handler: warm-reloads code exactly as pressing 'r' does, for when WPS runs without
+    an attached terminal (e.g. as a systemd service, where `systemctl reload wps` sends SIGHUP
+    via the unit's ExecReload). Python runs signal handlers on the main thread, which is
+    blocked in S.accept() - accept() resumes by itself once the handler returns (PEP 475), so
+    the reload is handed to its own thread rather than holding up the accept loop.
+    '''
+    console_log("SIGHUP received, warm-reloading code")
+    threading.Thread(target=reload_code, daemon=True, name='code_reload_signal').start()
 
 def code_reload_key_listener():
     '''
@@ -439,6 +457,9 @@ def startup_and_listen():
                 console_log(f"Bot '{bot_name}' enabled on channel {cid}")
             except Exception as bot_init_e:
                 console_log(f"ERROR: failed to load bot '{bot_name}': {bot_init_e}", "ERROR")
+
+    signal.signal(signal.SIGHUP, reload_signal_handler)
+    console_log(f"Send SIGHUP (e.g. 'systemctl reload wps') to warm-reload db and processing code{' and bots' if BOTS else ''} without disconnecting users")
 
     if sys.stdin.isatty():
         threading.Thread(target=code_reload_key_listener, daemon=True, name='code_reload_key_listener').start()

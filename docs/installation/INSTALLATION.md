@@ -25,7 +25,7 @@ This will start WPS with a default configuration. When running for the first tim
 Check for errors in the console. Confirmation of the TCP Port is shown - check this matches the port in BPQ or Xrouter.
 
 > [!TIP]
-> When run this way, attached to an interactive terminal, press `r` at any time to warm-reload database, message-processing and bot code changes into the running server without disconnecting any connected user. This only works with an attached TTY - not when WPS is run as a service. See [Warm Reloading Code](/README.md#warm-reloading-code) for what is and isn't covered.
+> When run this way, attached to an interactive terminal, press `r` at any time to warm-reload database, message-processing and bot code changes into the running server without disconnecting any connected user. When WPS runs as a service, use `sudo systemctl reload wps` instead (see [Managing the service](#managing-the-service)). See [Warm Reloading Code](/README.md#warm-reloading-code) for what is and isn't covered.
 
 ## Node Integration - Interfacing with BPQ or Xrouter
 
@@ -202,6 +202,7 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/wps
 ExecStart=/usr/bin/python3 wps.py
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGINT
@@ -216,6 +217,7 @@ WantedBy=multi-user.target
 Notes on the settings:
 - `WorkingDirectory` **must** be the WPS directory - WPS reads and writes `env.json`, `channels.json`, `bots/`, the database and log files relative to the directory it's started from
 - `KillSignal=SIGINT` makes `systemctl stop` behave like pressing Ctrl+C, so WPS runs its normal shutdown - closing the TCP listener and each connected session - rather than being terminated abruptly. `TimeoutStopSec` gives it time to do so (it pauses briefly per connected user)
+- `ExecReload` makes `systemctl reload wps` send WPS a `SIGHUP`, which warm-reloads code changes without disconnecting anyone - the service equivalent of pressing `r`. See [Warm Reloading Code](/README.md#warm-reloading-code)
 - `StandardOutput=null` avoids duplicate log lines - WPS already mirrors all console output to syslog (see [Viewing the logs](#4-viewing-the-logs)). `StandardError=journal` keeps any uncaught Python errors visible in the journal
 - If you installed the Python requirements into a virtual environment, point `ExecStart` at its interpreter instead, e.g. `ExecStart=/home/pi/wps/.venv/bin/python /home/pi/wps/wps.py`
 
@@ -252,12 +254,15 @@ Use `journalctl -u wps` to see service start/stop events and any uncaught Python
 | Task | Command |
 | - | :- |
 | Stop WPS | `sudo systemctl stop wps` |
+| Warm-reload code changes without disconnecting users (e.g. after a `git pull` touching only `db.py`, `handlers.py`, `replication.py` or loaded bots) | `sudo systemctl reload wps` |
 | Restart WPS (e.g. after a `git pull` or `env.json` change) | `sudo systemctl restart wps` |
 | Disable start at boot | `sudo systemctl disable wps` |
 | After editing `wps.service` | `sudo systemctl daemon-reload` then `sudo systemctl restart wps` |
 
 > [!NOTE]
-> The `r` warm-reload key isn't available when WPS runs as a service, as there's no attached terminal. Deploying code changes requires `sudo systemctl restart wps`, which disconnects connected users. See [Warm Reloading Code](/README.md#warm-reloading-code).
+> `sudo systemctl reload wps` only covers what the `r` key covers - a change to `wps.py`, `state.py`, `env.json` or the bot list still needs `sudo systemctl restart wps`, which disconnects connected users. Check a change parses cleanly (e.g. `python3 -c "import db, handlers, replication"`) before reloading, and watch `journalctl -t WPS -f` for the `Reloaded ...` confirmations. See [Warm Reloading Code](/README.md#warm-reloading-code).
+>
+> If you set up the service before `ExecReload` was added, add the line to `wps.service` and run `sudo systemctl daemon-reload` - without it, `systemctl reload wps` fails with "Job type reload is not applicable".
 
 ## WPS System and Log Files
 
