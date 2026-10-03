@@ -327,6 +327,12 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
         is_new_user = 0
         user_database_record = callsign_search['data']
         
+        # Created from a peer's replicated online status and never connected here, so still a
+        # new user on this instance, even though replication may have set last_connected
+        if user_database_record.get('created_by_replication'):
+            is_new_user = 1
+            user_database_record.setdefault('last_connected', connect_timestamp)
+
         # Handle historic lastseen field, now replaced with last_connected and last_disconnected
         if 'last_connected' not in user_database_record:
             if 'lastseen' in user_database_record:
@@ -358,6 +364,8 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
         "is_online": 1,
         "last_client_version": client_version
     }
+    if user_database_record.get('created_by_replication'):
+        user_updated_fields['created_by_replication'] = 0
     
     wps_logger("CONNECT HANDLER", callsign, f"User is now marked as online")
     wps_logger("CONNECT HANDLER", callsign, f"Is New User = {is_new_user}") if is_new_user == 1 else None

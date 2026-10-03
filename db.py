@@ -82,10 +82,12 @@ def _replicate_capture(cursor, op, key, data, ts=None):
     except Exception as e:
         db_logger("_replicate_capture", f"Failed to capture replication event for op {op}: {e}", "ERROR")
 
-def _replicate_online_status(cursor, callsign, is_online):
+def _replicate_online_status(cursor, callsign, is_online, ts=None):
     '''
     Captures a user.online event carrying the user's callsign and current name, so a peer can
     create the user if it has never seen them and record where they are online (online_origin).
+    ts is the last_connected (online) or last_disconnected (offline) just written here, so the
+    peer stores the same value; absent when the update didn't set one.
     Called after the UPDATE has run, so the name read here is the one just written.
     '''
     if not REPLICATION_ENABLED or _is_applying_remote():
@@ -96,7 +98,10 @@ def _replicate_online_status(cursor, callsign, is_online):
     except Exception as e:
         db_logger("_replicate_online_status", f"Failed to read name for {callsign}: {e}", "ERROR")
         return
-    _replicate_capture(cursor, "user.online", None, {"callsign": callsign, "name": row[0] if row else None, "is_online": 1 if is_online else 0})
+    data = {"callsign": callsign, "name": row[0] if row else None, "is_online": 1 if is_online else 0}
+    if ts is not None:
+        data["ts"] = ts
+    _replicate_capture(cursor, "user.online", None, data)
 
 def get_db_connection():
     '''
@@ -357,7 +362,9 @@ def dbUserUpdate(CONN_DB_CURSOR, callsign, update_object):
         CONN_DB_CURSOR.execute(update_query, params)
 
         if "is_online" in update_object:
-            _replicate_online_status(CONN_DB_CURSOR, callsign, update_object["is_online"])
+            is_online = update_object["is_online"]
+            ts = update_object.get("last_connected" if is_online else "last_disconnected")
+            _replicate_online_status(CONN_DB_CURSOR, callsign, is_online, ts)
 
         CONN_DB_CURSOR.connection.commit()
 

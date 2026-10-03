@@ -559,7 +559,7 @@ def _apply_and_broadcast(cur, envelope):
             raise RuntimeError(f"dbUserUpdate failed: {update_resp['error']}")
 
     elif op == "user.online":
-        return _apply_online_status(cur, envelope["origin"], data["callsign"], data.get("name"), data.get("is_online"))
+        return _apply_online_status(cur, envelope["origin"], data["callsign"], data.get("name"), data.get("is_online"), data.get("ts"))
 
     else:
         wps_logger("REPLICATION APPLY", ORIGIN, f"Unknown op '{op}', ignoring", "ERROR")
@@ -568,9 +568,11 @@ def _apply_and_broadcast(cur, envelope):
     return "applied"
 
 
-def _apply_online_status(cur, origin, callsign, name, is_online):
+def _apply_online_status(cur, origin, callsign, name, is_online, ts=None):
     '''
     Records that callsign is (or is no longer) online at origin, and tells connected clients.
+    ts, when given, is the origin's last_connected (online) or last_disconnected (offline),
+    stored here too so both instances hold the same value.
     Shared by a user.online event and an online.response snapshot. Returns "applied" or "stale".
     '''
     existing = db.dbUserSearch(cur, callsign)
@@ -579,19 +581,35 @@ def _apply_online_status(cur, origin, callsign, name, is_online):
     user = existing["data"]
     if user is None:
         # Unlike user.update, an online status creates the user, so they're known here
-        # before their first connect. No last_connected: connect_handler treats the first
-        # local connect as a new user's. name_last_updated is local time, so clients
+        # before their first connect. created_by_replication makes connect_handler treat the
+        # first local connect as a new user's. name_last_updated is local time, so clients
         # pick the name up through the normal name-update watermark.
         user = {
             "callsign": callsign,
             "name": name or "-",
             "name_last_updated": round(time.time()),
             "channel_subscriptions": env.get('autoSubscribeToChannelIds', []),
+            "created_by_replication": 1,
         }
         wps_logger("REPLICATION APPLY", ORIGIN, f"Online status for unknown user {callsign}, creating: {user}")
         create_resp = db.dbCreateNewUser(cur, user)
         if create_resp["result"] == "failure":
             raise RuntimeError(f"dbCreateNewUser failed: {create_resp['error']}")
+
+    # Only ever moves forward: events from different origins arrive in no particular order.
+    # Applied even when the status itself is stale - the user did still connect or
+    # disconnect at origin at ts.
+    if ts is not None:
+        ts_field = "last_connected" if is_online else "last_disconnected"
+        if (user.get(ts_field) or 0) < ts:
+            ts_update = {ts_field: ts}
+            # Created by replication before created_by_replication existed - flag it now, as
+            # a last_connected would otherwise hide that it has never connected here
+            if "last_connected" not in user and "lastseen" not in user:
+                ts_update["created_by_replication"] = 1
+            ts_resp = db.dbUserUpdate(cur, callsign, ts_update)
+            if ts_resp["result"] == "failure":
+                raise RuntimeError(f"dbUserUpdate failed: {ts_resp['error']}")
 
     # online_origin is the origin the user was last reported online at. An offline status
     # clears it only if it came from that same origin - the user may since have connected
@@ -1399,7 +1417,7 @@ def _handle_online_request(envelope):
     online_resp = db.dbGetOnlineUsers(cur)
     if online_resp["result"] != "success":
         raise RuntimeError(f"dbGetOnlineUsers failed: {online_resp['error']}")
-    users = [{"callsign": u["callsign"], "name": u.get("name")} for u in online_resp["data"]]
+    users = [{"callsign": u["callsign"], "name": u.get("name"), "ts": u.get("last_connected")} for u in online_resp["data"]]
 
     wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.request from {requester}: answering {len(users)} user(s) at seq={my_latest}")
     try:
@@ -1434,7 +1452,7 @@ def _handle_online_response(envelope):
         wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response from {origin} is at seq={envelope['seq']} but we've applied up to {last_applied} - discarding, will ask again")
         return
 
-    online = {u["callsign"]: u.get("name") for u in envelope["users"]}
+    online = {u["callsign"]: u for u in envelope["users"]}
     remote_resp = db.dbGetRemoteOnlineUsers(cur)
     if remote_resp["result"] != "success":
         raise RuntimeError(f"dbGetRemoteOnlineUsers failed: {remote_resp['error']}")
@@ -1442,8 +1460,8 @@ def _handle_online_response(envelope):
 
     db.set_applying_remote(True)
     try:
-        for callsign, name in online.items():
-            _apply_online_status(cur, origin, callsign, name, True)
+        for callsign, u in online.items():
+            _apply_online_status(cur, origin, callsign, u.get("name"), True, u.get("ts"))
         for callsign in gone:
             _apply_online_status(cur, origin, callsign, None, False)
         conn.commit()
