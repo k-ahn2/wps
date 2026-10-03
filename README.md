@@ -66,7 +66,7 @@ Links to documentation in the `/docs` directory
 - **Compression:** WPS compresses every packet before sending, then sends whichever of the compressed or uncompressed version is shorter
 - **Data Batching:** WPS batches bulk post and message downloads, optimising compression and delivery
 - **Logging:** WPS includes error logging by default, with extensive info logging configurable if required
-- **Run as Service:** WPS runs as a standard linux service (and assume could on Windows too)
+- **Run as Service:** WPS runs as a standard linux service (and assume could on Windows too) - see [Running WPS as a Service](docs/installation/INSTALLATION.md#running-wps-as-a-service)
 - **Warm Reload:** Deploy new message-processing and bot code to a running WPS instance without dropping any connected user - see [Warm Reloading Code](#warm-reloading-code)
 
 ## Future

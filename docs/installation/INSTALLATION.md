@@ -6,7 +6,8 @@
 2. [Node Integration - Interfacing with BPQ or Xrouter](#node-integration---interfacing-with-bpq-or-xrouter)
 3. [Configuring `env.json`](#configuring-envjson)
 4. [Configuring `channels.json`](#configuring-channelsjson)
-5. [WPS System and Log Files](#wps-system-and-log-files)
+5. [Running WPS as a Service](#running-wps-as-a-service)
+6. [WPS System and Log Files](#wps-system-and-log-files)
 
 [Return to README](/README.md)
 
@@ -172,6 +173,91 @@ The default created on first run - one group containing one channel:
 ```
 
 For grouping channels, adding auto-subscribed or read-only channels, or linking a channel to a bot, see the full field reference and examples in [Protocol - Channels](/docs/protocol/CHANNELS.md#type-chl---channel-list).
+
+## Running WPS as a Service
+
+Once WPS runs correctly from the terminal, it can be set up as a `systemd` service so it starts at boot and restarts automatically if it stops. The steps below assume Raspberry Pi OS (or any `systemd`-based Linux), with WPS cloned to `/home/pi/wps` and run as the `pi` user - adjust the paths and user to suit your system.
+
+> [!IMPORTANT]
+> Run WPS once from the terminal first (see [WPS Installation and Prereqs](#wps-installation-and-prereqs)) so `env.json`, `channels.json` and the database are created and you've confirmed it starts without errors. Also make sure the packages in `requirements.txt` are available to the Python the service will use - e.g. `sudo apt install python3-requests` for the system Python.
+
+### 1. Create the service file
+
+Create `/etc/systemd/system/wps.service`:
+
+```
+sudo nano /etc/systemd/system/wps.service
+```
+
+With the following contents:
+
+```ini
+[Unit]
+Description=WPS - Packet Radio Messaging Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/wps
+ExecStart=/usr/bin/python3 /home/pi/wps/wps.py
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=90
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Notes on the settings:
+- `WorkingDirectory` **must** be the WPS directory - WPS reads and writes `env.json`, `channels.json`, `bots/`, the database and log files relative to the directory it's started from
+- `KillSignal=SIGINT` makes `systemctl stop` behave like pressing Ctrl+C, so WPS runs its normal shutdown - closing the TCP listener and each connected session - rather than being terminated abruptly. `TimeoutStopSec` gives it time to do so (it pauses briefly per connected user)
+- `StandardOutput=null` avoids duplicate log lines - WPS already mirrors all console output to syslog (see [Viewing the logs](#4-viewing-the-logs)). `StandardError=journal` keeps any uncaught Python errors visible in the journal
+- If you installed the Python requirements into a virtual environment, point `ExecStart` at its interpreter instead, e.g. `ExecStart=/home/pi/wps/.venv/bin/python /home/pi/wps/wps.py`
+
+### 2. Enable and start the service
+
+```
+sudo systemctl daemon-reload
+sudo systemctl enable wps
+sudo systemctl start wps
+```
+
+`enable` makes WPS start at boot; `start` starts it now.
+
+### 3. Check it's running
+
+```
+sudo systemctl status wps
+```
+
+The status should show `active (running)`. Confirm BPQ or Xrouter can connect on the configured `socketTcpPort`.
+
+### 4. Viewing the logs
+
+Console output is sent to syslog under the `WPS` identifier, so it can be followed with:
+
+```
+journalctl -t WPS -f
+```
+
+Use `journalctl -u wps` to see service start/stop events and any uncaught Python errors. Application and database logging continue to be written to `wps.log` and `db.log` in the WPS directory as normal - see [WPS System and Log Files](#wps-system-and-log-files).
+
+### Managing the service
+
+| Task | Command |
+| - | :- |
+| Stop WPS | `sudo systemctl stop wps` |
+| Restart WPS (e.g. after a `git pull` or `env.json` change) | `sudo systemctl restart wps` |
+| Disable start at boot | `sudo systemctl disable wps` |
+| After editing `wps.service` | `sudo systemctl daemon-reload` then `sudo systemctl restart wps` |
+
+> [!NOTE]
+> The `r` warm-reload key isn't available when WPS runs as a service, as there's no attached terminal. Deploying code changes requires `sudo systemctl restart wps`, which disconnects connected users. See [Warm Reloading Code](/README.md#warm-reloading-code).
 
 ## WPS System and Log Files
 
