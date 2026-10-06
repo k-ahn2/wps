@@ -14,6 +14,7 @@
     5. [Apply](#5-apply)
     6. [Acknowledge](#6-acknowledge)
     7. [Reconcile](#7-reconcile)
+    8. [Relaying - tree topology](#8-relaying---tree-topology)
 6. [Data Model](#data-model)
 7. [Guarantees and Failure Behaviour](#guarantees-and-failure-behaviour)
 8. [Monitoring and Operations](#monitoring-and-operations)
@@ -102,6 +103,7 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`dappsCallsign`|String|`""`|This instance's identity, and **must exactly equal the callsign you gave this node's DAPPS** in step 2 above, SSID included. Peers address acknowledgements and resend requests to this value. Used as the envelope `origin`|
 |`originCallsign`|String|`""`|This instance's identity in the replication stream: the envelope `origin`, and the `o` key on posts received via replication. Defaults to `dappsCallsign` if empty. Peers list it as that peer's `originCallsign`|
 |`peers`|Array|`[]`|The other instances, each as `{"originCallsign": "...", "dappsCallsign": "..."}`: that peer's own `originCallsign` setting (the `origin` in its envelopes) and its **DAPPS callsign** (SSID included). Events are sent only to the DAPPS callsigns, and inbound events are accepted only if the DAPPS source and the claimed origin belong to a listed peer (case-insensitive). A bare string is treated as a peer whose two callsigns are identical|
+|`relay`|Boolean|`false`|Pass other instances' events on to the rest of `peers`, so instances can be linked as a tree instead of a full mesh - see [Relaying](#8-relaying---tree-topology). Set the same on every instance|
 |`appSlug`|String|`wps-repl`|The DAPPS queue name. **Must be identical on every instance**|
 |`dappsRestUrl`|String|`http://127.0.0.1:5000`|Base URL of this node's own DAPPS dashboard/REST API. Change only if DAPPS runs on another host or port|
 |`streamTtlSeconds`|Number|`604800`|How long DAPPS keeps trying to deliver an event (7 days). Anything older is caught by [reconciliation](#7-reconcile)|
@@ -119,11 +121,11 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`dashboard.port`|Number|`8095`|Dashboard HTTP port|
 |`dashboard.password`|String|`""`|Optional. If set, the dashboard requires HTTP basic auth with this password (any username). Empty means no authentication|
 
-Each peer needs the mirror-image configuration: its own `dappsCallsign`, and a `peers` list that includes yours. Replication is **full mesh** - every instance lists every other instance.
+Each peer needs the mirror-image configuration: its own `dappsCallsign`, and a `peers` list that includes yours. With `relay` off, replication is **full mesh** - every instance lists every other instance. With `relay` on, each instance lists only its neighbours in a tree - see [Relaying](#8-relaying---tree-topology).
 
 On startup WPS prints one of:
 
-- `Replication started: origin=... app=... peers=... dapps=...`
+- `Replication started: origin=... app=... peers=... relay=... dapps=...`
 - `Replication disabled (set replication.enabled=true in env.json to turn on)`
 - `Replication enabled but replication.dappsCallsign/peers are not configured in env.json - not starting`
 
@@ -221,12 +223,12 @@ Seven more message types travel over the same DAPPS queue. They carry no `seq` a
 | `op` | Sent by | Purpose | Fields |
 | - | - | - | - |
 |`ack`|Receiver, after applying an event|Tells the origin its event is applied, so the origin can retire it|`origin` (the stream owner), `seq`, `by` (the acknowledging instance)|
-|`digest`|Every instance, periodically|Announces "my own stream is at seq N"|`origin`, `latest_seq`|
+|`digest`|Every instance, periodically|Announces "my own stream is at seq N", and with `relay` on, the latest seq held of each origin relayed to the recipient|`origin`, `latest_seq`, `vector` (relay only: `{origin: seq}`)|
 |`sync.request`|An instance that is behind|Asks the origin to re-send a range|`origin` (whose stream), `from_seq`, `to_seq`, `requested_by`|
 |`seq_at.request`|A new instance with `bootstrapFromTs` set|Asks a peer "what seq should I start from to get everything from timestamp `ts` onward?"|`origin` (whose stream - the recipient), `requested_by`, `ts` (epoch ms)|
 |`seq_at.response`|A peer, answering `seq_at.request`|Tells the requester the `last_applied_seq` to seed for the responder's own stream|`origin` (the responder, i.e. the stream), `seq`, `requested_by`|
 |`online.request`|Every instance, at startup|Asks a peer who is online there now, since startup clears all `online_origin`. Re-sent every reconcile tick until answered|`requested_by`|
-|`online.response`|A peer, answering `online.request`|The users connected at the responder, as of its latest `seq`. The requester sets `online_origin` to the responder for each listed user and clears it for anyone else it holds as online there. If it has already applied the responder's stream beyond `seq`, the snapshot is older than presence it holds, so it is discarded and asked for again|`origin` (the responder), `seq`, `requested_by`, `users` (`[{callsign, name, ts}]`, `ts` being the user's `last_connected` at the responder)|
+|`online.response`|A peer, answering `online.request`. With `relay` on, `relayed` adds a snapshot per origin it relays to the requester|The users connected at the responder, as of its latest `seq`. The requester sets `online_origin` to the responder for each listed user and clears it for anyone else it holds as online there. If it has already applied the responder's stream beyond `seq`, the snapshot is older than presence it holds, so it is discarded and asked for again|`origin` (the responder), `seq`, `requested_by`, `users` (`[{callsign, name, ts}]`, `ts` being the user's `last_connected` at the responder)|
 
 A peer running an older version doesn't recognise `online.request`: it falls through to the data-event path, fails on the missing `seq`, and never acknowledges it to DAPPS, while the requester re-sends one every reconcile tick. Upgrade every peer before restarting any one of them on this version.
 
@@ -395,6 +397,28 @@ A `sync.request` is answered by reading the range from `replication_log` and re-
 
 The same tick logs the current backlog (outbox rows awaiting acknowledgement, buffered gaps) at `INFO`.
 
+### 8. Relaying - tree topology
+
+With `relay: true` on every instance, an instance lists only its **neighbours** in `peers`, and events reach the rest through them. For example, with A and C both linked only to B:
+
+```
+A ─── B ─── C        A: peers [B]    B: peers [A, C]    C: peers [B]
+```
+
+A post on C goes to B, and B passes it on to A. A post on A goes the other way. The links **must form a tree**: no loops. Replication would still be correct with a loop, because `(origin, seq)` dedupe drops repeats, but every event would cross some links more than once.
+
+How it works:
+
+- **Forwarding.** B stores every event it applies in `replication_log`, under its true `origin` and `seq` (never rewritten), and the outbox pump's relay pass (`_relay_pump_tick`) sends each one on to every peer except the one it came from. Per neighbour and origin, `replication_forward` tracks what was sent and acknowledged. A relayed event carries `by` (the relaying instance's DAPPS callsign) and uses its own stream id, `wps-repl:<origin>.e<epoch>.<relay DAPPS callsign>`.
+- **Trust.** An event whose `origin` is not in `peers` is accepted when a configured peer relays it, that peer being the DAPPS source (or `by` if there is no source). Trust is transitive: every instance trusts what its neighbours trust.
+- **Routing.** For each origin it doesn't peer with directly, an instance records which neighbour that origin's events arrive through (`replication_route`). Acks, `sync.request`s and `seq_at.request`s for that origin go to that neighbour, never to the origin itself.
+- **Acknowledgements are per hop.** C's outbox row retires once B acknowledges it. From then on, B is responsible for getting it to A, and A acknowledges to B.
+- **Reconciliation.** Digests carry a `vector` of each relayed origin's latest seq. A neighbour that is behind sends a `sync.request` to the relay, which serves it from its log. A relay can only serve as far back as its log of that origin goes: if a relay starts relaying an origin it already had a cursor for, older events can't be served, so bring a new instance in below it with `bootstrapFromTs`.
+- **Bootstrap.** With `bootstrapFromTs` set, an origin first heard of through a relay is bootstrapped via a `seq_at.request` to the relay, as configured peers are at startup.
+- **Presence.** The relay's `online.response` includes who it has as online at each origin it relays.
+
+To move from full mesh to a tree, upgrade every instance, set `relay: true` on every instance, cut each `peers` list down to its neighbours, and restart them all. An instance with `relay` off rejects relayed events as from an unconfigured peer.
+
 ## Data Model
 
 All replication tables live in `wps.db` and are created by `db.dbInit`.
@@ -402,7 +426,9 @@ All replication tables live in `wps.db` and are created by `db.dbInit`.
 | Table | Purpose | Written by |
 | - | - | - |
 |`replication_self`|One row: `origin_id`, `next_seq` (the next `seq` to allocate) and `epoch`|Capture|
-|`replication_log`|Append-only record of every event this instance originated, `(origin, seq)` as the key. The source for re-sends|Capture|
+|`replication_log`|Append-only record of every event this instance originated, `(origin, seq)` as the key. The source for re-sends. With `relay` on, also every event applied from other origins|Capture; inbox pump (relay)|
+|`replication_forward`|Relay only. Per neighbour and other origin: `submitted_seq` and `acked_seq` of that origin's stream as passed on to that neighbour|Inbox pump, relay pass, acknowledgements|
+|`replication_route`|Relay only. Per origin not in `peers`: `via`, the neighbour its events arrive through|Inbox pump|
 |`replication_outbox`|Events not yet acknowledged by every peer: `seq`, `dapps_ids` (JSON of peer to DAPPS id, for tracing) and `submitted_at` (set once every peer has been submitted)|Capture, outbox pump; deleted by acknowledgements|
 |`replication_peer_ack`|Per configured peer: `peer_acked_seq` (highest of our events the peer confirmed applied), `submitted_seq` (highest handed to DAPPS for it)|Startup, outbox pump, acknowledgements|
 |`replication_origin_cursor`|Per remote origin: `last_applied_seq`, the highest contiguous event applied|Inbox pump|
@@ -549,7 +575,7 @@ On first start, seeing `bootstrapFromTs` set and no `replication_origin_cursor` 
 Anything that happened after the copy is then filled in by digests.
 
 > [!NOTE]
-> The database-copy procedure above follows from how the cursors work but has not yet been exercised against live instances. `bootstrapFromTs` likewise. Try either on a test pair first.
+> `bootstrapFromTs` has been tested against live instances. The database-copy procedure above follows from how the cursors work but has not yet been exercised against live instances - try it on a test pair first.
 
 ## Known Limitations
 
@@ -558,7 +584,7 @@ Anything that happened after the copy is then filled in by digests.
 - **Users are not created by replication**, and a name change for a user unknown on a peer is ignored there.
 - **A true collision is not merged.** If two instances ever held different content for the same post `(cid, ts)` or message `_id`, each keeps the first it saw and they would diverge. Timestamps are millisecond-precision and include the author, so this is theoretical.
 - **Bots.** Bot posts replicate like any post. If a bot runs on more than one replicated instance, each will post independently and each will receive the other's, so posts double up. Run a given bot on one instance only.
-- **Full mesh only.** Every instance must list every other in `peers`. There is no relaying through an intermediate instance.
+- **Full mesh or tree.** Without `relay`, every instance must list every other in `peers`. With `relay`, the peer links must form a tree. There is no loop detection, so a loop works but costs repeated transmissions. In a tree each link is a single point of failure: the instances beyond it catch up when it returns. The dashboard lists relayed origins with what has been applied, but not per-neighbour forwarding progress.
 - **REST polling.** The inbox is polled rather than subscribed to, adding up to one poll interval of latency (`inboxFastPollSeconds` while active, `inboxPollSeconds` when quiet). DAPPS's MQTT interface could remove it.
 - **DAPPS authentication is not supported.** If you enable DAPPS's `auth-required` option, the REST calls here would need a bearer token, which is not sent.
 - **Retention.** See [Growth](#growth). `epoch` is not managed automatically.
@@ -569,7 +595,7 @@ Anything that happened after the copy is then filled in by digests.
 | File | What it holds |
 | - | - |
 |`db.py`|Replication tables (in `dbInit`), `_replicate_capture`, `set_applying_remote`, `REPLICATED_USER_FIELDS`, and the capture calls inside `dbInsertPost`, `dbUpdatePost`, `dbInsertMessage`, `dbUpdateMessage`, `dbUserUpdate`|
-|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); the startup presence snapshot (`request_online_users`, `_handle_online_request`, `_handle_online_response`); activity recording for the dashboard (`_record`, `_submit_control`, `_prune_activity`); `start()`|
+|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); the startup presence snapshot (`request_online_users`, `_handle_online_request`, `_handle_online_response`); relaying (`_relay_pump_tick`, `_log_relayed`, `_next_hop`, `_learn_route`, `_bootstrap_new_origin`); activity recording for the dashboard (`_record`, `_submit_control`, `_prune_activity`); `start()`|
 |`replication_dashboard.py`|The read-only HTTP dashboard: JSON API over the replication tables plus the single-page UI. `start()` is called from `wps.py`; also runnable standalone|
 |`wps.py`|Calls `replication.start()` and `replication_dashboard.start()` at boot, after `db.dbInit`, and `replication.request_online_users()` after clearing `online_origin`|
 |`env.py`|Default `replication` block added to `env.json`|

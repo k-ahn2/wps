@@ -163,7 +163,8 @@ def api_status(cur, _query):
             "issues_24h": issues["n"] if issues else 0,
         })
 
-    # Origins we hold a cursor or buffered events for but that aren't (or are no longer) configured.
+    # Origins we hold a cursor or buffered events for but that aren't (or are no longer) configured
+    # - with relay on, mostly the origins a neighbour relays to us.
     other_origins = sorted((set(cursors) | set(pending)) - configured_origins)
 
     counts = []
@@ -198,10 +199,12 @@ def api_status(cur, _query):
             "reconcile_interval_seconds": replication.RECONCILE_INTERVAL_SECONDS,
             "activity_retention_days": replication.ACTIVITY_RETENTION_DAYS,
             "bootstrap_from_ts": replication.BOOTSTRAP_FROM_TS,
+            "relay": replication.RELAY,
         },
         "self": {"latest_seq": my_latest, "epoch": epoch, "outbox_count": outbox_count, "outbox_oldest_seq": outbox_oldest},
         "peers": peers,
-        "other_origins": [{"origin": o, "applied_seq": cursors.get(o), "pending": pending.get(o)} for o in other_origins],
+        "other_origins": [{"origin": o, "applied_seq": cursors.get(o), "pending": pending.get(o),
+                           "via": replication._routes.get(o) if replication.RELAY else None} for o in other_origins],
         "counts_24h": counts,
         "recent_issues": recent_issues,
         "dapps_poll": dapps_poll,
@@ -864,7 +867,7 @@ async function loadOverview() {
         <td>${esc(ago(p.last_sent_at))}</td>
         <td>${p.issues_24h ? `<span class="pill bad">${p.issues_24h}</span>` : "0"}</td></tr>`;
     }).join("") : `<tr><td colspan="8" class="empty">No peers configured</td></tr>`) +
-    s.other_origins.map((o) => `<tr><td><b>${esc(o.origin)}</b><div class="muted">not in peers config</div></td><td>${pill("unconfigured")}</td><td>—</td><td>applied ${num(o.applied_seq)}</td><td>${o.pending ? num(o.pending.n) : "—"}</td><td colspan="3"></td></tr>`).join("") +
+    s.other_origins.map((o) => `<tr><td><b>${esc(o.origin)}</b><div class="muted">${o.via ? `relayed via ${esc(o.via)}` : "not in peers config"}</div></td><td>${pill(o.via ? "relayed" : "unconfigured")}</td><td>—</td><td>applied ${num(o.applied_seq)}</td><td>${o.pending ? num(o.pending.n) : "—"}</td><td colspan="3"></td></tr>`).join("") +
     `</tbody>`;
   $("peers").querySelectorAll("[data-peer]").forEach((a) => a.onclick = () => { $("f-peer").value = a.dataset.peer; showView("activity"); });
 

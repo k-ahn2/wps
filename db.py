@@ -236,6 +236,26 @@ def dbInit(CONN_DB_CURSOR):
     if "submitted_seq" not in existing_peer_ack_columns:
         CONN_DB_CURSOR.execute("ALTER TABLE replication_peer_ack ADD COLUMN submitted_seq INTEGER NOT NULL DEFAULT 0")
 
+    # With replication.relay on: how far each neighbour has been sent (submitted_seq) and has
+    # applied (acked_seq) each other origin's stream that this instance passes on to it.
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_forward (
+        peer TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        submitted_seq INTEGER NOT NULL DEFAULT 0,
+        acked_seq INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (peer, origin)
+    );
+    ''')
+
+    # With replication.relay on: the neighbour each non-peer origin's events arrive through.
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_route (
+        origin TEXT PRIMARY KEY,
+        via TEXT NOT NULL
+    );
+    ''')
+
     CONN_DB_CURSOR.execute('''
     CREATE TABLE IF NOT EXISTS replication_pending (
         origin TEXT NOT NULL,
@@ -700,11 +720,12 @@ def dbClearOnlineOrigins(CONN_DB_CURSOR):
 
 def dbGetRemoteOnlineUsers(CONN_DB_CURSOR):
     '''
-    Returns [{"callsign", "online_origin"}] for every user a peer has reported online.
+    Returns [{"callsign", "online_origin", "name", "last_connected"}] for every user a peer has reported online.
     '''
     try:
         select_query = """
-        SELECT json_extract(user, '$.callsign'), json_extract(user, '$.online_origin')
+        SELECT json_extract(user, '$.callsign'), json_extract(user, '$.online_origin'),
+               json_extract(user, '$.name'), json_extract(user, '$.last_connected')
         FROM users
         WHERE json_extract(user, '$.online_origin') IS NOT NULL
         """
@@ -714,7 +735,7 @@ def dbGetRemoteOnlineUsers(CONN_DB_CURSOR):
 
         return_success = {
             "result": "success",
-            "data": [{"callsign": i[0], "online_origin": i[1]} for i in CONN_DB_CURSOR],
+            "data": [{"callsign": i[0], "online_origin": i[1], "name": i[2], "last_connected": i[3]} for i in CONN_DB_CURSOR],
         }
         db_logger("dbGetRemoteOnlineUsers", "Return: " + str(return_success))
         return return_success

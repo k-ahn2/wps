@@ -32,13 +32,14 @@ WPS runs entirely in Python, has minimal dependencies, minimal setup and runs wi
 
 Links to documentation in the `/docs` directory
 
-1. [Installation](docs/installation/INSTALLATION.md)
-2. [Protocol - General](docs/protocol/GENERAL.md)
-3. [Protocol - Channels](docs/protocol/CHANNELS.md)
-4. [Protocol - Messages](docs/protocol/MESSAGES.md)
-5. [Data Model - The User Object](docs/protocol/USER.md)
-6. [Replication - How It Works](docs/replication/REPLICATION.md)
-7. [Replication - Design Proposal](docs/replication/DESIGN.md)
+1. [Quick Start - DAPPS, WPS and Replication](docs/installation/QUICKSTART.md)
+2. [Installation](docs/installation/INSTALLATION.md)
+3. [Protocol - General](docs/protocol/GENERAL.md)
+4. [Protocol - Channels](docs/protocol/CHANNELS.md)
+5. [Protocol - Messages](docs/protocol/MESSAGES.md)
+6. [Data Model - The User Object](docs/protocol/USER.md)
+7. [Replication - How It Works](docs/replication/REPLICATION.md)
+8. [Replication - Design Proposal](docs/replication/DESIGN.md)
 
 
 ## WPS Schematic

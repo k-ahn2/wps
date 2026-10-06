@@ -67,6 +67,12 @@ _DAPPS_TO_ORIGIN = {dapps.upper(): origin for origin, dapps in _PEER_PAIRS}
 
 def _dapps_for_origin(origin):
     return _ORIGIN_TO_DAPPS.get(origin.upper(), origin)
+
+
+# relay: pass every origin's events on to the other peers, so instances can be linked as a
+# tree - each lists only its neighbours in `peers` - rather than as a full mesh. The links must
+# not form a loop. Off by default, which keeps the full-mesh behaviour exactly as it was.
+RELAY = bool(REPLICATION_CONFIG.get('relay', False))
 APP_SLUG = REPLICATION_CONFIG.get('appSlug', 'wps-repl')
 DAPPS_REST_URL = REPLICATION_CONFIG.get('dappsRestUrl', 'http://127.0.0.1:5000').rstrip('/')
 STREAM_TTL_SECONDS = REPLICATION_CONFIG.get('streamTtlSeconds', 604800)  # 7 days
@@ -205,7 +211,50 @@ def _dapps_ack(dapps_id):
 
 
 def _stream_id_for(origin, epoch):
+    if origin != ORIGIN:
+        # Relayed: a stream of our own, named for us too. We number its DAPPS submissions from
+        # scratch, and a receiver drops a stream id it has seen before whose numbering restarts.
+        return f"{APP_SLUG}:{origin}.e{epoch}.{DAPPS_CALLSIGN}"
     return f"{APP_SLUG}:{origin}.e{epoch}"
+
+
+# --- Routing (relay): which neighbour each origin's events arrive through -----------------
+
+# With relay on, an origin that isn't a configured peer is reached through the neighbour its
+# events arrive from - unique, as the peers form a tree. Learned from data events (and from a
+# digest vector for an origin not yet heard of), and kept in replication_route across restarts.
+_routes = _kept('_routes', dict)  # origin (upper) -> neighbour's DAPPS callsign
+
+
+def _next_hop(origin):
+    '''The peer that acks, sync.requests and seq_at.requests about origin's stream go to.'''
+    if RELAY and origin.upper() not in _ORIGIN_TO_DAPPS and origin.upper() in _routes:
+        return _routes[origin.upper()]
+    return _dapps_for_origin(origin)
+
+
+def _relays_to(peer, origin):
+    '''Whether origin's events are passed on to peer: never back towards where they came from.'''
+    return RELAY and origin != ORIGIN and peer.upper() != _next_hop(origin).upper()
+
+
+def _learn_route(cur, conn, origin, via, only_if_unknown=False):
+    if not RELAY or origin == ORIGIN or origin.upper() in _ORIGIN_TO_DAPPS:
+        return
+    via = _PEER_SPELLING.get(via.upper(), via)
+    previous = _routes.get(origin.upper())
+    if previous == via or (previous and only_if_unknown):
+        return
+    cur.execute("INSERT INTO replication_route (origin, via) VALUES (?, ?) ON CONFLICT(origin) DO UPDATE SET via = excluded.via", (origin, via))
+    conn.commit()
+    _routes[origin.upper()] = via
+    wps_logger("REPLICATION ROUTE", ORIGIN, f"{origin} is reached via {via}" + (f" (was {previous})" if previous else ""))
+
+
+def _load_routes(cur):
+    cur.execute("SELECT origin, via FROM replication_route")
+    _routes.clear()
+    _routes.update({origin.upper(): via for origin, via in cur.fetchall()})
 
 
 # --- Wake-ups: submit new events promptly, poll the inbox faster while a conversation is on -
@@ -260,6 +309,7 @@ def _outbox_pump_loop():
 def _outbox_pump_pass():
     try:
         _outbox_pump_tick()
+        _relay_pump_tick()
     except Exception as e:
         wps_logger("REPLICATION OUTBOX", ORIGIN, f"Tick error: {e}", "ERROR")
     # The timeout still matters: it retries submissions that DAPPS refused last tick.
@@ -321,11 +371,63 @@ def _outbox_pump_tick():
             note = _batch_note(chunk)
             for seq, envelope, _ in chunk:
                 _record("out", "data", envelope.get("op"), "sent", peer=peer, origin=ORIGIN, seq=seq, detail=note, dapps_id=dapps_id)
-            for origin, (held_seq, _) in carried.items():
-                _acked_up_to[origin] = max(_acked_up_to.get(origin, 0), held_seq)
-                ack = {"op": "ack", "origin": origin, "seq": held_seq, "by": DAPPS_CALLSIGN}
-                _record("out", "sync", "ack", "sent", peer=peer, origin=origin, seq=held_seq,
-                        detail=f"{_describe_control(ack)} - carried on {label}", dapps_id=dapps_id, event=ack)
+            _record_carried_acks(peer, carried, label, dapps_id)
+
+
+def _record_carried_acks(peer, carried, label, dapps_id):
+    for origin, (held_seq, _) in carried.items():
+        _acked_up_to[origin] = max(_acked_up_to.get(origin, 0), held_seq)
+        ack = {"op": "ack", "origin": origin, "seq": held_seq, "by": DAPPS_CALLSIGN}
+        _record("out", "sync", "ack", "sent", peer=peer, origin=origin, seq=held_seq,
+                detail=f"{_describe_control(ack)} - carried on {label}", dapps_id=dapps_id, event=ack)
+
+
+def _relay_pump_tick():
+    '''
+    With relay on, passes other origins' events on through the tree: for each (peer, origin)
+    in replication_forward, the events in replication_log past that pair's submitted_seq.
+    As in the outbox, a failure stops only that pair, and it retries from the same seq next
+    tick. A pair's row is created when _log_relayed first logs one of origin's events, so a
+    newly added peer is sent only new events and catches up on history by digest and sync.request.
+    '''
+    if not RELAY:
+        return
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT peer, origin, submitted_seq FROM replication_forward")
+    for peer, origin, submitted_seq in cur.fetchall():
+        if peer.upper() not in _PEER_SPELLING or not _relays_to(peer, origin):
+            continue
+        cur.execute(
+            "SELECT seq, event FROM replication_log WHERE origin = ? AND seq > ? ORDER BY seq ASC LIMIT ?",
+            (origin, submitted_seq, max(50, BATCH_SIZE))
+        )
+        rows = [(seq, json.loads(event_json)) for seq, event_json in cur.fetchall()]
+        for chunk in _batches(rows):
+            envelopes = [envelope for _, envelope in chunk]
+            first_seq, last_seq = chunk[0][0], chunk[-1][0]
+            label = _events_label(origin, first_seq, last_seq)
+            carried = _take_held_acks(peer)
+            payload = _events_payload(envelopes, {o: held_seq for o, (held_seq, _) in carried.items()})
+            try:
+                dapps_id = _dapps_submit(peer, payload, stream_id=_stream_id_for(origin, envelopes[0]["epoch"]), gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS)
+            except Exception as e:
+                _restore_held_acks(carried)
+                wps_logger("REPLICATION RELAY", ORIGIN, f"Relay {label} to {peer} failed, will retry: {e}", "ERROR")
+                if _last_outbox_failure.get((peer, origin)) != first_seq:
+                    _last_outbox_failure[(peer, origin)] = first_seq
+                    _record("out", "data", envelopes[0].get("op"), "failed", peer=peer, origin=origin, seq=first_seq, detail=f"Relay to DAPPS failed, retrying every tick: {e}")
+                break
+
+            cur.execute("UPDATE replication_forward SET submitted_seq = ? WHERE peer = ? AND origin = ?", (last_seq, peer, origin))
+            conn.commit()
+            _last_outbox_failure.pop((peer, origin), None)
+            _last_data_sent_to[peer.upper()] = time.monotonic()
+            note = _batch_note(chunk)
+            for seq, envelope in chunk:
+                _record("out", "data", envelope.get("op"), "sent", peer=peer, origin=origin, seq=seq,
+                        detail="Relayed" + (f" - {note}" if note else ""), dapps_id=dapps_id)
+            _record_carried_acks(peer, carried, label, dapps_id)
 
 
 def _batches(rows):
@@ -346,14 +448,18 @@ def _batches(rows):
 
 def _events_payload(envelopes, acks=None):
     '''
-    The DAPPS payload for a run of our own consecutive events: the envelope itself for one,
-    otherwise a batch {"op": "batch", "origin", "epoch", "events": [...]}. `acks` held for the
-    recipient are added at this level either way.
+    The DAPPS payload for a run of one origin's consecutive events: the envelope itself for
+    one, otherwise a batch {"op": "batch", "origin", "epoch", "events": [...]}. `acks` held for
+    the recipient are added at this level either way, and so is `by` (our DAPPS callsign) on
+    events we relay, which names us as the sender where DAPPS doesn't stamp one.
     '''
+    origin = envelopes[0]["origin"]
     if len(envelopes) == 1:
         payload = envelopes[0]
     else:
-        payload = {"v": 1, "op": "batch", "origin": ORIGIN, "epoch": envelopes[0]["epoch"], "events": envelopes}
+        payload = {"v": 1, "op": "batch", "origin": origin, "epoch": envelopes[0]["epoch"], "events": envelopes}
+    if origin != ORIGIN:
+        payload = dict(payload, by=DAPPS_CALLSIGN)
     return dict(payload, acks=acks) if acks else payload
 
 
@@ -649,13 +755,34 @@ def _apply_one(conn, cur, origin, seq, envelope):
             "ON CONFLICT(origin) DO UPDATE SET last_applied_seq = excluded.last_applied_seq",
             (origin, seq)
         )
+        if RELAY:
+            _log_relayed(cur, origin, seq, envelope)
         conn.commit()
+        if RELAY:
+            _outbox_wake.set()
         return outcome
     except Exception:
         conn.rollback()
         raise
     finally:
         db.set_applying_remote(False)
+
+
+def _log_relayed(cur, origin, seq, envelope):
+    '''
+    With relay on, keeps every applied event (stale or ignored too, so the log has no gaps) in
+    replication_log, in the apply's transaction, for _relay_pump_tick to pass on and
+    _handle_sync_request to re-send. Also starts a forward cursor, just before this event, for
+    each peer that origin's events go on to and that hasn't got one yet.
+    '''
+    logged = {k: v for k, v in envelope.items() if k not in ("acks", "by")}
+    cur.execute(
+        "INSERT OR IGNORE INTO replication_log (origin, seq, ts, op, event) VALUES (?, ?, ?, ?, ?)",
+        (origin, seq, logged.get("ts") or 0, logged["op"], json.dumps(logged, separators=(',', ':')))
+    )
+    for peer in PEERS:
+        if _relays_to(peer, origin):
+            cur.execute("INSERT OR IGNORE INTO replication_forward (peer, origin, submitted_seq) VALUES (?, ?, ?)", (peer, origin, seq - 1))
 
 
 def _drain_pending(conn, cur, origin):
@@ -674,7 +801,7 @@ def _drain_pending(conn, cur, origin):
         outcome = _apply_one(conn, cur, origin, seq, envelope)
         cur.execute("DELETE FROM replication_pending WHERE origin = ? AND seq = ?", (origin, seq))
         conn.commit()
-        _record("in", "data", envelope.get("op"), outcome, peer=_dapps_for_origin(origin), origin=origin, seq=seq,
+        _record("in", "data", envelope.get("op"), outcome, peer=_next_hop(origin), origin=origin, seq=seq,
                 detail="Applied from the out-of-order buffer", event=envelope)
         _queue_app_ack(origin, seq)
 
@@ -746,7 +873,9 @@ def _describe_control(envelope):
     if op == "ack":
         return f"{envelope.get('by')} applied {envelope.get('origin')}/{envelope.get('seq')}"
     if op == "digest":
-        return f"{envelope.get('origin')} latest_seq={envelope.get('latest_seq')}"
+        vector = envelope.get("vector")
+        return (f"{envelope.get('origin')} latest_seq={envelope.get('latest_seq')}"
+                + (f", relays {', '.join(f'{o}={s}' for o, s in vector.items())}" if isinstance(vector, dict) and vector else ""))
     if op == "sync.request":
         return f"{envelope.get('requested_by')} asks {envelope.get('origin')} for {envelope.get('from_seq')}-{envelope.get('to_seq')}"
     if op == "seq_at.request":
@@ -757,7 +886,9 @@ def _describe_control(envelope):
         return f"{envelope.get('requested_by')} asks who is online"
     if op == "online.response":
         users = envelope.get("users")
-        return f"{envelope.get('origin')} has {len(users) if isinstance(users, list) else '?'} online at seq={envelope.get('seq')}"
+        relayed = envelope.get("relayed")
+        return (f"{envelope.get('origin')} has {len(users) if isinstance(users, list) else '?'} online at seq={envelope.get('seq')}"
+                + (f", plus {len(relayed)} relayed origin(s)" if isinstance(relayed, list) and relayed else ""))
     return None
 
 
@@ -796,10 +927,18 @@ def _handle_inbound(msg):
     # present) and the identity claimed inside the envelope must be a peer. Anything else is
     # logged and dropped (acked, so it doesn't sit in the queue and get re-polled forever).
     # `by` and `requested_by` carry the sender's DAPPS callsign; `origin` carries its origin callsign.
+    # With relay on, an origin that isn't a peer is accepted when a peer relays it: that peer
+    # is the DAPPS-stamped source, or (where there is none) names itself in `by`.
     claim_key = {"ack": "by", "sync.request": "requested_by", "seq_at.request": "requested_by", "online.request": "requested_by"}.get(op, "origin")
     claimed = envelope.get(claim_key)
     source = msg.get("sourceCallsign")
-    claimed_ok = _is_configured_peer(claimed) if claim_key != "origin" else _is_configured_peer_origin(claimed)
+    relayed_by = (source or envelope.get("by")) if claim_key == "origin" and not _is_configured_peer_origin(claimed) else None
+    if claim_key != "origin":
+        claimed_ok = _is_configured_peer(claimed)
+    elif relayed_by is None:
+        claimed_ok = _is_configured_peer_origin(claimed)
+    else:
+        claimed_ok = RELAY and isinstance(claimed, str) and _is_configured_peer(relayed_by)
     if not claimed_ok or (source is not None and not _is_configured_peer(source)):
         wps_logger("REPLICATION INBOX", ORIGIN, f"Rejecting message {dapps_id} from unconfigured peer (source={source}, claimed={claimed}, op={op})", "ERROR")
         _record("in", "sync" if op in _CONTROL_OPS else "data", op, "rejected", peer=source, origin=envelope.get("origin"),
@@ -809,7 +948,7 @@ def _handle_inbound(msg):
         return
 
     # Everything below is from a configured peer; record it against that peer's DAPPS callsign.
-    peer = source or (claimed if claim_key != "origin" else _dapps_for_origin(claimed))
+    peer = source or relayed_by or (claimed if claim_key != "origin" else _dapps_for_origin(claimed))
     _last_heard_from[peer.upper()] = time.monotonic()
 
     if op in _CONTROL_OPS:
@@ -823,7 +962,7 @@ def _handle_inbound(msg):
         return
 
     if op == "digest":
-        _handle_digest(envelope)
+        _handle_digest(envelope, peer)
         _dapps_ack(dapps_id)
         return
 
@@ -848,7 +987,7 @@ def _handle_inbound(msg):
         return
 
     if op == "online.response":
-        _handle_online_response(envelope)
+        _handle_online_response(envelope, peer)
         _dapps_ack(dapps_id)
         return
 
@@ -904,6 +1043,9 @@ def _handle_data_event(envelope, peer, dapps_id, batch_note=None):
 
     conn = db.get_db_connection()
     cur = conn.cursor()
+
+    _learn_route(cur, conn, origin, peer)
+    _bootstrap_new_origin(cur, conn, origin)
 
     cur.execute("SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
     if cur.fetchone() is not None:
@@ -979,7 +1121,7 @@ def _flush_due_acks():
             del _pending_acks[origin]
     for origin, seq in due.items():
         try:
-            _submit_control(_dapps_for_origin(origin), {"op": "ack", "origin": origin, "seq": seq, "by": DAPPS_CALLSIGN})
+            _submit_control(_next_hop(origin), {"op": "ack", "origin": origin, "seq": seq, "by": DAPPS_CALLSIGN})
             _acked_up_to[origin] = max(_acked_up_to.get(origin, 0), seq)
         except Exception as e:
             wps_logger("REPLICATION INBOX", ORIGIN, f"Failed to send app-level ack for {origin}/{seq}, will retry: {e}", "ERROR")
@@ -993,7 +1135,7 @@ def _take_held_acks(peer):
     them back if that submit fails.
     '''
     with _pending_acks_lock:
-        taken = {origin: held for origin, held in _pending_acks.items() if _dapps_for_origin(origin).upper() == peer.upper()}
+        taken = {origin: held for origin, held in _pending_acks.items() if _next_hop(origin).upper() == peer.upper()}
         for origin in taken:
             del _pending_acks[origin]
     return taken
@@ -1042,12 +1184,25 @@ def _carrier_label(envelope):
 
 
 def _handle_app_ack(envelope):
-    if envelope.get("origin") != ORIGIN:
-        return  # an ack for someone else's stream, not ours to record
     peer = envelope["by"]
     seq = envelope["seq"]
     conn = db.get_db_connection()
     cur = conn.cursor()
+    if envelope.get("origin") != ORIGIN:
+        # Another origin's stream: with relay on, acks are per hop, so this is a neighbour
+        # we relay origin to confirming it has applied that far.
+        origin = envelope.get("origin")
+        if isinstance(origin, str) and _relays_to(peer, origin):
+            peer = _PEER_SPELLING.get(peer.upper(), peer)
+            cur.execute(
+                "INSERT INTO replication_forward (peer, origin, submitted_seq, acked_seq) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(peer, origin) DO UPDATE SET "
+                "acked_seq = MAX(acked_seq, excluded.acked_seq), "
+                "submitted_seq = MAX(submitted_seq, excluded.submitted_seq)",
+                (peer, origin, seq, seq)
+            )
+            conn.commit()
+        return
     # An ack also implies the peer already holds everything up to seq (e.g. via a
     # sync.request resend), so advance submitted_seq too rather than re-submitting it.
     cur.execute(
@@ -1085,16 +1240,32 @@ def _send_digest():
     cur.execute("SELECT next_seq - 1 FROM replication_self WHERE id = 1")
     my_latest = cur.fetchone()[0]
 
+    # With relay on, the digest also carries a vector of the other origins we pass on to each
+    # peer, at the latest seq we hold of each - so a gap anywhere upstream is visible downstream.
+    relayed_latest = {}
+    if RELAY:
+        cur.execute("SELECT origin, MAX(seq) FROM replication_log WHERE origin != ? GROUP BY origin", (ORIGIN,))
+        relayed_latest = dict(cur.fetchall())
+
     for peer in PEERS:
         cur.execute("SELECT peer_acked_seq FROM replication_peer_ack WHERE peer = ?", (peer,))
         row = cur.fetchone()
-        if _digest_redundant(peer, my_latest, row[0] if row else 0):
+        behind = (row[0] if row else 0) < my_latest
+        vector = {origin: latest for origin, latest in relayed_latest.items() if _relays_to(peer, origin)}
+        if vector:
+            cur.execute("SELECT origin, acked_seq FROM replication_forward WHERE peer = ?", (peer,))
+            acked = dict(cur.fetchall())
+            behind = behind or any(acked.get(origin, 0) < latest for origin, latest in vector.items())
+        if _digest_redundant(peer, behind):
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Skipping digest to {peer} - recent traffic already shows where we are")
             continue
+        digest = {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest}
+        if vector:
+            digest["vector"] = vector
         try:
             # Short TTL: only the newest digest matters, so one that can't be delivered within a
             # couple of intervals should expire in DAPPS rather than queue behind a down peer.
-            _submit_control(peer, {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+            _submit_control(peer, digest, ttl=RECONCILE_INTERVAL_SECONDS * 2)
         except Exception as e:
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to send digest to {peer}: {e}", "ERROR")
 
@@ -1103,7 +1274,7 @@ _last_heard_from = _kept('_last_heard_from', dict)    # peer DAPPS callsign (upp
 _last_data_sent_to = _kept('_last_data_sent_to', dict)  # peer DAPPS callsign (upper) -> time.monotonic() a data event was last submitted to it
 
 
-def _digest_redundant(peer, my_latest, peer_acked_seq):
+def _digest_redundant(peer, behind):
     '''
     A digest exists so a peer can spot events it missed. It adds nothing while traffic is
     flowing: either the peer has acked everything we have, or events are in flight to it now
@@ -1116,21 +1287,37 @@ def _digest_redundant(peer, my_latest, peer_acked_seq):
     heard = _last_heard_from.get(peer.upper())
     if heard is None or now - heard > RECONCILE_INTERVAL_SECONDS:
         return False
-    if peer_acked_seq >= my_latest:
+    if not behind:
         return True
     sent = _last_data_sent_to.get(peer.upper())
     return sent is not None and now - sent <= RECONCILE_INTERVAL_SECONDS
 
 
-def _handle_digest(envelope):
-    origin = envelope["origin"]
-    latest_seq = envelope["latest_seq"]
-    if origin == ORIGIN:
-        return
-
+def _handle_digest(envelope, peer):
     conn = db.get_db_connection()
     cur = conn.cursor()
+    if envelope["origin"] != ORIGIN:
+        _compare_digest_entry(cur, envelope["origin"], envelope["latest_seq"], relayed=False)
 
+    vector = envelope.get("vector")
+    if not RELAY or not isinstance(vector, dict):
+        return
+    for origin, latest_seq in vector.items():
+        if not isinstance(origin, str) or not isinstance(latest_seq, int) or origin == ORIGIN or origin.upper() in _ORIGIN_TO_DAPPS:
+            continue
+        # A digest only names an origin's route if nothing has yet; data events settle it.
+        _learn_route(cur, conn, origin, peer, only_if_unknown=True)
+        if _next_hop(origin).upper() != peer.upper():
+            continue  # we get this origin from elsewhere
+        _bootstrap_new_origin(cur, conn, origin)
+        _compare_digest_entry(cur, origin, latest_seq, relayed=True)
+
+
+def _compare_digest_entry(cur, origin, latest_seq, relayed):
+    '''
+    Checks one origin's latest seq, as a digest reports it, against how far we have applied
+    it. relayed: reported by the neighbour that relays origin to us, rather than by origin itself.
+    '''
     cur.execute("SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
     if cur.fetchone() is not None:
         # Cursor for this origin isn't seeded yet - a digest compared against the default of 0
@@ -1149,6 +1336,10 @@ def _handle_digest(envelope):
         # Level, but no ack for the latest has gone out from this process - one held when WPS
         # last stopped would be lost with it, leaving the origin's outbox row un-retired.
         _queue_app_ack(origin, last_applied)
+    elif latest_seq < last_applied and relayed:
+        # The relay's log of origin is behind ours - most likely we had origin's events
+        # another way (a direct link before the tree). The relay will catch up by itself.
+        wps_logger("REPLICATION RECONCILE", ORIGIN, f"Digest relays {origin} at seq {latest_seq}, we are already at {last_applied}")
     elif latest_seq < last_applied:
         wps_logger("REPLICATION RECONCILE", ORIGIN, f"Digest shows {origin} at seq {latest_seq} but we have already applied up to {last_applied} - "
                    f"{origin} looks restored or rebuilt; its new events will be dropped as duplicates until this is resolved (see docs/replication/REPLICATION.md)", "ERROR")
@@ -1177,16 +1368,17 @@ def _request_sync(origin, from_seq, to_seq):
     try:
         # Short TTL: if origin is unreachable, the next reconcile tick will send an updated
         # sync.request anyway, so a stale one shouldn't linger in the DAPPS queue.
-        _submit_control(_dapps_for_origin(origin), {"op": "sync.request", "origin": origin, "from_seq": from_seq, "to_seq": to_seq, "requested_by": DAPPS_CALLSIGN}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+        _submit_control(_next_hop(origin), {"op": "sync.request", "origin": origin, "from_seq": from_seq, "to_seq": to_seq, "requested_by": DAPPS_CALLSIGN}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
     except Exception as e:
         wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to request sync from {origin} for {from_seq}-{to_seq}: {e}", "ERROR")
 
 
 def _handle_sync_request(envelope):
     origin = envelope["origin"]
-    if origin != ORIGIN:
+    if origin != ORIGIN and not RELAY:
         # A sync.request only ever makes sense addressed to the actual origin of the log
         # range being asked for - in a full mesh that's always us when we're the recipient.
+        # With relay on, we also serve the other origins we hold in replication_log.
         return
 
     from_seq = envelope["from_seq"]
@@ -1197,19 +1389,25 @@ def _handle_sync_request(envelope):
     cur = conn.cursor()
     cur.execute(
         "SELECT seq, event FROM replication_log WHERE origin = ? AND seq BETWEEN ? AND ? ORDER BY seq ASC",
-        (ORIGIN, from_seq, to_seq)
+        (origin, from_seq, to_seq)
     )
     rows = cur.fetchall()
-    wps_logger("REPLICATION RECONCILE", ORIGIN, f"Re-sending {len(rows)} event(s) {from_seq}-{to_seq} to {requester}")
+    wps_logger("REPLICATION RECONCILE", ORIGIN, f"Re-sending {len(rows)} event(s) of {origin} {from_seq}-{to_seq} to {requester}")
 
     # The requester will keep asking until the range arrives, so make it visible when part of
-    # it isn't in our log - it can never be served and needs an operator.
-    missing = sorted(set(range(from_seq, to_seq + 1)) - {seq for seq, _ in rows})
+    # it isn't in our log - it can never be served and needs an operator. For a relayed origin,
+    # seqs we haven't applied yet aren't missing: they are relayed once they arrive.
+    served_to = to_seq
+    if origin != ORIGIN:
+        cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
+        row = cur.fetchone()
+        served_to = min(to_seq, row[0] if row else 0)
+    missing = sorted(set(range(from_seq, served_to + 1)) - {seq for seq, _ in rows})
     if missing:
         shown = ", ".join(str(s) for s in missing[:20]) + (f" ... ({len(missing)} total)" if len(missing) > 20 else "")
-        wps_logger("REPLICATION RECONCILE", ORIGIN, f"sync.request {from_seq}-{to_seq} from {requester}: not in replication_log as {ORIGIN}: {shown}", "ERROR")
-        _record("out", "sync", "sync.request", "failed", peer=requester, origin=ORIGIN,
-                detail=f"Cannot serve {len(missing)} of {to_seq - from_seq + 1} requested seq(s), not in replication_log as {ORIGIN}: {shown}")
+        wps_logger("REPLICATION RECONCILE", ORIGIN, f"sync.request {from_seq}-{to_seq} from {requester}: not in replication_log as {origin}: {shown}", "ERROR")
+        _record("out", "sync", "sync.request", "failed", peer=requester, origin=origin,
+                detail=f"Cannot serve {len(missing)} of {to_seq - from_seq + 1} requested seq(s), not in replication_log as {origin}: {shown}")
 
     for chunk in _batches([(seq, json.loads(event_json)) for seq, event_json in rows]):
         envelopes = [envelope for _, envelope in chunk]
@@ -1217,19 +1415,19 @@ def _handle_sync_request(envelope):
         try:
             dapps_id = _dapps_submit(
                 requester, _events_payload(envelopes),
-                stream_id=_stream_id_for(ORIGIN, envelopes[0]["epoch"]),
+                stream_id=_stream_id_for(origin, envelopes[0]["epoch"]),
                 gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS
             )
         except Exception as e:
-            label = _events_label(ORIGIN, chunk[0][0], chunk[-1][0])
+            label = _events_label(origin, chunk[0][0], chunk[-1][0])
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to re-send {label} to {requester}: {e}", "ERROR")
             for seq, envelope in chunk:
-                _record("out", "data", envelope.get("op"), "failed", peer=requester, origin=ORIGIN, seq=seq,
+                _record("out", "data", envelope.get("op"), "failed", peer=requester, origin=origin, seq=seq,
                         detail=f"Re-send for sync.request {from_seq}-{to_seq} failed: {e}")
             continue
         for seq, envelope in chunk:
             detail = f"Re-sent for sync.request {from_seq}-{to_seq}" + (f" - {note}" if note else "")
-            _record("out", "data", envelope.get("op"), "resent", peer=requester, origin=ORIGIN, seq=seq,
+            _record("out", "data", envelope.get("op"), "resent", peer=requester, origin=origin, seq=seq,
                     detail=detail, dapps_id=dapps_id)
 
 
@@ -1260,11 +1458,11 @@ def _handle_seq_at_request(envelope):
     '''
     A peer (usually a brand-new instance configured with replication.bootstrapFromTs) is
     asking: "if I want your stream starting from timestamp ts, what last_applied_seq should I
-    seed for you?" Answered from our own replication_log, which holds only our own origin's
-    events - exactly what's needed to answer for ourselves.
+    seed for you?" Answered from our replication_log - for our own origin, or with relay on
+    for any origin we pass on, as far back as our log of it goes.
     '''
     origin = envelope["origin"]
-    if origin != ORIGIN:
+    if origin != ORIGIN and not RELAY:
         return  # only the actual owner of the requested log can answer for it
 
     requester = envelope["requested_by"]
@@ -1279,21 +1477,30 @@ def _handle_seq_at_request(envelope):
     cur.execute(
         "SELECT MIN(seq) FROM replication_log WHERE origin = ? AND "
         "(CASE WHEN op LIKE 'msg.%' THEN ts * 1000 ELSE ts END) >= ?",
-        (ORIGIN, target_ts)
+        (origin, target_ts)
     )
     row = cur.fetchone()
     first_seq_at_or_after = row[0] if row and row[0] is not None else None
 
     if first_seq_at_or_after is None:
         # Nothing in our log is that new yet - the requester is fully caught up as of now.
-        cur.execute("SELECT next_seq - 1 FROM replication_self WHERE id = 1")
-        seed_seq = cur.fetchone()[0]
+        if origin == ORIGIN:
+            cur.execute("SELECT next_seq - 1 FROM replication_self WHERE id = 1")
+        else:
+            cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
+        row = cur.fetchone()
+        if row is None:
+            return  # an origin we know nothing of - the requester will ask again
+        seed_seq = row[0]
     else:
         seed_seq = first_seq_at_or_after - 1
 
-    wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request from {requester} for ts={target_ts}: answering seq={seed_seq}")
+    wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request from {requester} for {origin} at ts={target_ts}: answering seq={seed_seq}")
+    response = {"op": "seq_at.response", "origin": origin, "seq": seed_seq, "requested_by": requester}
+    if origin != ORIGIN:
+        response["by"] = DAPPS_CALLSIGN
     try:
-        _submit_control(requester, {"op": "seq_at.response", "origin": ORIGIN, "seq": seed_seq, "requested_by": requester})
+        _submit_control(requester, response)
     except Exception as e:
         wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Failed to send seq_at.response to {requester}: {e}", "ERROR")
 
@@ -1364,11 +1571,32 @@ def _retry_bootstrap_pending():
     cur = conn.cursor()
     cur.execute("SELECT origin FROM replication_bootstrap_pending")
     pending = [row[0] for row in cur.fetchall()]
-    for peer in pending:
-        try:
-            _submit_control(_dapps_for_origin(peer), {"op": "seq_at.request", "origin": peer, "requested_by": DAPPS_CALLSIGN, "ts": BOOTSTRAP_FROM_TS}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
-        except Exception as e:
-            wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request to {peer} failed, will retry: {e}", "ERROR")
+    for origin in pending:
+        _send_seq_at_request(origin)
+
+
+def _send_seq_at_request(origin):
+    try:
+        _submit_control(_next_hop(origin), {"op": "seq_at.request", "origin": origin, "requested_by": DAPPS_CALLSIGN, "ts": BOOTSTRAP_FROM_TS}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+    except Exception as e:
+        wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request for {origin} failed, will retry: {e}", "ERROR")
+
+
+def _bootstrap_new_origin(cur, conn, origin):
+    '''
+    With relay on and bootstrapFromTs set, an origin first heard of through a relay (no cursor
+    yet) is bootstrapped like a configured peer at start, instead of replaying its whole history.
+    '''
+    if not RELAY or not BOOTSTRAP_FROM_TS or origin == ORIGIN or origin.upper() in _ORIGIN_TO_DAPPS:
+        return
+    cur.execute("SELECT 1 FROM replication_origin_cursor WHERE origin = ? UNION ALL "
+                "SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (origin, origin))
+    if cur.fetchone() is not None:
+        return
+    cur.execute("INSERT INTO replication_bootstrap_pending (origin, requested_at) VALUES (?, ?)", (origin, _now_ms()))
+    conn.commit()
+    wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"New relayed origin {origin}: bootstrapping from ts={BOOTSTRAP_FROM_TS} via {_next_hop(origin)}")
+    _send_seq_at_request(origin)
 
 
 # --- Presence snapshot: online.request/response, to learn who is online at peers after a start ---
@@ -1407,7 +1635,8 @@ def _handle_online_request(envelope):
     '''
     A peer has just started and wants to know who is online here. Answered with every user
     connected here, plus our latest seq so the requester can tell whether user.online events
-    it has already applied are newer than this snapshot.
+    it has already applied are newer than this snapshot. With relay on, `relayed` adds the same
+    for each origin we pass on to the requester: who we have as online there, as of our cursor.
     '''
     requester = envelope["requested_by"]
     conn = db.get_db_connection()
@@ -1418,15 +1647,28 @@ def _handle_online_request(envelope):
     if online_resp["result"] != "success":
         raise RuntimeError(f"dbGetOnlineUsers failed: {online_resp['error']}")
     users = [{"callsign": u["callsign"], "name": u.get("name"), "ts": u.get("last_connected")} for u in online_resp["data"]]
+    response = {"op": "online.response", "origin": ORIGIN, "seq": my_latest, "requested_by": requester, "users": users}
+
+    if RELAY:
+        remote_resp = db.dbGetRemoteOnlineUsers(cur)
+        if remote_resp["result"] != "success":
+            raise RuntimeError(f"dbGetRemoteOnlineUsers failed: {remote_resp['error']}")
+        cur.execute("SELECT origin, last_applied_seq FROM replication_origin_cursor")
+        response["relayed"] = [
+            {"origin": origin, "seq": seq,
+             "users": [{"callsign": u["callsign"], "name": u.get("name"), "ts": u.get("last_connected")}
+                       for u in remote_resp["data"] if u["online_origin"] == origin]}
+            for origin, seq in cur.fetchall() if _relays_to(requester, origin)
+        ]
 
     wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.request from {requester}: answering {len(users)} user(s) at seq={my_latest}")
     try:
-        _submit_control(requester, {"op": "online.response", "origin": ORIGIN, "seq": my_latest, "requested_by": requester, "users": users}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+        _submit_control(requester, response, ttl=RECONCILE_INTERVAL_SECONDS * 2)
     except Exception as e:
         wps_logger("REPLICATION PRESENCE", ORIGIN, f"Failed to send online.response to {requester}: {e}", "ERROR")
 
 
-def _handle_online_response(envelope):
+def _handle_online_response(envelope, peer):
     '''
     A peer's answer to our online.request: the users online there as of its seq. Applied as
     the whole truth for that origin - listed users are marked online there, anyone else we
@@ -1435,6 +1677,9 @@ def _handle_online_response(envelope):
     Its user.online events reach us separately, in order. Any up to seq that we haven't applied
     yet will still be applied after this and end in the same state. But if we're already past
     seq, the snapshot is older than presence we've applied, so it's discarded and asked for again.
+
+    With relay on, the snapshots in `relayed` are for origins this peer relays to us, and are
+    applied the same way. A stale one is skipped: the peer's own answer decides whether to ask again.
     '''
     origin = envelope["origin"]
     if envelope.get("requested_by") != DAPPS_CALLSIGN:
@@ -1445,14 +1690,35 @@ def _handle_online_response(envelope):
 
     conn = db.get_db_connection()
     cur = conn.cursor()
+    if not _apply_online_snapshot(conn, cur, origin, envelope["seq"], envelope["users"]):
+        return
+
+    relayed = envelope.get("relayed")
+    if RELAY and isinstance(relayed, list):
+        for snapshot in relayed:
+            if not isinstance(snapshot, dict) or not isinstance(snapshot.get("origin"), str) or not isinstance(snapshot.get("users"), list):
+                continue
+            relayed_origin = snapshot["origin"]
+            if relayed_origin == ORIGIN or relayed_origin.upper() in _ORIGIN_TO_DAPPS:
+                continue
+            _learn_route(cur, conn, relayed_origin, peer, only_if_unknown=True)
+            if _next_hop(relayed_origin).upper() == peer.upper():
+                _apply_online_snapshot(conn, cur, relayed_origin, snapshot.get("seq", 0), snapshot["users"])
+
+    with _online_request_lock:
+        _online_request_pending.discard(origin)
+
+
+def _apply_online_snapshot(conn, cur, origin, seq, users):
+    '''Applies one origin's online snapshot (see _handle_online_response). False if it was stale.'''
     cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
     row = cur.fetchone()
     last_applied = row[0] if row else 0
-    if last_applied > envelope["seq"]:
-        wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response from {origin} is at seq={envelope['seq']} but we've applied up to {last_applied} - discarding, will ask again")
-        return
+    if last_applied > seq:
+        wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response for {origin} is at seq={seq} but we've applied up to {last_applied} - discarding")
+        return False
 
-    online = {u["callsign"]: u for u in envelope["users"]}
+    online = {u["callsign"]: u for u in users}
     remote_resp = db.dbGetRemoteOnlineUsers(cur)
     if remote_resp["result"] != "success":
         raise RuntimeError(f"dbGetRemoteOnlineUsers failed: {remote_resp['error']}")
@@ -1471,9 +1737,8 @@ def _handle_online_response(envelope):
     finally:
         db.set_applying_remote(False)
 
-    with _online_request_lock:
-        _online_request_pending.discard(origin)
-    wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response from {origin}: {len(online)} online, {len(gone)} cleared")
+    wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response for {origin}: {len(online)} online, {len(gone)} cleared")
+    return True
 
 
 def _log_backlog():
@@ -1573,6 +1838,7 @@ def start():
         cur.execute("INSERT OR IGNORE INTO replication_peer_ack (peer, peer_acked_seq) VALUES (?, 0)", (peer,))
     conn.commit()
 
+    _load_routes(cur)
     _merge_origin_aliases(cur, conn)
     _start_bootstrap_if_configured(cur, conn)
     _retry_bootstrap_pending()
@@ -1581,4 +1847,4 @@ def start():
     threading.Thread(target=_inbox_pump_loop, daemon=True, name="replication_inbox_pump").start()
     threading.Thread(target=_reconcile_loop, daemon=True, name="replication_reconcile_pump").start()
 
-    console_log(f"Replication started: origin={ORIGIN} app={APP_SLUG} peers={PEERS} dapps={DAPPS_REST_URL}")
+    console_log(f"Replication started: origin={ORIGIN} app={APP_SLUG} peers={PEERS} relay={RELAY} dapps={DAPPS_REST_URL}")

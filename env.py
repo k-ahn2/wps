@@ -54,6 +54,7 @@ env_template = {
         "dappsCallsign": "",
         "originCallsign": "",
         "peers": [],
+        "relay": False,
         "appSlug": "wps-repl",
         "dappsRestUrl": "http://127.0.0.1:5000",
         "dappsSysopPassword": "",

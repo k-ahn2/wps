@@ -36,7 +36,8 @@ Version 1 implements the proposal's core: capture, publish, receive and apply, a
 | - | - | - |
 |Outbox pump|One scan of unsent outbox rows, tracking `dapps_ids` per row|A `submitted_seq` cursor **per peer** (new column on `replication_peer_ack`). A dead peer stalls only itself; per-peer order is guaranteed|
 |Receiving from DAPPS|MQTT subscribe or REST poll|REST poll only|
-|Digest|A version vector: highest `seq` seen per origin|Each instance reports **only its own** `latest_seq` to each peer. Sufficient for a full mesh; a version vector would be needed to relay through intermediate instances|
+|Digest|A version vector: highest `seq` seen per origin|Each instance reports its own `latest_seq` to each peer. With `relay` on, a `vector` adds the latest seq of each origin it relays to that peer|
+|Topology|Full mesh, hub or relay past about five nodes|Full mesh, or with `relay` on, a tree: each instance lists only its neighbours, which store and forward other origins' events and acknowledge per hop. See [Relaying](/docs/replication/REPLICATION.md#8-relaying---tree-topology)|
 |Peer trust|Not covered|Inbound messages are accepted only from configured peers|
 |Emoji reactions|Applied and fanned out live (`cpem`, `mem`)|Applied and pushed live. Messages: `mem`, which already carries the full list. Posts: the event has the merged reaction list, so the apply compares it with the stored list and sends one `cpem` per reaction added or removed|
 |`user.update`|`name` and other portable fields|`name` and `name_last_updated`, guarded by `name_last_updated`. Unknown users are ignored|
