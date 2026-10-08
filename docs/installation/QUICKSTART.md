@@ -251,6 +251,7 @@ Add it to the `replication` block:
 - **Set it before your first start with replication enabled.** It only takes effect then. Afterwards it is ignored, so it's safe to leave in `env.json`.
 - **Peers first.** Each existing node you will peer with (in a tree, just your neighbour) must add your node to its `peers` list and restart **before** you start your node. They must also run a WPS version that supports `bootstrapFromTs`.
 - **Older content stays behind.** Posts and messages from before the cutoff never reach your node. They remain on the nodes that already had them.
+- **In a tree, your neighbour sets the limit.** Content from nodes further away comes to you through your neighbour, which can only pass on what it has logged since it joined or turned on `relay`. If your cutoff is earlier than that, you get their content from that point instead.
 - **Leave it unset** on existing nodes, and when you're setting up a brand-new mesh where every node starts empty, because then there's no history to replay.
 
 See [Bringing up a new instance](/docs/replication/REPLICATION.md#bringing-up-a-new-instance) for how it works and the other options.
@@ -267,7 +268,15 @@ See [Bringing up a new instance](/docs/replication/REPLICATION.md#bringing-up-a-
 
 ## Step 4 - Run WPS as a Service
 
-Create `/etc/systemd/system/wps.service`, changing `User` and both paths if you aren't the `pi` user in `/home/pi/wps`:
+From the WPS directory, run:
+
+```
+sudo ./install_service.sh
+```
+
+This installs, enables and starts the `wps` service, running as you. See [Quick install](/docs/installation/INSTALLATION.md#quick-install) for options.
+
+Or set it up by hand: create `/etc/systemd/system/wps.service`, changing `User` and both paths if you aren't the `pi` user in `/home/pi/wps`:
 
 ```ini
 [Unit]

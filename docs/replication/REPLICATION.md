@@ -563,7 +563,22 @@ Add the new instance's DAPPS callsign to every existing peer's `peers` and resta
 
 On first start, seeing `bootstrapFromTs` set and no `replication_origin_cursor` rows yet, it records every configured peer in `replication_bootstrap_pending` and sends each a `seq_at.request` (retried every `reconcileIntervalSeconds` until answered). Each peer answers from its own `replication_log` - the earliest `seq` it has at or after that timestamp, minus one - or, if nothing in its log is that new yet, its current latest `seq` (i.e. "you're already caught up"). The new instance seeds `replication_origin_cursor` for that peer from the answer and only then lets normal digest/gap handling run for it; any of that peer's events that arrived while the answer was in flight were buffered and are drained or bridged with a `sync.request` at that point. Content from before the cutoff is never asked for and never arrives - it exists only on instances that were around for it.
 
-`bootstrapFromTs` is consulted once, on the very first start with no cursor rows. It's harmless to leave in `env.json` afterwards - every later restart just no-ops.
+At startup, `bootstrapFromTs` is consulted once, on the very first start with no cursor rows, and every later restart no-ops. With `relay` on it is also used whenever an origin that isn't in `peers` is first heard of through a relay (see below), so it is not entirely inert afterwards. It's still harmless to leave in `env.json`.
+
+**Joining a tree.** With `relay: true`, the new instance lists only its neighbour, and origins further away are bootstrapped through that neighbour. Take an existing pair A ─── B, where A has a long history and B joined later with its own `bootstrapFromTs`, and a new instance C attached to B:
+
+```
+A ─── B ─── C        A: peers [B]    B: peers [A, C]    C: peers [B]
+```
+
+- **C and B.** On C's first start, it sends B a `seq_at.request` for origin B, as described above. B answers from its own log, and C receives B's own content from C's cutoff onwards.
+- **C and A.** C doesn't peer with A, so nothing about A happens at startup. The first A event that B relays to C, or the first B digest whose `vector` names A, makes C record B as A's route and send B a `seq_at.request` for origin A (`_bootstrap_new_origin`). Until B answers, C buffers A's events and ignores digest entries for A, so it never asks for A's history from seq 0.
+- **B answers for A from its own log of A.** B only writes events to `replication_log` while `relay` is on, so its log of A goes back only to when B joined or started relaying, whichever is later. C therefore gets A's content from **the later of C's `bootstrapFromTs` and the start of B's log of A**. If C's cutoff is earlier than that, B answers with the start of its log, and C's stream of A stays contiguous but starts later. Older A content can't reach C, because C never asks A directly.
+- **A and C.** A doesn't peer with C either, so when C's events first reach A through B, A bootstraps C the same way. It uses **A's own** `bootstrapFromTs` if one is set, which is now long in the past. All of C's events are newer than that, so B answers seq 0 and A receives C's whole stream. If A has no `bootstrapFromTs`, it starts C from seq 0 directly. Either way the result is the same; with the setting there is one extra round trip, during which A buffers C's events.
+- **B and C.** C is a configured peer of B, so B never bootstraps it. B's cursor for C starts at 0, which is right because C's whole stream is new.
+- **Without `bootstrapFromTs` on C**, C asks B for B's entire history and for A's history as far back as B's log of A goes, all over the air.
+
+So in a tree, as in a mesh, set `bootstrapFromTs` on the new instance only. Values left on existing instances do no harm: they only decide how those instances bootstrap new origins they first hear of through a relay, and because those values are old, every new origin's history is sent to them in full.
 
 **3. Seed from a database copy (full history, no replay).** For a large history where the new instance should hold everything, start from a copy of a healthy peer `P`'s `wps.db` instead. The copy carries `P`'s replication tables, so on the new instance:
 

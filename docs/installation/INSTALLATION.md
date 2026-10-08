@@ -181,6 +181,26 @@ Once WPS runs correctly from the terminal, it can be set up as a `systemd` servi
 > [!IMPORTANT]
 > Run WPS once from the terminal first (see [WPS Installation and Prereqs](#wps-installation-and-prereqs)) so `env.json`, `channels.json` and the database are created and you've confirmed it starts without errors. Also make sure the packages in `requirements.txt` are available to the Python the service will use - e.g. `sudo apt install python3-requests` for the system Python.
 
+### Quick install
+
+From the WPS directory, as the user WPS should run as:
+
+```
+sudo ./install_service.sh
+```
+
+This checks that user can write to the WPS directory and that Python can import `requests`. It then writes `/etc/systemd/system/wps.service` (the unit file in step 1, filled in with your user, directory and Python), enables it at boot and starts it. It uses `.venv/bin/python` if a virtual environment exists in the WPS directory, otherwise `python3`. Running it again updates the unit file (keeping the old one as `wps.service.bak`) and restarts WPS.
+
+| Option | Effect |
+| - | :- |
+| `--user USER` | Run the service as `USER` instead of the user who ran `sudo` |
+| `--python PATH` | Use a specific Python interpreter |
+| `--no-start` | Install and enable at boot, but don't start it now |
+| `--dry-run` | Print the unit file without installing anything (no `sudo` needed) |
+| `--uninstall` | Stop, disable and remove the service. WPS files and data are left alone |
+
+Then carry on from [3. Check it's running](#3-check-its-running). To set the service up by hand instead, follow steps 1 and 2.
+
 ### 1. Create the service file
 
 Create `/etc/systemd/system/wps.service`:
