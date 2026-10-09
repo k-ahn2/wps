@@ -1184,7 +1184,10 @@ def _carrier_label(envelope):
 
 
 def _handle_app_ack(envelope):
-    peer = envelope["by"]
+    # `by` is the peer's own spelling of its callsign; the inbox accepts it case-insensitively, but
+    # replication_peer_ack is keyed by our configured spelling, so a mismatch would add a stray row
+    # and leave the seeded one holding _retire_acked_outbox_rows' MIN() down.
+    peer = _PEER_SPELLING.get(envelope["by"].upper(), envelope["by"])
     seq = envelope["seq"]
     conn = db.get_db_connection()
     cur = conn.cursor()
@@ -1193,7 +1196,6 @@ def _handle_app_ack(envelope):
         # we relay origin to confirming it has applied that far.
         origin = envelope.get("origin")
         if isinstance(origin, str) and _relays_to(peer, origin):
-            peer = _PEER_SPELLING.get(peer.upper(), peer)
             cur.execute(
                 "INSERT INTO replication_forward (peer, origin, submitted_seq, acked_seq) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(peer, origin) DO UPDATE SET "
@@ -1836,7 +1838,15 @@ def start():
     cur = conn.cursor()
     for peer in PEERS:
         cur.execute("INSERT OR IGNORE INTO replication_peer_ack (peer, peer_acked_seq) VALUES (?, 0)", (peer,))
+        # Fold in rows an earlier version keyed by the peer's own spelling of its callsign.
+        cur.execute("SELECT MAX(peer_acked_seq), MAX(submitted_seq) FROM replication_peer_ack WHERE UPPER(peer) = UPPER(?) AND peer != ?", (peer, peer))
+        stray_acked, stray_submitted = cur.fetchone()
+        if stray_acked is not None:
+            cur.execute("UPDATE replication_peer_ack SET peer_acked_seq = MAX(peer_acked_seq, ?), submitted_seq = MAX(submitted_seq, ?) WHERE peer = ?",
+                        (stray_acked, stray_submitted, peer))
+            cur.execute("DELETE FROM replication_peer_ack WHERE UPPER(peer) = UPPER(?) AND peer != ?", (peer, peer))
     conn.commit()
+    _retire_acked_outbox_rows(cur, conn)
 
     _load_routes(cur)
     _merge_origin_aliases(cur, conn)
