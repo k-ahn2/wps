@@ -6,8 +6,9 @@
 2. [Node Integration - Interfacing with BPQ or Xrouter](#node-integration---interfacing-with-bpq-or-xrouter)
 3. [Configuring `env.json`](#configuring-envjson)
 4. [Configuring `channels.json`](#configuring-channelsjson)
-5. [Running WPS as a Service](#running-wps-as-a-service)
-6. [WPS System and Log Files](#wps-system-and-log-files)
+5. [Web Dashboard](#web-dashboard)
+6. [Running WPS as a Service](#running-wps-as-a-service)
+7. [WPS System and Log Files](#wps-system-and-log-files)
 
 [Return to README](/README.md)
 
@@ -65,6 +66,8 @@ There is no requirement to edit `env.json`to get started - the default configura
 
 Any new keys should first be added to `env.py`, which will automatically add them to `env.json` on startup. 
 
+You can also edit `env.json` in the [Web Dashboard](#web-dashboard), which applies most changes straight away and marks the ones that need a restart.
+
 | Parameter | Data Type | Default | Notes |
 | - | :-: | :-: | :- |
 |`environment`|String|`Dev`|Historically used to suppress certain functions outside Production, but currently unused|
@@ -107,6 +110,11 @@ Any new keys should first be added to `env.py`, which will automatically add the
 |`reconcileIntervalSeconds`|Number|`900`|How often each peer is told how far this instance has got, so gaps can be filled. Skipped while recent traffic makes it redundant. Set the same on every instance, or a peer's dashboard can show this instance as silent|
 |`batchSize`|Number|`1`|Most events sent in one DAPPS message when there is a backlog. Raise only once every peer runs a version that understands batches|
 |`ackDelaySeconds`|Number|`30`|How long acknowledgements are held so several can be combined into one|
+|`dashboard`|Object|see below|The [Web Dashboard](#web-dashboard). Changes need a restart|
+|`enabled`|Boolean|`true`|Run the web dashboard. `false` means its web server doesn't start|
+|`host`|String|`0.0.0.0`|Address it listens on. `0.0.0.0` accepts connections on every interface; `127.0.0.1` only from the node itself|
+|`port`|Number|`8095`|HTTP port|
+|`passwordHash`|String|`""`|The dashboard password, hashed. Set from the dashboard, not by hand. Set it to `""` to reset a forgotten password|
 
 ### Sample `env.json`
 
@@ -173,6 +181,50 @@ The default created on first run - one group containing one channel:
 ```
 
 For grouping channels, adding auto-subscribed or read-only channels, or linking a channel to a bot, see the full field reference and examples in [Protocol - Channels](/docs/protocol/CHANNELS.md#type-chl---channel-list).
+
+## Web Dashboard
+
+WPS serves a web dashboard, by default on port 8095 of every interface: browse to `http://<node-ip>:8095/`. It has two parts, with a switch between them at the top left:
+
+- **Admin**, shown first: every setting in `env.json`, editable.
+- **Replication**: the status of [replication](/docs/replication/REPLICATION.md#dashboard). Shown only when `replication.enabled` is `true`.
+
+The address comes from the `dashboard` block in `env.json` (`host`, `port`). Set `dashboard.enabled` to `false` to stop the web server starting at all. These three need a restart.
+
+### Password
+
+There is no default password. The first time anyone opens the dashboard, it asks for a new password (at least 8 characters), and whoever submits it first sets it. **So open the dashboard and set the password as soon as WPS first starts.** Until then, WPS logs `Dashboard has no password yet` at startup.
+
+After that the dashboard asks for the password, and a login lasts 30 days in that browser. **Password** (top right of Admin) changes it, which logs out every other browser. After 5 wrong passwords from one address in 5 minutes, further attempts are refused for a few minutes.
+
+To reset a forgotten password, set `dashboard.passwordHash` to `""` in `env.json`, then run `sudo systemctl reload wps` (or restart WPS). The next visit asks for a new password.
+
+The dashboard uses plain HTTP, so the password and everything on the pages cross the network unencrypted. Use it on a trusted network, and don't expose port 8095 to the internet.
+
+> [!NOTE]
+> Before this release, the dashboard's settings were `replication.dashboard` and it only ran with replication on. On the first start after upgrading, `env.py` moves them to `dashboard` and hashes any existing password, so the address and login stay the same.
+
+### Editing `env.json`
+
+Admin lists every setting, grouped by section, with a short description. Changed fields are marked, and the bar at the bottom lists them. **Save and apply** writes `env.json`, keeping the previous version as `env.json.bak`, and then warm-reloads WPS, exactly like `sudo systemctl reload wps` (see [Warm Reloading Code](/README.md#warm-reloading-code)). It doesn't disconnect anyone.
+
+Each setting is labelled with when a change takes effect:
+
+| Label | Takes effect | Settings |
+| - | - | - |
+|**live**|As soon as you save|`environment`, `apps`, log levels and `wpsLoggingEnabled`/`dbLoggingEnabled`/`daysToRetainLogFiles`, the `notifications*` settings, `wpsClients`, `autoSubscribeToChannelIds` (added to every existing user), `maxNewPostsToReturnPerChannelOnConnect`, `events.enableWpsEvents`, and replication's `dappsRestUrl`, `streamTtlSeconds`, poll and reconcile intervals, `ackDelaySeconds`, `batchSize` and `activityRetentionDays`. A changed interval applies once the wait already in progress ends|
+|**restart**|After WPS restarts (`sudo systemctl restart wps`, which disconnects users)|`socketTcpPort`, `dbFilename`, `botsEnabled`, `events.eventsDbFilename`, replication's `enabled`, `dappsCallsign`, `originCallsign`, `peers`, `relay`, `appSlug` and `bootstrapFromTs`, and the `dashboard` block|
+|**script**|When the separate script that reads it next runs or restarts|`events.enableBpqEvents`, `bpqApplName`, `bpqQueueApiUrl` (`bpq_queue_monitor.py`), the `serviceMonitoring` block (`service_monitor.py`), `replication.dappsSysopPassword` (`dapps-tools/dapps_queue.py`)|
+
+After a save, the page says what was applied and what still needs a restart. Until WPS restarts, any **restart** setting that differs from what WPS started with is listed at the top and marked *restart pending*.
+
+- **Secrets are never shown.** `notificationsProdRestKey`, `telnetPassword` and `dappsSysopPassword` show only whether they are set. Leave one blank to keep it, type a new value to replace it, or tick *Clear the stored value*.
+- **Types are checked.** Each value must keep its JSON type, ports must be 1-65535 and log levels `ERROR` or `INFO`. `apps` and `replication.peers` are edited as JSON, and other lists one item per line. Settings can't be added or removed here; `env.py` does that at startup.
+- **Edits elsewhere aren't overwritten.** If `env.json` changed after the page loaded it, the save is refused. Reload the page and make the change again.
+
+Editing `env.json` by hand still works. `sudo systemctl reload wps` applies the **live** settings, and the rest need a restart.
+
+`python3 dashboard.py` runs the dashboard without WPS, for example while WPS is stopped. Saving then only writes `env.json`, and the page says so.
 
 ## Running WPS as a Service
 
@@ -274,13 +326,13 @@ Use `journalctl -u wps` to see service start/stop events and any uncaught Python
 | Task | Command |
 | - | :- |
 | Stop WPS | `sudo systemctl stop wps` |
-| Warm-reload code changes without disconnecting users (e.g. after a `git pull` touching only `db.py`, `handlers.py`, `replication.py` or loaded bots) | `sudo systemctl reload wps` |
-| Restart WPS (e.g. after a `git pull` or `env.json` change) | `sudo systemctl restart wps` |
+| Warm-reload code changes or `env.json` without disconnecting users (e.g. after a `git pull` touching only `db.py`, `handlers.py`, `replication.py` or loaded bots, or a hand edit to a **live** setting - see [Editing `env.json`](#editing-envjson)) | `sudo systemctl reload wps` |
+| Restart WPS (e.g. after a `git pull`, or an `env.json` change to a **restart** setting) | `sudo systemctl restart wps` |
 | Disable start at boot | `sudo systemctl disable wps` |
 | After editing `wps.service` | `sudo systemctl daemon-reload` then `sudo systemctl restart wps` |
 
 > [!NOTE]
-> `sudo systemctl reload wps` only covers what the `r` key covers - a change to `wps.py`, `state.py`, `env.json` or the bot list still needs `sudo systemctl restart wps`, which disconnects connected users. Check a change parses cleanly (e.g. `python3 -c "import db, handlers, replication"`) before reloading, and watch `journalctl -t WPS -f` for the `Reloaded ...` confirmations. See [Warm Reloading Code](/README.md#warm-reloading-code).
+> `sudo systemctl reload wps` only covers what the `r` key covers - a change to `wps.py`, `state.py`, a **restart** setting in `env.json` or the bot list still needs `sudo systemctl restart wps`, which disconnects connected users. Check a change parses cleanly (e.g. `python3 -c "import db, handlers, replication"`) before reloading, and watch `journalctl -t WPS -f` for the `Reloaded ...` confirmations. See [Warm Reloading Code](/README.md#warm-reloading-code).
 >
 > If you set up the service before `ExecReload` was added, add the line to `wps.service` and run `sudo systemctl daemon-reload` - without it, `systemctl reload wps` fails with "Job type reload is not applicable".
 
@@ -298,7 +350,10 @@ Use `journalctl -u wps` to see service start/stop events and any uncaught Python
 |`wps.log`|Application logging, default ERROR only|
 |`db.log`|Database logging, default ERROR only|
 |`backup.py`|Run to create a JSON file containing every user, message and post object in the database. Reads `env.json` to determine the database filename from `dbFilename`. Any Sqlite supported backup method would also be valid|
-|`env.py`|Used to create env.json with a default configuration if it doesn't exist, or, check all required keys are present and add any new or that are missing|
+|`env.py`|Used to create env.json with a default configuration if it doesn't exist, or, check all required keys are present and add any new or that are missing. Also keeps the settings WPS started with (`STARTUP_ENV`) and re-reads `env.json` on a warm reload|
+|`dashboard.py`|The [Web Dashboard](#web-dashboard): its web server, login and Admin page. Started from `wps.py`; also runnable on its own with `python3 dashboard.py`|
+|`dashboard_auth.py`|Password hashing and login sessions for the dashboard|
+|`config_editor.py`|Reads and validates `env.json` for the dashboard's Admin page, writes edits back, and records which settings apply live and which need a restart|
 |`env.json`|Environment configuration variables|
 |`channels.json`|Channel groups and channel definitions. Created automatically with a default "General" group and "Lounge" channel if it doesn't exist. See [Protocol - Channels](/docs/protocol/CHANNELS.md#type-chl---channel-list)|
 |`bots/bots.json`|Registers channel bots, keyed by bot name with an object holding the channel id (`cid`) they respond on plus any bot-specific config as the value. Only loaded if `botsEnabled` is `true` in `env.json`. See the [Bots section in the README](/README.md#bots)|

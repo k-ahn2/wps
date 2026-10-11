@@ -4,7 +4,10 @@ from state import *
 import db
 import handlers
 import replication
-import replication_dashboard
+import dashboard
+import env as env_module
+import events
+import logger
 import threading
 import socket
 import json
@@ -58,6 +61,7 @@ def reload_handlers():
         console_log("Reloaded handlers module (processing logic)")
     except Exception as reload_e:
         console_log(f"ERROR: failed to reload handlers module: {reload_e}", "ERROR")
+        return f"handlers.py: {reload_e}"
 
 def reload_db():
     '''
@@ -73,6 +77,7 @@ def reload_db():
         console_log("Reloaded db module (database logic)")
     except Exception as reload_e:
         console_log(f"ERROR: failed to reload db module: {reload_e}", "ERROR")
+        return f"db.py: {reload_e}"
 
 def reload_replication():
     '''
@@ -80,14 +85,15 @@ def reload_replication():
     importlib.reload, without restarting its threads. Each pump thread is a bare trampoline
     that fetches its per-pass function from the module dict every time round, so the next pass
     runs the new code. In-memory replication state (held acks, wake event, sync throttles...)
-    is carried over by the module itself, and env.json is not re-read: replication settings
-    still need a restart.
+    is carried over by the module itself. Its tuning settings (intervals, batch size, DAPPS URL...)
+    are re-read from env, so they apply from each pump's next pass; identity and peers need a restart.
     '''
     try:
         importlib.reload(replication)
         console_log("Reloaded replication module (replication logic)")
     except Exception as reload_e:
         console_log(f"ERROR: failed to reload replication module: {reload_e}", "ERROR")
+        return f"replication.py: {reload_e}"
 
 def reload_bots():
     '''
@@ -105,15 +111,43 @@ def reload_bots():
     from the module dict every pass, so the loop *body* is reloadable but the trampoline
     itself needs a full process restart to change.
     '''
-    if not BOTS:
-        return
-
+    errors = []
     for cid, mod in BOTS.items():
         try:
             importlib.reload(mod)
             console_log(f"Reloaded bot module '{mod.__name__}' (channel {cid})")
         except Exception as reload_e:
             console_log(f"ERROR: failed to reload bot module '{mod.__name__}': {reload_e}", "ERROR")
+            errors.append(f"bot {mod.__name__}: {reload_e}")
+    return "; ".join(errors) or None
+
+def reload_env():
+    '''
+    Re-reads env.json into the shared env dict (see env.reload) and applies the settings that
+    need more than a fresh read: log levels/retention on the existing loggers, and the events
+    table in case enableWpsEvents was just turned on. Runs before the code modules reload, so
+    they pick up the new values. Settings in env.STARTUP_ENV (port, database, replication
+    identity and peers, bots, the dashboard's address) still need a restart.
+    '''
+    try:
+        env_module.reload()
+        logger.apply_log_settings()
+        events.events_db_init()
+        console_log("Reloaded env.json")
+    except Exception as reload_e:
+        console_log(f"ERROR: failed to reload env.json, keeping the previous settings: {reload_e}", "ERROR")
+        return f"env.json: {reload_e}"
+
+def apply_reloaded_settings():
+    '''
+    After a reload, brings existing data in line with settings that were read at startup:
+    every user subscribed to autoSubscribeToChannelIds (idempotent - only adds what's missing).
+    '''
+    try:
+        handlers.check_auto_subscriptions(db.get_db_connection().cursor())
+    except Exception as reload_e:
+        console_log(f"ERROR: failed to apply auto-subscriptions after reload: {reload_e}", "ERROR")
+        return f"auto-subscriptions: {reload_e}"
 
 # Serialises warm reloads, so an 'r' keypress and a SIGHUP (or two SIGHUPs) arriving close
 # together run one after the other rather than reloading the same modules concurrently.
@@ -121,15 +155,14 @@ RELOAD_LOCK = threading.Lock()
 
 def reload_code():
     '''
-    Warm-reloads all reloadable code - db.py, handlers.py, replication.py, and any loaded bot
-    modules - in one go. db.py is reloaded first since handlers.py, replication.py (and bots,
-    indirectly) depend on it.
+    Warm-reloads env.json and all reloadable code - db.py, handlers.py, replication.py, and any
+    loaded bot modules - in one go. env.json first, so the reloaded modules see the new settings,
+    then db.py since handlers.py, replication.py (and bots, indirectly) depend on it. Returns the
+    list of errors, empty if everything reloaded. Also run by the dashboard after it saves env.json.
     '''
     with RELOAD_LOCK:
-        reload_db()
-        reload_handlers()
-        reload_replication()
-        reload_bots()
+        steps = (reload_env, reload_db, reload_handlers, reload_replication, reload_bots, apply_reloaded_settings)
+        return [error for error in (step() for step in steps) if error]
 
 def reload_signal_handler(signum, frame):
     '''
@@ -139,7 +172,7 @@ def reload_signal_handler(signum, frame):
     blocked in S.accept() - accept() resumes by itself once the handler returns (PEP 475), so
     the reload is handed to its own thread rather than holding up the accept loop.
     '''
-    console_log("SIGHUP received, warm-reloading code")
+    console_log("SIGHUP received, warm-reloading env.json and code")
     threading.Thread(target=reload_code, daemon=True, name='code_reload_signal').start()
 
 def code_reload_key_listener():
@@ -414,9 +447,9 @@ def startup_and_listen():
     # same as the bot tick threads below, whose per-pass code is warm-reloadable.
     replication.start()
 
-    # Read-only replication status dashboard over HTTP (replication.dashboard in env.json).
-    # Only started when replication.enabled is also set.
-    replication_dashboard.start()
+    # Web dashboard (dashboard in env.json): the admin pages, which edit env.json and warm-reload
+    # it on save via reload_code, plus the replication pages when replication is enabled.
+    dashboard.start(reload=reload_code)
 
     # Load the channel list from channels.json into the database
     handlers.sync_channels_from_file(global_cursor)
@@ -459,11 +492,11 @@ def startup_and_listen():
                 console_log(f"ERROR: failed to load bot '{bot_name}': {bot_init_e}", "ERROR")
 
     signal.signal(signal.SIGHUP, reload_signal_handler)
-    console_log(f"Send SIGHUP (e.g. 'systemctl reload wps') to warm-reload db and processing code{' and bots' if BOTS else ''} without disconnecting users")
+    console_log(f"Send SIGHUP (e.g. 'systemctl reload wps') to warm-reload env.json, db and processing code{' and bots' if BOTS else ''} without disconnecting users")
 
     if sys.stdin.isatty():
         threading.Thread(target=code_reload_key_listener, daemon=True, name='code_reload_key_listener').start()
-        console_log(f"Press 'r' in this terminal to warm-reload db and processing code{' and bots' if BOTS else ''} without disconnecting users")
+        console_log(f"Press 'r' in this terminal to warm-reload env.json, db and processing code{' and bots' if BOTS else ''} without disconnecting users")
 
     # Confirm users are subscribed to the default channels
     handlers.check_auto_subscriptions(global_cursor)

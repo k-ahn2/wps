@@ -1,32 +1,24 @@
-import base64
 import csv
 import datetime
-import hmac
 import io
 import json
 import os
 import sqlite3
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
 
 import replication
-from state import timestamp, console_log
 
-# replication_dashboard.py serves a read-only web view of the replication tables: per-peer
-# status, the replication_activity log (data received, sync traffic in both directions), and
-# every individual data item sent (replication_log) or received (replication_activity).
+# replication_dashboard.py is the Replication half of the web dashboard: a read-only view of the
+# replication tables - per-peer status, the replication_activity log (data received, sync traffic
+# in both directions), and every individual data item sent (replication_log) or received
+# (replication_activity). It only ever reads wps.db, over a read-only connection, so it can
+# never interfere with replication itself.
 #
-# Started from wps.py when both replication.enabled and replication.dashboard.enabled are
-# set, or run on its own with
-# `python3 replication_dashboard.py` (e.g. while WPS is stopped) - it only ever reads wps.db,
-# over a read-only connection, so it can never interfere with replication itself.
-#
-# It is an internal dashboard: by default it listens on every interface with no
-# authentication. replication.dashboard.password optionally adds HTTP basic auth (any username).
+# This module is the JSON API (ROUTES, export_activity) and the page (PAGE). dashboard.py serves
+# them - behind its login, at /replication - when replication is enabled. Run
+# `python3 replication_dashboard.py` to serve the dashboard on its own (e.g. while WPS is
+# stopped), Replication pages included even if replication is disabled.
 
-DASHBOARD_CONFIG = replication.REPLICATION_CONFIG.get('dashboard', {})
 DB_PATH = os.path.abspath(replication.env['dbFilename'])
 MAX_PAGE = 500
 ISSUE_STATUSES = ("failed", "error", "rejected")
@@ -509,97 +501,6 @@ ROUTES = {
 }
 
 
-# --- HTTP ----------------------------------------------------------------------------------
-
-class _Handler(BaseHTTPRequestHandler):
-    server_version = "WPSReplicationDashboard/1"
-
-    def log_message(self, *_args):
-        pass  # keep the WPS console quiet
-
-    def _authorised(self):
-        password = DASHBOARD_CONFIG.get("password")
-        if not password:
-            return True
-        header = self.headers.get("Authorization", "")
-        if header.startswith("Basic "):
-            try:
-                supplied = base64.b64decode(header[6:]).decode().split(":", 1)[1]
-                if hmac.compare_digest(supplied.encode(), password.encode()):
-                    return True
-            except Exception:
-                pass
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="WPS replication"')
-        self.end_headers()
-        return False
-
-    def _send(self, status, body, content_type, filename=None):
-        data = body.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        if filename:
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(data)
-
-    def do_GET(self):
-        if not self._authorised():
-            return
-        url = urlparse(self.path)
-        if url.path in ("/", "/index.html"):
-            self._send(200, PAGE, "text/html; charset=utf-8")
-            return
-        if url.path == "/api/activity/export":
-            try:
-                conn = _connect()
-                try:
-                    body, content_type, filename = export_activity(conn.cursor(), parse_qs(url.query))
-                finally:
-                    conn.close()
-                self._send(200, body, content_type, filename)
-            except Exception as e:
-                self._send(500, json.dumps({"error": str(e)}), "application/json")
-            return
-        route = ROUTES.get(url.path)
-        if route is None:
-            self._send(404, json.dumps({"error": "not found"}), "application/json")
-            return
-        try:
-            conn = _connect()
-            try:
-                result = route(conn.cursor(), parse_qs(url.query))
-            finally:
-                conn.close()
-            self._send(200, json.dumps(result, default=str), "application/json")
-        except Exception as e:
-            self._send(500, json.dumps({"error": str(e)}), "application/json")
-
-
-def start(force=False):
-    '''
-    Called once from wps.py at startup; no-ops unless both replication.enabled and
-    replication.dashboard.enabled are set (force=True for standalone use, which skips both).
-    Serves on a daemon thread, returns the server or None.
-    '''
-    if not force and not (replication.ENABLED and DASHBOARD_CONFIG.get("enabled", True)):
-        return None
-    host = DASHBOARD_CONFIG.get("host", "0.0.0.0")
-    port = DASHBOARD_CONFIG.get("port", 8095)
-    try:
-        server = ThreadingHTTPServer((host, port), _Handler)
-    except OSError as e:
-        console_log(f"Replication dashboard failed to start on {host}:{port}: {e}", "ERROR")
-        return None
-    server.daemon_threads = True
-    threading.Thread(target=server.serve_forever, daemon=True, name="replication_dashboard").start()
-    console_log(f"Replication dashboard on http://{host}:{port}/")
-    return server
-
-
 PAGE = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -607,103 +508,25 @@ PAGE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WPS Replication</title>
 <style>
-:root {
-  --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5f6b7a; --line: #e2e6eb; --hover: #f1f4f8;
-  --accent: #2563eb; --ok: #15803d; --ok-bg: #e7f6ec; --warn: #a16207; --warn-bg: #fdf5e0;
-  --bad: #b91c1c; --bad-bg: #fdecec; --info: #1d4ed8; --info-bg: #e8effd; --neutral-bg: #eef0f3;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1216; --panel: #171b21; --ink: #e5e9ef; --muted: #8f9aa8; --line: #2a3039; --hover: #1e242c;
-    --accent: #6ea0ff; --ok: #4ade80; --ok-bg: #12301f; --warn: #facc15; --warn-bg: #332a0c;
-    --bad: #f87171; --bad-bg: #3a1616; --info: #93b4ff; --info-bg: #17254a; --neutral-bg: #232932;
-  }
-}
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
-header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-header .ident { color: var(--muted); font-family: var(--mono); font-size: 12px; }
-nav { display: flex; gap: 4px; flex-wrap: wrap; }
-nav button { border: 0; background: none; color: var(--muted); padding: 6px 12px; border-radius: 6px; cursor: pointer; font: inherit; }
-nav button.active { background: var(--neutral-bg); color: var(--ink); font-weight: 600; }
-nav button:hover { color: var(--ink); }
-.spacer { flex: 1; }
-.refresh { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
-main { padding: 20px; max-width: 1500px; margin: 0 auto; }
-section.view { display: none; } section.view.active { display: block; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 20px; overflow: hidden; }
-.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
-.card .body { padding: 16px; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
-.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
-.tile .label { color: var(--muted); font-size: 12px; }
-.tile .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
-.tile .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-.table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
-th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--panel); position: sticky; top: 0; }
-td.wrap { white-space: normal; min-width: 240px; }
-tbody tr.clickable { cursor: pointer; } tbody tr.clickable:hover { background: var(--hover); }
-tbody tr:last-child td { border-bottom: 0; }
-.mono { font-family: var(--mono); font-size: 12.5px; }
-.muted { color: var(--muted); }
-.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--neutral-bg); color: var(--muted); }
-.pill.ok { background: var(--ok-bg); color: var(--ok); }
-.pill.warn { background: var(--warn-bg); color: var(--warn); }
-.pill.bad { background: var(--bad-bg); color: var(--bad); }
-.pill.info { background: var(--info-bg); color: var(--info); }
-.dir { font-family: var(--mono); font-size: 12px; font-weight: 600; }
-.dir.in { color: var(--ok); } .dir.out { color: var(--info); }
-.filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); align-items: center; }
-select, input[type=text], input[type=search] { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
-button.btn { font: inherit; padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); cursor: pointer; }
-button.btn:hover { background: var(--hover); }
-.more { padding: 12px 16px; text-align: center; }
-.empty { padding: 24px 16px; color: var(--muted); text-align: center; }
-.notice { padding: 12px 16px; background: var(--warn-bg); color: var(--warn); border-radius: 8px; margin-bottom: 20px; }
-.notice.bad { background: var(--bad-bg); color: var(--bad); }
-.peerstates { display: flex; gap: 4px; flex-wrap: wrap; }
-dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
-dl.kv dt { color: var(--muted); } dl.kv dd { margin: 0; font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
-#drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(720px, 100vw); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.12); transform: translateX(100%); transition: transform .18s ease; z-index: 20; display: flex; flex-direction: column; }
-#drawer.open { transform: none; }
-#drawer .head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
-#drawer .head h3 { margin: 0; font-size: 15px; flex: 1; }
-#drawer .content { padding: 18px; overflow-y: auto; flex: 1; }
-#drawer h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 22px 0 8px; }
-#drawer h4:first-child { margin-top: 0; }
-pre.json { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; font: 12.5px/1.5 var(--mono); margin: 0; white-space: pre-wrap; word-break: break-word; }
-.timeline td { font-size: 13px; }
-a.link { color: var(--accent); cursor: pointer; text-decoration: none; } a.link:hover { text-decoration: underline; }
-dialog#dl-dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); padding: 0; width: min(420px, calc(100vw - 32px)); box-shadow: 0 12px 32px rgba(0,0,0,.2); }
-dialog#dl-dialog::backdrop { background: rgba(0,0,0,.35); }
-dialog#dl-dialog h3 { margin: 0; padding: 14px 18px; font-size: 15px; border-bottom: 1px solid var(--line); }
-dialog#dl-dialog .content { padding: 16px 18px; display: grid; gap: 12px; }
-dialog#dl-dialog .opt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-dialog#dl-dialog input[type=number], dialog#dl-dialog input[type=datetime-local] { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
-dialog#dl-dialog input[type=number] { width: 7em; }
-dialog#dl-dialog .actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
-button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
-@media (max-width: 700px) { main { padding: 12px; } header { padding: 10px 12px; } }
-</style>
+__BASE_CSS__</style>
 </head>
 <body>
 <header>
-  <h1>WPS Replication</h1>
+  __APP_NAV__
   <span class="ident" id="ident"></span>
-  <nav id="nav">
-    <button data-view="overview" class="active">Overview</button>
-    <button data-view="activity">Activity log</button>
-    <button data-view="received">Received items</button>
-    <button data-view="sent">Sent items</button>
-    <button data-view="pending">Buffered</button>
-  </nav>
   <span class="spacer"></span>
-  <label class="refresh"><input type="checkbox" id="auto" checked> Auto-refresh 5s <span id="updated"></span></label>
+  __ACCOUNT__
+  <div class="subbar">
+    <nav id="nav">
+      <button data-view="overview" class="active">Overview</button>
+      <button data-view="activity">Activity log</button>
+      <button data-view="received">Received items</button>
+      <button data-view="sent">Sent items</button>
+      <button data-view="pending">Buffered</button>
+    </nav>
+    <span class="spacer"></span>
+    <label class="refresh"><input type="checkbox" id="auto" checked> Auto-refresh 5s <span id="updated"></span></label>
+  </div>
 </header>
 
 <main>
@@ -818,6 +641,7 @@ const eventTs = (op, ts) => (op || "").startsWith("msg.") ? ts * 1000 : ts;
 async function api(path, params = {}) {
   const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v != null && v !== false)).toString();
   const res = await fetch(path + (qs ? "?" + qs : ""));
+  if (res.status === 401) { location.href = "/"; throw new Error("Logged out"); }
   const body = await res.json();
   if (!res.ok) throw new Error(body.error || res.statusText);
   return body;
@@ -1106,10 +930,7 @@ run(loadOverview).then(() => {
 
 
 if __name__ == "__main__":
-    # Standalone: serve the dashboard without running WPS (still reads env.json for host/port).
-    server = start(force=True)
-    if server:
-        try:
-            threading.Event().wait()
-        except KeyboardInterrupt:
-            console_log("Replication dashboard stopped")
+    # Standalone, e.g. while WPS is stopped: the whole dashboard, with the Replication pages
+    # shown even if replication is disabled. See dashboard.py.
+    import dashboard
+    dashboard.main(show_replication=True)

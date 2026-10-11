@@ -3,6 +3,21 @@ from state import syslog_log
 import logging
 from logging.handlers import TimedRotatingFileHandler
 
+def apply_log_settings():
+    '''
+    Applies the log levels and retention from env to loggers already set up, so a warm reload
+    after an env.json edit changes them without a restart. wpsLoggingEnabled/dbLoggingEnabled
+    need nothing here: they are read from env on every log call.
+    '''
+    for name, level_key in (("wps", 'minWpsLogLevel'), ("db", 'minDbLogLevel')):
+        logger = logging.getLogger(name)
+        if not logger.handlers:
+            continue  # not created yet - picks the settings up when it is
+        logger.setLevel(getattr(logging, env.get(level_key, 'INFO').upper(), logging.INFO))
+        for handler in logger.handlers:
+            if isinstance(handler, TimedRotatingFileHandler):
+                handler.backupCount = env['daysToRetainLogFiles']
+
 def get_wps_logger():
     logger = logging.getLogger("wps")
 

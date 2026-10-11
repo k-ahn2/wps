@@ -1,13 +1,11 @@
 from env import *
 import sqlite3
 
-# Environment Variables
-env_source = open("env.json", "r")
-env = json.load(env_source)
-env_source.close()
-
-EVENTS_DB_FILENAME = env['events']['eventsDbFilename']
-DB_FILENAME = env['dbFilename']
+# Environment Variables. Database files are fixed at startup (see env.STARTUP_ENV). Don't bind a
+# module-level `env` here: handlers.py does `from stats import *`, which would replace its live,
+# reloadable env with a stale copy.
+EVENTS_DB_FILENAME = STARTUP_ENV['events']['eventsDbFilename']
+DB_FILENAME = STARTUP_ENV['dbFilename']
 
 def dbGetBotChannelIds():
     '''

@@ -322,15 +322,15 @@ You should see:
 
 ```
 Replication started: origin=... app=wps-repl peers=... relay=... dapps=...
-Replication dashboard on http://0.0.0.0:8095/
+Dashboard on http://0.0.0.0:8095/
 ```
 
 ### 5.2 Replication dashboard
 
-Browse to `http://<node-ip>:8095/`. Once the nodes are up, each peer should show as healthy on the **Overview** tab within a few minutes. In a tree, origins that reach this node through a neighbour are listed as **relayed via** that neighbour.
+Browse to `http://<node-ip>:8095/`. The first time, it asks you to set a dashboard password - do this straight away, since whoever sets it first owns it. Then choose **Replication** at the top left. Once the nodes are up, each peer should show as healthy on the **Overview** tab within a few minutes. In a tree, origins that reach this node through a neighbour are listed as **relayed via** that neighbour.
 
 > [!WARNING]
-> The dashboard shows message and post content and has no login by default. Keep port 8095 off the internet, or set `replication.dashboard.password` in `env.json` and restart WPS.
+> The dashboard shows message and post content and can edit `env.json`, and it uses plain HTTP. Keep port 8095 off the internet. See [Web Dashboard](/docs/installation/INSTALLATION.md#web-dashboard).
 
 ### 5.3 End to end
 
@@ -348,6 +348,6 @@ Delivery takes seconds to minutes depending on the link. The **Activity log** ta
 | Dashboard shows `rejected` items | The sender isn't in `peers`, or a callsign doesn't match exactly. Check both callsigns for each peer, SSIDs included. In a tree, also check `relay` is `true` on this node |
 | In a tree, posts reach neighbours but not nodes further away | `relay` is `false` on the node in the middle |
 | Posts land in the wrong channel or don't show | `channels.json` differs between nodes |
-| Anything else | Set `minWpsLogLevel` to `INFO` in `env.json`, restart WPS, and look for `REPLICATION` lines in `wps.log`. See [Monitoring and Operations](/docs/replication/REPLICATION.md#monitoring-and-operations) |
+| Anything else | Set `minWpsLogLevel` to `INFO` on the dashboard's Admin page (it applies straight away), and look for `REPLICATION` lines in `wps.log`. See [Monitoring and Operations](/docs/replication/REPLICATION.md#monitoring-and-operations) |
 
-After changing `env.json`, always run `sudo systemctl restart wps` - replication settings are only read at startup.
+Replication's identity and topology settings (`enabled`, callsigns, `peers`, `relay`, `appSlug`, `bootstrapFromTs`) are only read at startup: after changing them, run `sudo systemctl restart wps`. The dashboard's Admin page marks every setting that needs a restart and applies the rest when you save.

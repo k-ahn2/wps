@@ -3,12 +3,13 @@ import datetime
 import threading
 from logger import *
 
-# Environment Variables
-env_source = open("env.json")
-env = json.load(env_source)
-env_source.close()
+# Environment Variables. db.py's settings - the database file, and whether and as whom to capture
+# replication events - are acted on for the life of the process, so they come from the startup
+# snapshot: a warm reload after an env.json edit must not switch database or replication identity
+# halfway. Changing them needs a restart.
+from env import STARTUP_ENV
 
-DB_FILENAME = env['dbFilename']
+DB_FILENAME = STARTUP_ENV['dbFilename']
 
 # --- Replication capture -----------------------------------------------------------------
 #
@@ -20,7 +21,7 @@ DB_FILENAME = env['dbFilename']
 # never captured. Presence is not captured into the stream at all: a change to is_online is
 # handed to replication.notify_presence (see _replicate_online_status), which sends it to peers
 # outside the stream; is_online itself stays node-local.
-REPLICATION_CONFIG = env.get('replication', {})
+REPLICATION_CONFIG = STARTUP_ENV.get('replication', {})
 REPLICATION_ENABLED = REPLICATION_CONFIG.get('enabled', False)
 REPLICATION_ORIGIN = REPLICATION_CONFIG.get('originCallsign') or REPLICATION_CONFIG.get('dappsCallsign')  # this node's replication identity, stamped as `o` on posts at the receiver
 REPLICATED_USER_FIELDS = {"name", "name_last_updated"}

@@ -2,12 +2,10 @@ from env import *
 import sqlite3
 from state import console_log
 
-# Environment Variables
-env_source = open("env.json", "r")
-env = json.load(env_source)
-env_source.close()
-
-EVENTS_DB_FILENAME = env['events']['eventsDbFilename']
+# Environment Variables. `env` is env.py's shared dict, updated in place by a warm reload, so
+# enableWpsEvents applies live (wps.py's reload_code calls events_db_init again to create the
+# table if it was just turned on). The database file is fixed at startup.
+EVENTS_DB_FILENAME = STARTUP_ENV['events']['eventsDbFilename']
 
 def events_db_init():
     

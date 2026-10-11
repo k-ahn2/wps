@@ -27,8 +27,11 @@ from logger import wps_logger
 #
 # reload() re-executes this file in the same module dict, so every piece of in-memory state
 # below is bound through _kept(), which reuses the value already there instead of resetting
-# it. env.json is kept the same way: its settings were acted on by start() (peer rows,
-# bootstrap, which threads exist), so a reload changes code only and settings need a restart.
+# it. Settings come in two kinds. Identity and topology (enabled, callsigns, peers, relay,
+# appSlug, bootstrapFromTs) were acted on by start() - peer rows, bootstrap, which threads
+# exist - so they come from env.STARTUP_ENV and need a restart. The rest (DAPPS URL, intervals,
+# batch size, retention...) come from the live env, which a warm reload has just re-read, and
+# apply from each pump's next pass.
 
 
 def _kept(name, make):
@@ -38,17 +41,13 @@ def _kept(name, make):
     return globals()[name] if name in globals() else make()
 
 
-def _load_env():
-    with open("env.json") as env_source:
-        return json.load(env_source)
+from env import env, STARTUP_ENV
 
-
-env = _kept('env', _load_env)
-
-REPLICATION_CONFIG = env.get('replication', {})
-ENABLED = REPLICATION_CONFIG.get('enabled', False)
-DAPPS_CALLSIGN = REPLICATION_CONFIG.get('dappsCallsign')  # this node's DAPPS callsign - the address peers send to
-ORIGIN = REPLICATION_CONFIG.get('originCallsign') or DAPPS_CALLSIGN  # this node's replication identity: envelope `origin`, and the `o` key on posts at receivers
+REPLICATION_CONFIG = env.get('replication', {})  # live: re-read by every warm reload
+_STARTUP_CONFIG = STARTUP_ENV.get('replication', {})  # identity and topology: fixed until restart
+ENABLED = _STARTUP_CONFIG.get('enabled', False)
+DAPPS_CALLSIGN = _STARTUP_CONFIG.get('dappsCallsign')  # this node's DAPPS callsign - the address peers send to
+ORIGIN = _STARTUP_CONFIG.get('originCallsign') or DAPPS_CALLSIGN  # this node's replication identity: envelope `origin`, and the `o` key on posts at receivers
 
 # peers: [{"originCallsign": "GB7ABC", "dappsCallsign": "GB7ABC-7"}, ...]. A bare string is
 # accepted as a peer whose origin and DAPPS callsigns are the same.
@@ -61,7 +60,7 @@ def _normalise_peers(raw):
             peers.append((p.get('originCallsign') or p['dappsCallsign'], p['dappsCallsign']))
     return peers
 
-_PEER_PAIRS = _normalise_peers(REPLICATION_CONFIG.get('peers', []))
+_PEER_PAIRS = _normalise_peers(_STARTUP_CONFIG.get('peers', []))
 PEERS = [dapps for _, dapps in _PEER_PAIRS]  # DAPPS callsigns: send targets, and the keys of replication_peer_ack
 _ORIGIN_TO_DAPPS = {origin.upper(): dapps for origin, dapps in _PEER_PAIRS}
 _DAPPS_TO_ORIGIN = {dapps.upper(): origin for origin, dapps in _PEER_PAIRS}
@@ -74,8 +73,8 @@ def _dapps_for_origin(origin):
 # relay: pass every origin's events on to the other peers, so instances can be linked as a
 # tree - each lists only its neighbours in `peers` - rather than as a full mesh. The links must
 # not form a loop. Off by default, which keeps the full-mesh behaviour exactly as it was.
-RELAY = bool(REPLICATION_CONFIG.get('relay', False))
-APP_SLUG = REPLICATION_CONFIG.get('appSlug', 'wps-repl')
+RELAY = bool(_STARTUP_CONFIG.get('relay', False))
+APP_SLUG = _STARTUP_CONFIG.get('appSlug', 'wps-repl')
 DAPPS_REST_URL = REPLICATION_CONFIG.get('dappsRestUrl', 'http://127.0.0.1:5000').rstrip('/')
 STREAM_TTL_SECONDS = REPLICATION_CONFIG.get('streamTtlSeconds', 604800)  # 7 days
 OUTBOX_POLL_SECONDS = REPLICATION_CONFIG.get('outboxPollSeconds', 5)
@@ -98,7 +97,7 @@ BATCH_SIZE = max(1, int(REPLICATION_CONFIG.get('batchSize', 1)))
 # Set only on a brand-new instance that should join mid-history rather than replay everything:
 # epoch-ms timestamp. Consulted once, at the first start with no replication_origin_cursor rows
 # yet - see _start_bootstrap_if_configured. Inert (and safe to leave in env.json) afterwards.
-BOOTSTRAP_FROM_TS = REPLICATION_CONFIG.get('bootstrapFromTs')
+BOOTSTRAP_FROM_TS = _STARTUP_CONFIG.get('bootstrapFromTs')
 ACTIVITY_RETENTION_DAYS = REPLICATION_CONFIG.get('activityRetentionDays', 7)
 
 
