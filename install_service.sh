@@ -29,7 +29,8 @@ Installs WPS from $WPS_DIR as the systemd service '$SERVICE_NAME'.
 
 Options:
   --user USER       User the service runs as (default: the user who ran sudo, here '$RUN_USER')
-  --python PATH     Python interpreter to use (default: $WPS_DIR/.venv/bin/python if present, else python3)
+  --python PATH     Python interpreter to use (default: the virtual environment in $WPS_DIR/.venv,
+                    venv or env if there is one, else python3)
   --name NAME       Service name (default: wps)
   --no-start        Install and enable at boot, but don't start or restart it now
   --dry-run         Print the unit file that would be installed and exit
@@ -130,9 +131,13 @@ if [ "$RUN_USER" = "root" ] && [ "$USER_GIVEN" -eq 0 ]; then
 fi
 
 if [ -z "$PYTHON" ]; then
-    if [ -x "$WPS_DIR/.venv/bin/python" ]; then
-        PYTHON="$WPS_DIR/.venv/bin/python"
-    else
+    for venv in .venv venv env; do
+        if [ -x "$WPS_DIR/$venv/bin/python" ]; then
+            PYTHON="$WPS_DIR/$venv/bin/python"
+            break
+        fi
+    done
+    if [ -z "$PYTHON" ]; then
         PYTHON="$(command -v python3 || true)"
         [ -n "$PYTHON" ] || die "python3 not found. Install it, or pass --python PATH"
     fi

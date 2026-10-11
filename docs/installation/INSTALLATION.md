@@ -189,7 +189,7 @@ From the WPS directory, as the user WPS should run as:
 sudo ./install_service.sh
 ```
 
-This checks that user can write to the WPS directory and that Python can import `requests`. It then writes `/etc/systemd/system/wps.service` (the unit file in step 1, filled in with your user, directory and Python), enables it at boot and starts it. It uses `.venv/bin/python` if a virtual environment exists in the WPS directory, otherwise `python3`. Running it again updates the unit file (keeping the old one as `wps.service.bak`) and restarts WPS.
+This checks that user can write to the WPS directory and that Python can import `requests`. It then writes `/etc/systemd/system/wps.service` (the unit file in step 1, filled in with your user, directory and Python), enables it at boot and starts it. It uses the virtual environment's Python if there is one in the WPS directory (`.venv`, `venv` or `env`), otherwise `python3`. Pass `--python PATH` to choose a different interpreter. Running it again updates the unit file (keeping the old one as `wps.service.bak`) and restarts WPS.
 
 | Option | Effect |
 | - | :- |
