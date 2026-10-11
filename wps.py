@@ -475,7 +475,7 @@ def startup_and_listen():
         console_log("Failed to get online users, something is wrong, exiting", "ERROR")
         return
 
-    # With replication on, each of these also sends peers a user.online offline status, so
+    # With replication on, each of these also sends peers an offline presence status, so
     # users left online by a crash or hard stop don't stay online at peers
     online_users = online_users_response['data']
     for online_user in online_users:

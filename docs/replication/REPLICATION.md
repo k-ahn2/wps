@@ -111,7 +111,7 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`inboxPollSeconds`|Number|`5`|How often the inbox pump polls DAPPS for inbound messages when replication is quiet|
 |`inboxFastPollSeconds`|Number|`1`|Inbox poll interval while replication is active - see [Receive](#4-receive---the-inbox-pump)|
 |`inboxFastPollWindowSeconds`|Number|`300`|How long the fast inbox rate lasts after the most recent local write or inbound data event|
-|`reconcileIntervalSeconds`|Number|`300`|How often a digest is sent to each peer (skipped while recent traffic makes it redundant - see [Reconcile](#7-reconcile))|
+|`reconcileIntervalSeconds`|Number|`900`|How often a digest is sent to each peer (skipped while recent traffic makes it redundant - see [Reconcile](#7-reconcile)). Set the same on every instance|
 |`batchSize`|Number|`1`|Most events sent in one DAPPS message when there is a backlog - see [Batches](#batches). Leave at `1` until **every** peer runs a version that understands batches|
 |`ackDelaySeconds`|Number|`30`|How long application acks are held so several can be combined into one - see [Acknowledge](#6-acknowledge)|
 |`bootstrapFromTs`|Number (epoch ms)|`null`|Set only on a brand-new instance joining an existing mesh, to skip replaying full history - see [Bringing up a new instance](#bringing-up-a-new-instance). Leave `null` for a normal instance|
@@ -142,9 +142,11 @@ On startup WPS prints one of:
 |`msg.edit`|Direct message edited|`messages`|Yes - `med` to the recipient if online|
 |`msg.emoji`|Direct message reaction changed|`messages`|Yes - `mem` with the full reaction list to the message's author if online|
 |`user.update`|User's `name` changed|`users`|No - clients pick it up through the normal name-update watermark|
-|`user.online`|User's `is_online` changed: connect, last disconnect, and the reset of online users at startup|`users` - creates the user if unknown, sets `online_origin`|Yes - `uc` or `ud` with `or` set to the origin, to all connected users, only when `online_origin` changes and the user isn't connected here|
+|`user.online`|Not sent any more - see [Presence](#presence) below. Still accepted when an older version sends it, or when history from before the change is replayed|As a presence status taken at the event's `ts`|As presence|
 
-**Not replicated:** avatars, pairing state, channel subscriptions and paused channels, push tokens, `is_online`, `last_client_version`, notification bookkeeping, and `channels.json`. `is_online` and push details are properties of one node; keep `channels.json` identical by hand. Presence crosses only as `user.online`, which a peer records as `online_origin` (see [Apply](#5-apply)). A user record is created by the user's first connect on an instance, or by a `user.online` from a peer for a callsign not yet known there. `user.update` never creates users.
+**Presence is not in the stream.** Who is online is current state, not history: only each user's latest status matters. Numbering it into `replication_log` would mean a new or lagging peer is sent every connect and disconnect ever made. So a change to a user's `is_online` (connect, last disconnect, and the reset of online users at startup) goes to each peer as a [`presence`](#presence) control message instead. A peer records it as `online_origin` (see [Apply](#5-apply)) and sends `uc` or `ud` with `or` set to the origin to all connected users, only when `online_origin` changes and the user isn't connected here.
+
+**Not replicated:** avatars, pairing state, channel subscriptions and paused channels, push tokens, `is_online`, `last_client_version`, notification bookkeeping, and `channels.json`. `is_online` and push details are properties of one node; keep `channels.json` identical by hand. A user record is created by the user's first connect on an instance, or by presence from a peer for a callsign not yet known there. `user.update` never creates users.
 
 ## The Replication Event
 
@@ -172,7 +174,7 @@ Every replicated change is one JSON envelope. `origin` and `seq` are its identit
 |`ts`|When the change happened, in the **native precision of the thing changed**: seconds for messages (`lts`, `edts`, `ets`), milliseconds for posts (`dts`, `edts`, `ets`) and for `user.update`|
 |`op`|One of the operations in [What Is Replicated](#what-is-replicated)|
 |`key`|Identifies the row for edits, reactions and user updates: `{cid, ts}` for a post, `{_id}` for a message, `{callsign}` for a user. Omitted on `post.insert` and `msg.insert`, where `data` is the whole row and already holds it|
-|`data`|What is needed to apply and broadcast it. For inserts, the whole post or message. For edits and reactions, only the changed fields. For `user.update`, `name`, `name_last_updated` and `callsign`. For `user.online`, `callsign`, `name`, `is_online` (`1` or `0`) and `ts` - the `last_connected` (online) or `last_disconnected` (offline) just written at the origin, absent when that update set neither (the reset of online users at startup) - with no `key`|
+|`data`|What is needed to apply and broadcast it. For inserts, the whole post or message. For edits and reactions, only the changed fields. For `user.update`, `name`, `name_last_updated` and `callsign`. For `user.online` (older versions only), `callsign`, `name`, `is_online` (`1` or `0`) and `ts` - the `last_connected` (online) or `last_disconnected` (offline) just written at the origin, absent when that update set neither (the reset of online users at startup) - with no `key`|
 |`acks`|Optional, added at submit time and never stored in `replication_log`: `{origin: seq}` acks the sender was holding for the recipient - see [Acknowledge](#6-acknowledge)|
 
 ### Wire Format
@@ -218,19 +220,32 @@ A peer running an older version cannot read a batch: it fails to handle it, neve
 
 ### Control messages
 
-Seven more message types travel over the same DAPPS queue. They carry no `seq` and are not stored in `replication_log`.
+Eight more message types travel over the same DAPPS queue. They carry no `seq` and are not stored in `replication_log`.
 
 | `op` | Sent by | Purpose | Fields |
 | - | - | - | - |
 |`ack`|Receiver, after applying an event|Tells the origin its event is applied, so the origin can retire it|`origin` (the stream owner), `seq`, `by` (the acknowledging instance)|
-|`digest`|Every instance, periodically|Announces "my own stream is at seq N", and with `relay` on, the latest seq held of each origin relayed to the recipient|`origin`, `latest_seq`, `vector` (relay only: `{origin: seq}`)|
+|`digest`|Every instance, periodically|Announces "my own stream is at seq N", and with `relay` on, the latest seq held of each origin relayed to the recipient. `presence` lets the recipient check its view of who is online - see [Presence](#presence)|`origin`, `latest_seq`, `vector` (relay only: `{origin: seq}`), `presence` (`{origin: hash}`)|
 |`sync.request`|An instance that is behind|Asks the origin to re-send a range|`origin` (whose stream), `from_seq`, `to_seq`, `requested_by`|
 |`seq_at.request`|A new instance with `bootstrapFromTs` set|Asks a peer "what seq should I start from to get everything from timestamp `ts` onward?"|`origin` (whose stream - the recipient), `requested_by`, `ts` (epoch ms)|
 |`seq_at.response`|A peer, answering `seq_at.request`|Tells the requester the `last_applied_seq` to seed for the responder's own stream|`origin` (the responder, i.e. the stream), `seq`, `requested_by`|
-|`online.request`|Every instance, at startup|Asks a peer who is online there now, since startup clears all `online_origin`. Re-sent every reconcile tick until answered|`requested_by`|
-|`online.response`|A peer, answering `online.request`. With `relay` on, `relayed` adds a snapshot per origin it relays to the requester|The users connected at the responder, as of its latest `seq`. The requester sets `online_origin` to the responder for each listed user and clears it for anyone else it holds as online there. If it has already applied the responder's stream beyond `seq`, the snapshot is older than presence it holds, so it is discarded and asked for again|`origin` (the responder), `seq`, `requested_by`, `users` (`[{callsign, name, ts}]`, `ts` being the user's `last_connected` at the responder)|
+|`online.request`|Every instance, at startup, since startup clears all `online_origin`; and an instance whose view of a peer's presence no longer matches that peer's digest|Asks a peer who is online there now. Re-sent every reconcile tick until answered|`requested_by`|
+|`online.response`|A peer, answering `online.request`. With `relay` on, `relayed` adds a snapshot per origin it relays to the requester, as of the newest presence it has applied from that origin|The users connected at the responder, as of `at`. The requester sets `online_origin` to the responder for each listed user and clears it for anyone else it holds as online there, except for a user whose presence it has already had from after `at`|`origin` (the responder), `at`, `requested_by`, `users` (`[{callsign, name, ts}]`, `ts` being the user's `last_connected` at the responder), `relayed` (relay only: `[{origin, at, users}]`)|
+|`presence`|Every instance, when a local user's `is_online` changes. With `relay` on, also passed on to the other neighbours|Each listed user's latest status at `origin`|`origin`, `users` (`[{callsign, name, is_online, ts, at}]`), `by` (when relayed)|
 
-A peer running an older version doesn't recognise `online.request`: it falls through to the data-event path, fails on the missing `seq`, and never acknowledges it to DAPPS, while the requester re-sends one every reconcile tick. Upgrade every peer before restarting any one of them on this version.
+A peer running an older version doesn't recognise `online.request` or `presence`: it falls through to the data-event path, fails on the missing `seq`, and never acknowledges it to DAPPS, which presents it again on every poll. Upgrade every peer before restarting any one of them on this version.
+
+### Presence
+
+Presence travels outside the ordered stream, as best-effort control messages, so it is never replayed. Three pieces keep each instance's view right:
+
+- **Live status.** When a local user's `is_online` changes, the status is queued for every peer, replacing any status for that user not yet sent, and the outbox pump sends it within about 100 ms as a `presence` message. A burst of changes goes as one message per origin. If DAPPS refuses it, it stays queued and is retried a minute later. It has the same short TTL as a digest, twice `reconcileIntervalSeconds`.
+- **Snapshot at startup.** Startup clears every `online_origin`, then asks each peer for an `online.response` listing who is online there now.
+- **Drift check.** Each digest carries `presence`, a short hash of the callsigns online at the sender, and with `relay` on, of those it holds as online at each origin it relays to the recipient. If the recipient's own view hashes differently, a presence message was lost, so it sends `online.request` and applies the snapshot. It asks only once per reported hash: a user connected at two instances at once can leave the views different whatever is applied. A digest is never skipped as redundant while its `presence` differs from the last one sent to that peer, so a lost status is caught within one reconcile interval.
+
+Statuses can arrive in any order, so each is stamped with `at`, milliseconds on its origin's clock, always later than the origin's previous stamp. An instance applies a status only if its `at` is newer than both the last status it applied for that user from that origin and the last snapshot of that origin. An older one still creates the user if unknown and moves `last_connected` or `last_disconnected` forward, but leaves `online_origin` alone. These stamps are kept in memory only, which is enough because a restart clears presence and asks for snapshots.
+
+A `user.online` event in the stream, sent by an older version or replayed from history, is handled the same way, with the event's own `ts` (its capture time on the origin's clock) as `at`. Once a snapshot of the origin has been applied, replayed history is older than it and changes nothing. The events still cost airtime when replayed: set `bootstrapFromTs` on a new instance to a time after every peer was upgraded to skip them.
 
 ## Processing
 
@@ -266,7 +281,7 @@ sequenceDiagram
 |`dbInsertMessage`|`msg.insert`|Always|
 |`dbUpdateMessage`|`msg.edit` or `msg.emoji`|Chosen by the update's shape: `m` present is an edit, `e` present is a reaction|
 |`dbUserUpdate`|`user.update`|Only if the update contains `name` or `name_last_updated`|
-|`dbUserUpdate`|`user.online`|Only if the update contains `is_online`. Captured after the update runs, so it carries the name just written|
+|`dbUserUpdate`|Nothing in the stream: presence|Only if the update contains `is_online`. Handed to `replication.notify_presence` after the update runs, so it carries the name just written - see [Presence](#presence)|
 
 `dbUserUpdate` is called from many places (connect, disconnect, push, pairing, subscriptions...). Only the fields in `REPLICATED_USER_FIELDS`, and changes to `is_online`, are captured, so the other calls carry on without producing any event.
 
@@ -348,7 +363,7 @@ Each operation has a rule that makes it safe to apply twice and safe to apply ou
 |`msg.insert`|Insert. A duplicate `_id` is rejected by its unique index and ignored|
 |`msg.edit`, `msg.emoji`|As `post.edit` and `post.emoji`, keyed on `_id`|
 |`user.update`|Ignored if the user does not exist here. Ignored if the stored `name_last_updated` is `>=` the incoming one. Otherwise sets `name` and `name_last_updated`|
-|`user.online`|Creates the user if unknown, with `callsign`, `name`, `name_last_updated` (local time, seconds) and the default channel subscriptions and `created_by_replication`, so their first connect here is still handled as a new user's (the connect clears the flag). If `ts` is newer than the user's `last_connected` (online) or `last_disconnected` (offline), that field is set to it, even when the status itself is stale, so both instances hold the same value. Online: sets `online_origin` to the event's origin. Offline: sets `online_origin` to null if it holds this origin, otherwise ignored as stale, since the user may have since connected elsewhere. `online_origin` is also set to null for every user at startup, then rebuilt from each peer's `online.response` (see [Control messages](#control-messages)), and is never replicated itself|
+|Presence (and `user.online`)|Creates the user if unknown, with `callsign`, `name`, `name_last_updated` (local time, seconds) and the default channel subscriptions and `created_by_replication`, so their first connect here is still handled as a new user's (the connect clears the flag). If `ts` is newer than the user's `last_connected` (online) or `last_disconnected` (offline), that field is set to it, even when the status itself is stale, so both instances hold the same value. A status with an `at` no newer than one already applied stops there (see [Presence](#presence)). Online: sets `online_origin` to the status's origin. Offline: sets `online_origin` to null if it holds this origin, otherwise ignored as stale, since the user may have since connected elsewhere. `online_origin` is also set to null for every user at startup, then rebuilt from each peer's `online.response`, and is never replicated itself|
 
 Guards are *last-writer-wins on the change's own timestamp*, which gives every instance the same answer whatever order events arrive in.
 
@@ -373,9 +388,11 @@ An acknowledgement that is lost costs nothing permanent: the next one for a late
 
 Ordering and acknowledgement handle the normal case. Reconciliation handles everything else: an expired DAPPS TTL, a long outage, a lost message, a bug.
 
-Every `reconcileIntervalSeconds` each instance sends every peer a `digest`: `{"op":"digest","origin":<self>,"latest_seq":N}`, its own newest `seq`.
+Every `reconcileIntervalSeconds` each instance sends every peer a `digest`: `{"op":"digest","origin":<self>,"latest_seq":N,"presence":{...}}`, its own newest `seq` and the presence hashes described in [Presence](#presence).
 
-The digest to a peer is skipped when recent traffic already does its job: something was heard from that peer within the last interval, **and** either the peer has acked everything up to our latest `seq`, or we submitted a data event to it within the last interval (which will show any gap itself). On a quiet link, or with a peer that may be down, nothing has been heard and the digest goes out as before. A skipped tick delays gap detection by at most one interval.
+The digest to a peer is skipped when recent traffic already does its job: something was heard from that peer within the last interval, **and** either the peer has acked everything up to our latest `seq`, or we submitted a data event to it within the last interval (which will show any gap itself). On a quiet link, or with a peer that may be down, nothing has been heard and the digest goes out as before. It also goes out whenever its `presence` differs from the last digest sent to that peer. A skipped tick delays gap detection by at most one interval.
+
+Every instance should use the same `reconcileIntervalSeconds`. The skip is judged against the sender's own interval, so with a mismatch the instance with the longer interval always counts as having heard from its faster peer recently, and stops sending digests to it whenever it is level. That peer then hears nothing on a quiet link and its dashboard shows the instance as `silent` (after 3x the peer's own interval), although replication is unaffected: an instance whose peer has not acked everything still sends its digest. A brief mismatch while instances are restarted one at a time is harmless.
 
 A receiver compares a digest with its cursor for that origin:
 
@@ -415,7 +432,7 @@ How it works:
 - **Acknowledgements are per hop.** C's outbox row retires once B acknowledges it. From then on, B is responsible for getting it to A, and A acknowledges to B.
 - **Reconciliation.** Digests carry a `vector` of each relayed origin's latest seq. A neighbour that is behind sends a `sync.request` to the relay, which serves it from its log. A relay can only serve as far back as its log of that origin goes: if a relay starts relaying an origin it already had a cursor for, older events can't be served, so bring a new instance in below it with `bootstrapFromTs`.
 - **Bootstrap.** With `bootstrapFromTs` set, an origin first heard of through a relay is bootstrapped via a `seq_at.request` to the relay, as configured peers are at startup.
-- **Presence.** The relay's `online.response` includes who it has as online at each origin it relays.
+- **Presence.** A relay passes each `presence` message it applies on to its other neighbours, keeping the origin's `at` and adding `by`. Its `online.response` includes who it has as online at each origin it relays, and its digests a presence hash for each.
 
 To move from full mesh to a tree, upgrade every instance, set `relay: true` on every instance, cut each `peers` list down to its neighbours, and restart them all. An instance with `relay` off rejects relayed events as from an unconfigured peer.
 
@@ -452,6 +469,7 @@ Also added: a unique index `idx_unique_post_cid_ts` on posts, so a replicated po
 |An edit arrives for a post that has not arrived yet|Raises, is not acknowledged, and is retried; in practice the gap logic delivers the insert first|
 |Applying an event fails (database error, bad data)|Rolled back, not acknowledged, logged at `ERROR` and retried every inbox poll. **Events behind it from the same origin are buffered until it succeeds** - a persistently failing event needs an operator|
 |Message from an unconfigured callsign|Logged at `ERROR`, acknowledged, dropped|
+|A `presence` message is lost or expires|That user shows the wrong status at the peer until the next digest's presence hash differs from the peer's view and it asks for a snapshot - at most one reconcile interval after the link carries a digest again|
 |Replication tables missing or broken|Capture logs to `db.log` and skips; the user's write still succeeds, but that change is never logged, so it is not replicated and reconciliation cannot recover it. Repair the tables promptly|
 |WPS restarts|All state is in the database. Pumps resume from their cursors|
 |`db.py`, `handlers.py` or `replication.py` warm-reloaded|Picked up on each pump's next pass, without restarting the threads. In-memory state (held acks, throttles) carries over; `env.json` settings are not re-read|
@@ -465,7 +483,7 @@ Also added: a unique index `idx_unique_post_cid_ts` on posts, so a replicated po
 | Tab | Shows |
 | - | - |
 |Overview|Our latest `seq` and outbox backlog; per peer: health, how far they have acknowledged our stream, how far we have applied theirs (against the `latest_seq` in their last digest), buffered gaps, when we last heard from and sent to them; last-24h counts by direction/category/status; recent failures|
-|Activity log|Every data event received or sent and every sync message (`ack`, `digest`, `sync.request`, `seq_at.*`, `online.*`) in both directions, plus local DAPPS going unreachable and recovering. Filter by category, direction, status, peer, problems only, or free text over content|
+|Activity log|Every data event received or sent and every sync message (`ack`, `digest`, `sync.request`, `seq_at.*`, `online.*`, `presence`) in both directions, plus local DAPPS going unreachable and recovering. Filter by category, direction, status, peer, problems only, or free text over content|
 |Received items|Each inbound data delivery and its outcome: `applied`, `buffered` (gap or bootstrap), `duplicate`, `stale` (older than what we hold), `ignored`, `rejected` (unconfigured sender) or `error` (apply failed, will retry)|
 |Sent items|Every event this instance originated (`replication_log`), with each peer's state: `queued` (not yet in DAPPS), `submitted`, `acked`|
 |Buffered|The current contents of `replication_pending`|
@@ -609,8 +627,8 @@ Anything that happened after the copy is then filled in by digests.
 
 | File | What it holds |
 | - | - |
-|`db.py`|Replication tables (in `dbInit`), `_replicate_capture`, `set_applying_remote`, `REPLICATED_USER_FIELDS`, and the capture calls inside `dbInsertPost`, `dbUpdatePost`, `dbInsertMessage`, `dbUpdateMessage`, `dbUserUpdate`|
-|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); the startup presence snapshot (`request_online_users`, `_handle_online_request`, `_handle_online_response`); relaying (`_relay_pump_tick`, `_log_relayed`, `_next_hop`, `_learn_route`, `_bootstrap_new_origin`); activity recording for the dashboard (`_record`, `_submit_control`, `_prune_activity`); `start()`|
+|`db.py`|Replication tables (in `dbInit`), `_replicate_capture`, `_replicate_online_status` (hands presence to `replication.notify_presence`), `set_applying_remote`, `REPLICATED_USER_FIELDS`, and the capture calls inside `dbInsertPost`, `dbUpdatePost`, `dbInsertMessage`, `dbUpdateMessage`, `dbUserUpdate`|
+|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); presence (`notify_presence`, `_presence_pump_tick`, `_handle_presence`, `_check_digest_presence`) and the presence snapshot (`request_online_users`, `_handle_online_request`, `_handle_online_response`); relaying (`_relay_pump_tick`, `_log_relayed`, `_next_hop`, `_learn_route`, `_bootstrap_new_origin`); activity recording for the dashboard (`_record`, `_submit_control`, `_prune_activity`); `start()`|
 |`replication_dashboard.py`|The read-only HTTP dashboard: JSON API over the replication tables plus the single-page UI. `start()` is called from `wps.py`; also runnable standalone|
 |`wps.py`|Calls `replication.start()` and `replication_dashboard.start()` at boot, after `db.dbInit`, and `replication.request_online_users()` after clearing `online_origin`|
 |`env.py`|Default `replication` block added to `env.json`|

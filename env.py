@@ -63,7 +63,7 @@ env_template = {
         "inboxPollSeconds": 5,
         "inboxFastPollSeconds": 1,
         "inboxFastPollWindowSeconds": 300,
-        "reconcileIntervalSeconds": 300,
+        "reconcileIntervalSeconds": 900,
         "ackDelaySeconds": 30,
         "batchSize": 1,
         "bootstrapFromTs": None,

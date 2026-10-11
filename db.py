@@ -17,8 +17,9 @@ DB_FILENAME = env['dbFilename']
 # does. See replication.py for what happens to that event next (outbox pump -> DAPPS ->
 # peer's inbox pump -> apply). Only a hand-picked subset of user fields is portable between
 # instances (see REPLICATED_USER_FIELDS) - push tokens, pairing state etc. are node-local and
-# never captured. Presence is captured only as a user.online event when is_online changes
-# (see _replicate_online_status); is_online itself stays node-local.
+# never captured. Presence is not captured into the stream at all: a change to is_online is
+# handed to replication.notify_presence (see _replicate_online_status), which sends it to peers
+# outside the stream; is_online itself stays node-local.
 REPLICATION_CONFIG = env.get('replication', {})
 REPLICATION_ENABLED = REPLICATION_CONFIG.get('enabled', False)
 REPLICATION_ORIGIN = REPLICATION_CONFIG.get('originCallsign') or REPLICATION_CONFIG.get('dappsCallsign')  # this node's replication identity, stamped as `o` on posts at the receiver
@@ -84,8 +85,10 @@ def _replicate_capture(cursor, op, key, data, ts=None):
 
 def _replicate_online_status(cursor, callsign, is_online, ts=None):
     '''
-    Captures a user.online event carrying the user's callsign and current name, so a peer can
-    create the user if it has never seen them and record where they are online (online_origin).
+    Hands a change to is_online to replication.notify_presence, with the user's callsign and
+    current name, so a peer can create the user if it has never seen them and record where they
+    are online (online_origin). Not captured into replication_log: presence is current state,
+    and replaying every past connect and disconnect to a new or lagging peer would only cost airtime.
     ts is the last_connected (online) or last_disconnected (offline) just written here, so the
     peer stores the same value; absent when the update didn't set one.
     Called after the UPDATE has run, so the name read here is the one just written.
@@ -95,13 +98,12 @@ def _replicate_online_status(cursor, callsign, is_online, ts=None):
     try:
         cursor.execute("SELECT json_extract(user, '$.name') FROM users WHERE json_extract(user, '$.callsign') = ?", (callsign,))
         row = cursor.fetchone()
+        # See _replicate_capture for why replication is looked up rather than imported
+        replication = sys.modules.get('replication')
+        if replication is not None:
+            replication.notify_presence(callsign, row[0] if row else None, is_online, ts)
     except Exception as e:
-        db_logger("_replicate_online_status", f"Failed to read name for {callsign}: {e}", "ERROR")
-        return
-    data = {"callsign": callsign, "name": row[0] if row else None, "is_online": 1 if is_online else 0}
-    if ts is not None:
-        data["ts"] = ts
-    _replicate_capture(cursor, "user.online", None, data)
+        db_logger("_replicate_online_status", f"Failed to pass on presence for {callsign}: {e}", "ERROR")
 
 def get_db_connection():
     '''

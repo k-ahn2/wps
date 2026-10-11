@@ -1,5 +1,6 @@
 import json
 import base64
+import hashlib
 import time
 import threading
 import requests
@@ -14,7 +15,8 @@ from logger import wps_logger
 # SQLite transaction as the write itself; this module owns everything downstream of that:
 # turning captured events into DAPPS submissions (outbox pump), turning inbound DAPPS
 # messages back into local writes + live broadcasts (inbox pump), and periodically checking
-# every peer is still level (reconcile pump).
+# every peer is still level (reconcile pump). Presence is the exception: db.py hands it to
+# notify_presence, and it goes to peers as a `presence` control message, outside the stream.
 #
 # Warm-reloadable like db.py/handlers.py (see wps.py's reload_replication). The three pumps
 # are process-lifetime threads started once by start(), but each runs a bare trampoline that
@@ -85,7 +87,7 @@ INBOX_FAST_POLL_WINDOW_SECONDS = REPLICATION_CONFIG.get('inboxFastPollWindowSeco
 # notify_local_event() fires from inside the writer's still-open transaction, so the outbox
 # pump waits this long after waking for the commit to land before it reads the outbox.
 OUTBOX_WAKE_SETTLE_SECONDS = 0.1
-RECONCILE_INTERVAL_SECONDS = REPLICATION_CONFIG.get('reconcileIntervalSeconds', 300)
+RECONCILE_INTERVAL_SECONDS = REPLICATION_CONFIG.get('reconcileIntervalSeconds', 900)
 # Application acks are held this long and combined: one ack covers every seq up to it (see
 # _handle_app_ack), so a burst of events costs one DAPPS transfer back instead of one each.
 ACK_DELAY_SECONDS = REPLICATION_CONFIG.get('ackDelaySeconds', 30)
@@ -310,6 +312,7 @@ def _outbox_pump_pass():
     try:
         _outbox_pump_tick()
         _relay_pump_tick()
+        _presence_pump_tick()
     except Exception as e:
         wps_logger("REPLICATION OUTBOX", ORIGIN, f"Tick error: {e}", "ERROR")
     # The timeout still matters: it retries submissions that DAPPS refused last tick.
@@ -665,7 +668,18 @@ def _apply_and_broadcast(cur, envelope):
             raise RuntimeError(f"dbUserUpdate failed: {update_resp['error']}")
 
     elif op == "user.online":
-        return _apply_online_status(cur, envelope["origin"], data["callsign"], data.get("name"), data.get("is_online"), data.get("ts"))
+        # Presence used to travel in the stream. These events still arrive when old history is
+        # replayed, and from a peer not yet upgraded, and are handled as a presence status taken
+        # at the event's capture time - so a replayed one, older than what we hold, changes
+        # nothing but the user's timestamps.
+        origin = envelope["origin"]
+        callsign = data["callsign"]
+        at = envelope.get("ts") or 0
+        current = _presence_is_newer(origin, callsign, at)
+        outcome = _apply_online_status(cur, origin, callsign, data.get("name"), data.get("is_online"), data.get("ts"), presence=current)
+        if current:
+            _presence_at[(origin, callsign)] = at
+        return outcome
 
     else:
         wps_logger("REPLICATION APPLY", ORIGIN, f"Unknown op '{op}', ignoring", "ERROR")
@@ -674,12 +688,14 @@ def _apply_and_broadcast(cur, envelope):
     return "applied"
 
 
-def _apply_online_status(cur, origin, callsign, name, is_online, ts=None):
+def _apply_online_status(cur, origin, callsign, name, is_online, ts=None, presence=True):
     '''
     Records that callsign is (or is no longer) online at origin, and tells connected clients.
     ts, when given, is the origin's last_connected (online) or last_disconnected (offline),
-    stored here too so both instances hold the same value.
-    Shared by a user.online event and an online.response snapshot. Returns "applied" or "stale".
+    stored here too so both instances hold the same value. presence=False, for a status older
+    than one already applied, creates the user and moves ts forward but leaves presence alone.
+    Shared by presence, an online.response snapshot and a legacy user.online event. Returns
+    "applied" or "stale".
     '''
     existing = db.dbUserSearch(cur, callsign)
     if existing["result"] != "success":
@@ -716,6 +732,9 @@ def _apply_online_status(cur, origin, callsign, name, is_online, ts=None):
             ts_resp = db.dbUserUpdate(cur, callsign, ts_update)
             if ts_resp["result"] == "failure":
                 raise RuntimeError(f"dbUserUpdate failed: {ts_resp['error']}")
+
+    if not presence:
+        return "stale"
 
     # online_origin is the origin the user was last reported online at. An offline status
     # clears it only if it came from that same origin - the user may since have connected
@@ -865,7 +884,7 @@ def _record_inbound_error(msg, error):
             detail=f"Not acked, DAPPS will redeliver: {error}", dapps_id=dapps_id, event=envelope)
 
 
-_CONTROL_OPS = {"ack", "digest", "sync.request", "seq_at.request", "seq_at.response", "online.request", "online.response"}
+_CONTROL_OPS = {"ack", "digest", "sync.request", "seq_at.request", "seq_at.response", "online.request", "online.response", "presence"}
 
 
 def _describe_control(envelope):
@@ -887,8 +906,14 @@ def _describe_control(envelope):
     if op == "online.response":
         users = envelope.get("users")
         relayed = envelope.get("relayed")
-        return (f"{envelope.get('origin')} has {len(users) if isinstance(users, list) else '?'} online at seq={envelope.get('seq')}"
+        return (f"{envelope.get('origin')} has {len(users) if isinstance(users, list) else '?'} online"
                 + (f", plus {len(relayed)} relayed origin(s)" if isinstance(relayed, list) and relayed else ""))
+    if op == "presence":
+        users = envelope.get("users")
+        if not isinstance(users, list):
+            return None
+        return f"{envelope.get('origin')}: " + ", ".join(
+            f"{u.get('callsign')} {'online' if u.get('is_online') else 'offline'}" for u in users if isinstance(u, dict))
     return None
 
 
@@ -988,6 +1013,11 @@ def _handle_inbound(msg):
 
     if op == "online.response":
         _handle_online_response(envelope, peer)
+        _dapps_ack(dapps_id)
+        return
+
+    if op == "presence":
+        _handle_presence(envelope, peer)
         _dapps_ack(dapps_id)
         return
 
@@ -1258,16 +1288,20 @@ def _send_digest():
             cur.execute("SELECT origin, acked_seq FROM replication_forward WHERE peer = ?", (peer,))
             acked = dict(cur.fetchall())
             behind = behind or any(acked.get(origin, 0) < latest for origin, latest in vector.items())
-        if _digest_redundant(peer, behind):
+        presence = _digest_presence(cur, peer, relayed_latest)
+        # Presence that changed since the last digest may not have arrived, so its hash goes
+        # out even while traffic would otherwise make the digest redundant.
+        if presence == _presence_digest_sent.get(peer.upper()) and _digest_redundant(peer, behind):
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Skipping digest to {peer} - recent traffic already shows where we are")
             continue
-        digest = {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest}
+        digest = {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest, "presence": presence}
         if vector:
             digest["vector"] = vector
         try:
             # Short TTL: only the newest digest matters, so one that can't be delivered within a
             # couple of intervals should expire in DAPPS rather than queue behind a down peer.
             _submit_control(peer, digest, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+            _presence_digest_sent[peer.upper()] = presence
         except Exception as e:
             wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to send digest to {peer}: {e}", "ERROR")
 
@@ -1302,17 +1336,19 @@ def _handle_digest(envelope, peer):
         _compare_digest_entry(cur, envelope["origin"], envelope["latest_seq"], relayed=False)
 
     vector = envelope.get("vector")
-    if not RELAY or not isinstance(vector, dict):
-        return
-    for origin, latest_seq in vector.items():
-        if not isinstance(origin, str) or not isinstance(latest_seq, int) or origin == ORIGIN or origin.upper() in _ORIGIN_TO_DAPPS:
-            continue
-        # A digest only names an origin's route if nothing has yet; data events settle it.
-        _learn_route(cur, conn, origin, peer, only_if_unknown=True)
-        if _next_hop(origin).upper() != peer.upper():
-            continue  # we get this origin from elsewhere
-        _bootstrap_new_origin(cur, conn, origin)
-        _compare_digest_entry(cur, origin, latest_seq, relayed=True)
+    if RELAY and isinstance(vector, dict):
+        for origin, latest_seq in vector.items():
+            if not isinstance(origin, str) or not isinstance(latest_seq, int) or origin == ORIGIN or origin.upper() in _ORIGIN_TO_DAPPS:
+                continue
+            # A digest only names an origin's route if nothing has yet; data events settle it.
+            _learn_route(cur, conn, origin, peer, only_if_unknown=True)
+            if _next_hop(origin).upper() != peer.upper():
+                continue  # we get this origin from elsewhere
+            _bootstrap_new_origin(cur, conn, origin)
+            _compare_digest_entry(cur, origin, latest_seq, relayed=True)
+
+    # After the vector, so a relayed origin it first names is already routed through peer.
+    _check_digest_presence(cur, envelope.get("presence"), peer)
 
 
 def _compare_digest_entry(cur, origin, latest_seq, relayed):
@@ -1601,12 +1637,202 @@ def _bootstrap_new_origin(cur, conn, origin):
     _send_seq_at_request(origin)
 
 
-# --- Presence snapshot: online.request/response, to learn who is online at peers after a start ---
+# --- Presence: live status and snapshots, outside the ordered stream ------------------------
 
-# Peer origins we've asked who is online but not yet had a usable answer from. In memory only:
-# a restart clears every online_origin and asks again anyway.
+# Presence is current state, not history: only each user's latest status matters, so it isn't
+# numbered into replication_log, where a new or lagging peer would have every connect and
+# disconnect ever made replayed to it. A status change goes to each peer as a `presence`
+# control message (best-effort, short TTL). A peer that starts asks the others for a snapshot
+# (online.request/response), and each digest carries a hash of who the sender has online, so
+# a peer whose view has drifted - a presence message was lost - asks for a fresh snapshot.
+#
+# Every status and snapshot is stamped with `at`, ms on its origin's clock, which orders them
+# as they can arrive in any order. All in memory: a restart clears every online_origin and asks
+# for snapshots anyway.
+_presence_queue = _kept('_presence_queue', dict)    # peer DAPPS callsign -> {(origin, callsign): status} waiting to be sent
+_presence_retry_at = _kept('_presence_retry_at', dict)  # peer DAPPS callsign -> time.monotonic() before which a failed send isn't retried
+_presence_lock = _kept('_presence_lock', threading.Lock)
+_last_presence_at = _kept('_last_presence_at', int)  # the latest `at` this instance has stamped
+_presence_at = _kept('_presence_at', dict)          # (origin, callsign) -> `at` of the newest status applied for that user there
+_presence_floor = _kept('_presence_floor', dict)    # origin -> `at` of the newest snapshot of origin applied
+_presence_asked = _kept('_presence_asked', dict)    # origin -> digest presence hash we last asked a snapshot for
+_presence_digest_sent = _kept('_presence_digest_sent', dict)  # peer (upper) -> the `presence` map in the last digest sent to it
+_PRESENCE_RETRY_SECONDS = 60
+
+# Peer origins we've asked who is online but not yet had an answer from. In memory only: a
+# restart clears every online_origin and asks again anyway.
 _online_request_pending = _kept('_online_request_pending', set)
 _online_request_lock = _kept('_online_request_lock', threading.Lock)
+
+
+def _next_presence_at():
+    '''An `at` for a status or snapshot of ours: now, but always later than the last one.'''
+    global _last_presence_at
+    with _presence_lock:
+        _last_presence_at = max(_now_ms(), _last_presence_at + 1)
+        return _last_presence_at
+
+
+def notify_presence(callsign, name, is_online, ts=None):
+    '''
+    Called by db._replicate_online_status when a local user's is_online changes. Queues the
+    status for every peer, replacing any not yet sent for that user, and wakes the outbox pump.
+    ts is the last_connected (online) or last_disconnected (offline) just written here.
+    '''
+    status = {"callsign": callsign, "name": name, "is_online": 1 if is_online else 0, "at": _next_presence_at()}
+    if ts is not None:
+        status["ts"] = ts
+    for peer in PEERS:
+        _queue_presence(peer, ORIGIN, [status])
+    notify_local_event()
+
+
+def _queue_presence(peer, origin, statuses):
+    with _presence_lock:
+        queued = _presence_queue.setdefault(peer, {})
+        for status in statuses:
+            key = (origin, status["callsign"])
+            if key not in queued or queued[key]["at"] < status["at"]:
+                queued[key] = status
+
+
+def _presence_pump_tick():
+    '''
+    Sends each peer what is queued for it: one `presence` message per origin, holding each
+    user's latest status. A failed send is queued again and retried after _PRESENCE_RETRY_SECONDS.
+    '''
+    now = time.monotonic()
+    with _presence_lock:
+        taken = {peer: queued for peer, queued in _presence_queue.items() if queued and _presence_retry_at.get(peer, 0) <= now}
+        for peer in taken:
+            _presence_queue[peer] = {}
+    for peer, queued in taken.items():
+        by_origin = {}
+        for (origin, _), status in queued.items():
+            by_origin.setdefault(origin, []).append(status)
+        for origin, statuses in by_origin.items():
+            message = {"op": "presence", "origin": origin, "users": statuses}
+            if origin != ORIGIN:
+                message["by"] = DAPPS_CALLSIGN
+            try:
+                _submit_control(peer, message, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+                _presence_retry_at.pop(peer, None)
+            except Exception as e:
+                wps_logger("REPLICATION PRESENCE", ORIGIN, f"Presence for {origin} to {peer} failed, will retry: {e}", "ERROR")
+                _queue_presence(peer, origin, statuses)
+                _presence_retry_at[peer] = now + _PRESENCE_RETRY_SECONDS
+
+
+def _presence_is_newer(origin, callsign, at):
+    return at > max(_presence_floor.get(origin, 0), _presence_at.get((origin, callsign), 0))
+
+
+def _presence_watermark(origin):
+    '''The newest `at` applied from origin, by status or snapshot - what a snapshot we relay of it is as of.'''
+    return max([_presence_floor.get(origin, 0)] + [at for (o, _), at in _presence_at.items() if o == origin])
+
+
+def _presence_hash(callsigns):
+    return hashlib.sha1(",".join(sorted(c.upper() for c in callsigns)).encode()).hexdigest()[:8]
+
+
+def _handle_presence(envelope, peer):
+    '''
+    Live presence from origin, sent directly or relayed: each entry in `users` is one user's
+    latest status there. One no newer than what we hold for that user at origin changes nothing
+    but the user's timestamps. With relay on, the newer ones go on to the other neighbours.
+    '''
+    origin = envelope.get("origin")
+    users = envelope.get("users")
+    if origin == ORIGIN or not isinstance(users, list):
+        return
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    _learn_route(cur, conn, origin, peer, only_if_unknown=True)
+    if _next_hop(origin).upper() != peer.upper():
+        return  # we get this origin from elsewhere
+
+    newer = []
+    db.set_applying_remote(True)
+    try:
+        for status in users:
+            if not isinstance(status, dict) or not isinstance(status.get("callsign"), str) or not isinstance(status.get("at"), int):
+                continue
+            callsign = status["callsign"]
+            current = _presence_is_newer(origin, callsign, status["at"])
+            _apply_online_status(cur, origin, callsign, status.get("name"), status.get("is_online"), status.get("ts"), presence=current)
+            if current:
+                _presence_at[(origin, callsign)] = status["at"]
+                newer.append(status)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        db.set_applying_remote(False)
+
+    if newer:
+        for other in PEERS:
+            if _relays_to(other, origin):
+                _queue_presence(other, origin, newer)
+        _outbox_wake.set()
+
+
+def _digest_presence(cur, peer, relayed_origins):
+    '''
+    The `presence` map for a digest to peer: a hash of who is online here, and with relay on, of
+    who we have as online at each origin we relay to peer.
+    '''
+    online_resp = db.dbGetOnlineUsers(cur)
+    if online_resp["result"] != "success":
+        raise RuntimeError(f"dbGetOnlineUsers failed: {online_resp['error']}")
+    presence = {ORIGIN: _presence_hash(u["callsign"] for u in online_resp["data"])}
+    if RELAY:
+        held = _held_online_by_origin(cur)
+        for origin in set(relayed_origins) | set(held):
+            if _relays_to(peer, origin):
+                presence[origin] = _presence_hash(held.get(origin, []))
+    return presence
+
+
+def _held_online_by_origin(cur):
+    remote_resp = db.dbGetRemoteOnlineUsers(cur)
+    if remote_resp["result"] != "success":
+        raise RuntimeError(f"dbGetRemoteOnlineUsers failed: {remote_resp['error']}")
+    held = {}
+    for u in remote_resp["data"]:
+        held.setdefault(u["online_origin"], []).append(u["callsign"])
+    return held
+
+
+def _check_digest_presence(cur, presence, peer):
+    '''
+    Compares a digest's `presence` hashes with who we have as online at each origin. A mismatch
+    means a presence message went missing, so we ask peer for a snapshot. Only once per hash it
+    reports: a user online at two origins at once can leave ours different whatever we apply.
+    '''
+    peer_origin = _DAPPS_TO_ORIGIN.get(peer.upper())
+    if not isinstance(presence, dict) or peer_origin is None:
+        return
+    held = _held_online_by_origin(cur)
+    ask = False
+    for origin, remote_hash in presence.items():
+        if not isinstance(origin, str) or origin == ORIGIN:
+            continue
+        if origin.upper() != peer_origin.upper() and (not RELAY or _next_hop(origin).upper() != peer.upper()):
+            continue  # we get this origin from elsewhere
+        if _presence_hash(held.get(origin, [])) == remote_hash:
+            _presence_asked.pop(origin, None)
+        elif _presence_asked.get(origin) != remote_hash:
+            _presence_asked[origin] = remote_hash
+            wps_logger("REPLICATION PRESENCE", ORIGIN, f"Presence held for {origin} differs from {peer}'s digest - asking for a snapshot")
+            ask = True
+    if ask:
+        with _online_request_lock:
+            already_asked = peer_origin in _online_request_pending
+            _online_request_pending.add(peer_origin)
+        if not already_asked:
+            _send_online_request(peer_origin)
 
 
 def request_online_users():
@@ -1627,43 +1853,46 @@ def _send_online_requests():
     with _online_request_lock:
         pending = list(_online_request_pending)
     for origin in pending:
-        try:
-            _submit_control(_dapps_for_origin(origin), {"op": "online.request", "requested_by": DAPPS_CALLSIGN}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
-        except Exception as e:
-            wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.request to {origin} failed, will retry: {e}", "ERROR")
+        _send_online_request(origin)
+
+
+def _send_online_request(origin):
+    try:
+        _submit_control(_dapps_for_origin(origin), {"op": "online.request", "requested_by": DAPPS_CALLSIGN}, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+    except Exception as e:
+        wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.request to {origin} failed, will retry: {e}", "ERROR")
 
 
 def _handle_online_request(envelope):
     '''
-    A peer has just started and wants to know who is online here. Answered with every user
-    connected here, plus our latest seq so the requester can tell whether user.online events
-    it has already applied are newer than this snapshot. With relay on, `relayed` adds the same
-    for each origin we pass on to the requester: who we have as online there, as of our cursor.
+    A peer has just started, or found its view of presence here out of date, and wants to know
+    who is online here. Answered with every user connected here, stamped with `at`. With relay
+    on, `relayed` adds the same for each origin we pass on to the requester: who we have as
+    online there, as of the newest status we've applied from it.
     '''
     requester = envelope["requested_by"]
     conn = db.get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT next_seq - 1 FROM replication_self WHERE id = 1")
-    my_latest = cur.fetchone()[0]
     online_resp = db.dbGetOnlineUsers(cur)
     if online_resp["result"] != "success":
         raise RuntimeError(f"dbGetOnlineUsers failed: {online_resp['error']}")
     users = [{"callsign": u["callsign"], "name": u.get("name"), "ts": u.get("last_connected")} for u in online_resp["data"]]
-    response = {"op": "online.response", "origin": ORIGIN, "seq": my_latest, "requested_by": requester, "users": users}
+    response = {"op": "online.response", "origin": ORIGIN, "at": _next_presence_at(), "requested_by": requester, "users": users}
 
     if RELAY:
         remote_resp = db.dbGetRemoteOnlineUsers(cur)
         if remote_resp["result"] != "success":
             raise RuntimeError(f"dbGetRemoteOnlineUsers failed: {remote_resp['error']}")
-        cur.execute("SELECT origin, last_applied_seq FROM replication_origin_cursor")
+        cur.execute("SELECT origin FROM replication_origin_cursor")
+        relayed_origins = {row[0] for row in cur.fetchall()} | {u["online_origin"] for u in remote_resp["data"]}
         response["relayed"] = [
-            {"origin": origin, "seq": seq,
+            {"origin": origin, "at": _presence_watermark(origin),
              "users": [{"callsign": u["callsign"], "name": u.get("name"), "ts": u.get("last_connected")}
                        for u in remote_resp["data"] if u["online_origin"] == origin]}
-            for origin, seq in cur.fetchall() if _relays_to(requester, origin)
+            for origin in sorted(relayed_origins) if _relays_to(requester, origin)
         ]
 
-    wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.request from {requester}: answering {len(users)} user(s) at seq={my_latest}")
+    wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.request from {requester}: answering {len(users)} user(s)")
     try:
         _submit_control(requester, response, ttl=RECONCILE_INTERVAL_SECONDS * 2)
     except Exception as e:
@@ -1672,16 +1901,12 @@ def _handle_online_request(envelope):
 
 def _handle_online_response(envelope, peer):
     '''
-    A peer's answer to our online.request: the users online there as of its seq. Applied as
-    the whole truth for that origin - listed users are marked online there, anyone else we
-    have as online there is cleared.
-
-    Its user.online events reach us separately, in order. Any up to seq that we haven't applied
-    yet will still be applied after this and end in the same state. But if we're already past
-    seq, the snapshot is older than presence we've applied, so it's discarded and asked for again.
+    A peer's answer to our online.request: the users online there as of `at`. Applied as the
+    whole truth for that origin - listed users are marked online there, anyone else we have as
+    online there is cleared - except for a user whose status we've already had from after `at`.
 
     With relay on, the snapshots in `relayed` are for origins this peer relays to us, and are
-    applied the same way. A stale one is skipped: the peer's own answer decides whether to ask again.
+    applied the same way.
     '''
     origin = envelope["origin"]
     if envelope.get("requested_by") != DAPPS_CALLSIGN:
@@ -1692,35 +1917,30 @@ def _handle_online_response(envelope, peer):
 
     conn = db.get_db_connection()
     cur = conn.cursor()
-    if not _apply_online_snapshot(conn, cur, origin, envelope["seq"], envelope["users"]):
-        return
+    _apply_online_snapshot(conn, cur, origin, envelope.get("at"), envelope.get("users"))
 
     relayed = envelope.get("relayed")
     if RELAY and isinstance(relayed, list):
         for snapshot in relayed:
-            if not isinstance(snapshot, dict) or not isinstance(snapshot.get("origin"), str) or not isinstance(snapshot.get("users"), list):
+            if not isinstance(snapshot, dict) or not isinstance(snapshot.get("origin"), str):
                 continue
             relayed_origin = snapshot["origin"]
             if relayed_origin == ORIGIN or relayed_origin.upper() in _ORIGIN_TO_DAPPS:
                 continue
             _learn_route(cur, conn, relayed_origin, peer, only_if_unknown=True)
             if _next_hop(relayed_origin).upper() == peer.upper():
-                _apply_online_snapshot(conn, cur, relayed_origin, snapshot.get("seq", 0), snapshot["users"])
+                _apply_online_snapshot(conn, cur, relayed_origin, snapshot.get("at"), snapshot.get("users"))
 
     with _online_request_lock:
         _online_request_pending.discard(origin)
 
 
-def _apply_online_snapshot(conn, cur, origin, seq, users):
-    '''Applies one origin's online snapshot (see _handle_online_response). False if it was stale.'''
-    cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
-    row = cur.fetchone()
-    last_applied = row[0] if row else 0
-    if last_applied > seq:
-        wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response for {origin} is at seq={seq} but we've applied up to {last_applied} - discarding")
-        return False
-
-    online = {u["callsign"]: u for u in users}
+def _apply_online_snapshot(conn, cur, origin, at, users):
+    '''Applies one origin's online snapshot, taken at `at` on origin's clock (see _handle_online_response).'''
+    if not isinstance(at, int) or not isinstance(users, list):
+        wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response for {origin} has no `at` or `users` (from an older version?) - ignoring", "WARNING")
+        return
+    online = {u["callsign"]: u for u in users if isinstance(u, dict) and isinstance(u.get("callsign"), str)}
     remote_resp = db.dbGetRemoteOnlineUsers(cur)
     if remote_resp["result"] != "success":
         raise RuntimeError(f"dbGetRemoteOnlineUsers failed: {remote_resp['error']}")
@@ -1729,18 +1949,19 @@ def _apply_online_snapshot(conn, cur, origin, seq, users):
     db.set_applying_remote(True)
     try:
         for callsign, u in online.items():
-            _apply_online_status(cur, origin, callsign, u.get("name"), True, u.get("ts"))
+            _apply_online_status(cur, origin, callsign, u.get("name"), True, u.get("ts"), presence=_presence_is_newer(origin, callsign, at))
         for callsign in gone:
-            _apply_online_status(cur, origin, callsign, None, False)
+            if _presence_is_newer(origin, callsign, at):
+                _apply_online_status(cur, origin, callsign, None, False)
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         db.set_applying_remote(False)
+    _presence_floor[origin] = max(_presence_floor.get(origin, 0), at)
 
     wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response for {origin}: {len(online)} online, {len(gone)} cleared")
-    return True
 
 
 def _log_backlog():
