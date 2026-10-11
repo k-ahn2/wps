@@ -13,3 +13,6 @@ wps_dev*
 misc/10k.py
 bots/*
 channels.json
+wps.status.json*
+env.json.bak
+env.json.tmp

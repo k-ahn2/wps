@@ -7,9 +7,9 @@ import dashboard_auth
 from env import env, env_template, STARTUP_ENV
 from state import console_log
 
-# config_editor.py backs the admin dashboard's Configuration page (dashboard.py): it reads
-# env.json for display and writes an edited copy back. dashboard.py then warm-reloads WPS
-# (wps.py's reload_code), which applies every "live" setting below straight away.
+# config_editor.py backs the dashboard's Config page (dashboard.py): it reads env.json for
+# display and writes an edited copy back. dashboard.py then warm-reloads WPS (SIGHUP, which runs
+# wps.py's reload_code), which applies every "live" setting below straight away.
 #
 # - Secrets (passwords, REST keys) never leave the server. They are sent to the browser blanked,
 #   with a flag saying whether one is set; the browser sends a secret back only when the user
@@ -42,12 +42,21 @@ CHOICES = {
 
 PORT_KEYS = {"socketTcpPort", "serviceMonitoring.bpqPort", "dashboard.port"}
 
-# Lists of objects, edited as JSON rather than one item per line.
-STRUCTURED = {"apps", "replication.peers"}
+# Lists of objects, edited as one group of fields per item. A new item starts as the template;
+# the listed fields must not be empty.
+ITEM_TEMPLATES = {
+    "apps": {"appCode": "", "appName": "", "recommendedClientVersion": "0.0.0", "minClientVersion": "0.0.0"},
+    "replication.peers": {"originCallsign": "", "dappsCallsign": ""},
+}
+ITEM_REQUIRED = {"apps": ["appCode"], "replication.peers": ["dappsCallsign"]}
+
+# Lists of plain values are lists of strings, except these.
+NUMBER_LISTS = {"autoSubscribeToChannelIds"}
 
 # When a change takes effect. "live": applied by the warm reload that follows a save (see
 # wps.py's reload_env and reload_code, and env.STARTUP_ENV for why the rest can't be). "script":
-# read by a separate script, not by WPS. Anything not listed needs a WPS restart.
+# read by a separate script, not by WPS. "dashboard": the dashboard's own settings, applied when
+# the dashboard restarts. Anything else needs a WPS restart.
 LIVE = {
     "environment", "apps", "minWpsLogLevel", "minDbLogLevel", "wpsLoggingEnabled", "dbLoggingEnabled",
     "daysToRetainLogFiles", "notificationsEnabled", "notificationsProdId", "notificationsProdRestKey",
@@ -77,6 +86,8 @@ def applies(path):
         return "live"
     if path in SCRIPT:
         return "script"
+    if path.startswith("dashboard."):
+        return "dashboard"
     return "restart"
 
 
@@ -134,7 +145,7 @@ HELP = {
     "replication.batchSize": "Most events per DAPPS message. Leave at 1 until every peer understands batches.",
     "replication.bootstrapFromTs": "Epoch ms. Only for a brand-new instance joining an existing mesh; leave empty otherwise.",
     "replication.activityRetentionDays": "Days of history kept for the Replication dashboard.",
-    "dashboard.enabled": "Run this web dashboard. If you turn it off, turn it back on by editing env.json and restarting WPS.",
+    "dashboard.enabled": "Run this web dashboard. If you turn it off, turn it back on by editing env.json and running: sudo systemctl start wps-dashboard",
     "dashboard.host": "Listen address. 0.0.0.0 accepts connections on every interface; 127.0.0.1 only from this machine.",
     "dashboard.port": "Dashboard HTTP port.",
 }
@@ -219,16 +230,21 @@ def _leaf_paths(node, prefix=""):
             yield path, value
 
 
-def restart_pending(config=None):
-    '''Restart-only settings whose value in env.json differs from what this process started with.'''
+def restart_pending(wps_startup_env, config=None):
+    '''
+    Settings saved in env.json but not yet in effect: "restart" settings that differ from what the
+    running WPS started with (none if WPS isn't running - it will start with them), and
+    "dashboard" settings that differ from what this dashboard process started with.
+    '''
     if config is None:
         config, _ = _read()
     pending = []
     for path, value in _leaf_paths(config):
-        if applies(path) != "restart" or path in HIDDEN:
+        kind = applies(path)
+        if path in HIDDEN or (kind == "restart" and wps_startup_env is None) or kind not in ("restart", "dashboard"):
             continue
         try:
-            started = _get_path(STARTUP_ENV, path)
+            started = _get_path(wps_startup_env if kind == "restart" else STARTUP_ENV, path)
         except (KeyError, TypeError):
             started = None
         if value != started:
@@ -236,8 +252,8 @@ def restart_pending(config=None):
     return pending
 
 
-def load():
-    '''The current env.json for the Configuration page, with secrets blanked and hidden keys removed.'''
+def load(wps_startup_env):
+    '''The current env.json for the Config page, with secrets blanked and hidden keys removed.'''
     config, mtime = _read()
     masked = copy.deepcopy(config)
     for path in HIDDEN:
@@ -251,11 +267,12 @@ def load():
         "mtime": str(mtime),
         "path": ENV_PATH,
         "secrets": secrets,
-        "restart_pending": restart_pending(config),
+        "restart_pending": restart_pending(wps_startup_env, config),
         "meta": {
             "help": HELP, "choices": CHOICES, "nullable": NULLABLE, "sections": SECTION_TITLES,
-            "ports": sorted(PORT_KEYS), "structured": sorted(STRUCTURED),
-            "live": sorted(LIVE), "script": SCRIPT,
+            "ports": sorted(PORT_KEYS), "item_templates": ITEM_TEMPLATES, "item_required": ITEM_REQUIRED,
+            "number_lists": sorted(NUMBER_LISTS), "applies": {path: applies(path) for path, _ in _leaf_paths(config)},
+            "script": SCRIPT,
         },
     }
 
@@ -285,6 +302,15 @@ def _validate(old, new, prefix=""):
             raise ConfigError(f"{path} must be one of {', '.join(CHOICES[path])}")
         if path in PORT_KEYS and not (isinstance(value, int) and 1 <= value <= 65535):
             raise ConfigError(f"{path} must be a whole number from 1 to 65535")
+        if path in ITEM_REQUIRED:
+            for i, item in enumerate(value):
+                if not isinstance(item, dict):
+                    continue  # e.g. a peer given as a bare callsign string, still accepted
+                for field in ITEM_REQUIRED[path]:
+                    if not str(item.get(field) or "").strip():
+                        raise ConfigError(f"{path} item {i + 1} needs a {field}")
+        if path in NUMBER_LISTS and not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value):
+            raise ConfigError(f"{path} must be a list of numbers")
         changed.append(path)
     return changed
 
@@ -324,9 +350,7 @@ def save(body):
         mtime = os.stat(ENV_PATH).st_mtime_ns
     return {
         "changed": changed,
-        "live": [p for p in changed if applies(p) == "live"],
-        "script": [p for p in changed if applies(p) == "script"],
-        "restart": [p for p in changed if applies(p) == "restart"],
+        **{kind: [p for p in changed if applies(p) == kind] for kind in ("live", "script", "restart", "dashboard")},
         "mtime": str(mtime),
     }
 

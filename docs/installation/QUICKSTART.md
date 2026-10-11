@@ -274,7 +274,7 @@ From the WPS directory, run:
 sudo ./install_service.sh
 ```
 
-This installs, enables and starts the `wps` service, running as you. See [Quick install](/docs/installation/INSTALLATION.md#quick-install) for options.
+This installs, enables and starts the `wps` service, running as you, and the `wps-dashboard` service for the [web dashboard](/docs/installation/INSTALLATION.md#web-dashboard). See [Quick install](/docs/installation/INSTALLATION.md#quick-install) for options.
 
 Or set it up by hand: create `/etc/systemd/system/wps.service`, changing `User` and both paths if you aren't the `pi` user in `/home/pi/wps`:
 
@@ -322,8 +322,9 @@ You should see:
 
 ```
 Replication started: origin=... app=wps-repl peers=... relay=... dapps=...
-Dashboard on http://0.0.0.0:8095/
 ```
+
+and `journalctl -u wps-dashboard -n 20` should show `Dashboard on http://0.0.0.0:8095/`.
 
 ### 5.2 Replication dashboard
 
@@ -348,6 +349,6 @@ Delivery takes seconds to minutes depending on the link. The **Activity log** ta
 | Dashboard shows `rejected` items | The sender isn't in `peers`, or a callsign doesn't match exactly. Check both callsigns for each peer, SSIDs included. In a tree, also check `relay` is `true` on this node |
 | In a tree, posts reach neighbours but not nodes further away | `relay` is `false` on the node in the middle |
 | Posts land in the wrong channel or don't show | `channels.json` differs between nodes |
-| Anything else | Set `minWpsLogLevel` to `INFO` on the dashboard's Admin page (it applies straight away), and look for `REPLICATION` lines in `wps.log`. See [Monitoring and Operations](/docs/replication/REPLICATION.md#monitoring-and-operations) |
+| Anything else | Set `minWpsLogLevel` to `INFO` on the dashboard's Config page (it applies straight away), and look for `REPLICATION` lines in `wps.log` - the dashboard's Service page shows it. See [Monitoring and Operations](/docs/replication/REPLICATION.md#monitoring-and-operations) |
 
-Replication's identity and topology settings (`enabled`, callsigns, `peers`, `relay`, `appSlug`, `bootstrapFromTs`) are only read at startup: after changing them, run `sudo systemctl restart wps`. The dashboard's Admin page marks every setting that needs a restart and applies the rest when you save.
+Replication's identity and topology settings (`enabled`, callsigns, `peers`, `relay`, `appSlug`, `bootstrapFromTs`) are only read at startup: after changing them, restart WPS from the dashboard's Service page or with `sudo systemctl restart wps`. The dashboard's Config page marks every setting that needs a restart and applies the rest when you save.

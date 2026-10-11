@@ -4,7 +4,7 @@ from state import *
 import db
 import handlers
 import replication
-import dashboard
+import wps_status
 import env as env_module
 import events
 import logger
@@ -158,11 +158,25 @@ def reload_code():
     Warm-reloads env.json and all reloadable code - db.py, handlers.py, replication.py, and any
     loaded bot modules - in one go. env.json first, so the reloaded modules see the new settings,
     then db.py since handlers.py, replication.py (and bots, indirectly) depend on it. Returns the
-    list of errors, empty if everything reloaded. Also run by the dashboard after it saves env.json.
+    list of errors, empty if everything reloaded, and records it in the status file - the web
+    dashboard, which triggers a reload with SIGHUP after saving env.json, reads the result there.
     '''
     with RELOAD_LOCK:
         steps = (reload_env, reload_db, reload_handlers, reload_replication, reload_bots, apply_reloaded_settings)
-        return [error for error in (step() for step in steps) if error]
+        errors = [error for error in (step() for step in steps) if error]
+        write_status(last_reload={"at": wps_status.now_ms(), "errors": errors})
+        return errors
+
+# What wps_status.py's status file says about this process; see write_status.
+STATUS = {"pid": os.getpid(), "started_at": wps_status.now_ms(), "startup_env": env_module.STARTUP_ENV, "last_reload": None}
+
+def write_status(**changes):
+    '''Updates and rewrites the status file the web dashboard reads (see wps_status.py).'''
+    STATUS.update(changes)
+    try:
+        wps_status.write(STATUS)
+    except Exception as status_e:
+        console_log(f"ERROR: failed to write {wps_status.STATUS_PATH}: {status_e}", "ERROR")
 
 def reload_signal_handler(signum, frame):
     '''
@@ -447,9 +461,9 @@ def startup_and_listen():
     # same as the bot tick threads below, whose per-pass code is warm-reloadable.
     replication.start()
 
-    # Web dashboard (dashboard in env.json): the admin pages, which edit env.json and warm-reload
-    # it on save via reload_code, plus the replication pages when replication is enabled.
-    dashboard.start(reload=reload_code)
+    # Tell the web dashboard - its own process and service, see dashboard.py - that WPS is up,
+    # with what settings, and where to send SIGHUP.
+    write_status()
 
     # Load the channel list from channels.json into the database
     handlers.sync_channels_from_file(global_cursor)

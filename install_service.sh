@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #
-# Installs WPS as a systemd service, so it starts at boot and restarts if it stops.
-# Writes the same unit file as docs/installation/INSTALLATION.md#running-wps-as-a-service,
-# filled in for the user, directory and Python of this install.
+# Installs WPS as a systemd service, so it starts at boot and restarts if it stops, plus its web
+# dashboard as a second service, <name>-dashboard. Writes the same unit files as
+# docs/installation/INSTALLATION.md#running-wps-as-a-service, filled in for the user, directory
+# and Python of this install, and a sudoers rule that lets the dashboard start, stop, restart and
+# reload the WPS service - and nothing else.
 #
-#   sudo ./install_service.sh                 install (or update) and start the service
-#   sudo ./install_service.sh --uninstall     stop, disable and remove the service
-#   ./install_service.sh --dry-run            print the unit file without installing it
+#   sudo ./install_service.sh                 install (or update) and start the services
+#   sudo ./install_service.sh --uninstall     stop, disable and remove the services
+#   ./install_service.sh --dry-run            print the files without installing them
 #
 # Run ./install_service.sh --help for all options.
 
@@ -19,22 +21,25 @@ USER_GIVEN=0
 PYTHON=""
 ACTION="install"
 START=1
+DASHBOARD=1
 ORIG_ARGS="$*"
 
 usage() {
     cat <<EOF
 Usage: sudo $0 [options]
 
-Installs WPS from $WPS_DIR as the systemd service '$SERVICE_NAME'.
+Installs WPS from $WPS_DIR as the systemd service '$SERVICE_NAME', and its web dashboard
+as '$SERVICE_NAME-dashboard'.
 
 Options:
   --user USER       User the service runs as (default: the user who ran sudo, here '$RUN_USER')
   --python PATH     Python interpreter to use (default: the virtual environment in $WPS_DIR/.venv,
                     venv or env if there is one, else python3)
   --name NAME       Service name (default: wps)
-  --no-start        Install and enable at boot, but don't start or restart it now
-  --dry-run         Print the unit file that would be installed and exit
-  --uninstall       Stop, disable and remove the service. WPS files and data are left alone
+  --no-start        Install and enable at boot, but don't start or restart them now
+  --no-dashboard    Don't install the dashboard service (removes it if an earlier run installed it)
+  --dry-run         Print the files that would be installed and exit
+  --uninstall       Stop, disable and remove the services. WPS files and data are left alone
   -h, --help        Show this help
 EOF
 }
@@ -49,6 +54,7 @@ while [ $# -gt 0 ]; do
         --python)    [ $# -ge 2 ] || die "--python needs a value"; PYTHON="$2"; shift 2 ;;
         --name)      [ $# -ge 2 ] || die "--name needs a value"; SERVICE_NAME="$2"; shift 2 ;;
         --no-start)  START=0; shift ;;
+        --no-dashboard) DASHBOARD=0; shift ;;
         --dry-run)   ACTION="dry-run"; shift ;;
         --uninstall) ACTION="uninstall"; shift ;;
         -h|--help)   usage; exit 0 ;;
@@ -57,6 +63,9 @@ while [ $# -gt 0 ]; do
 done
 
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+DASHBOARD_NAME="${SERVICE_NAME}-dashboard"
+DASHBOARD_UNIT_FILE="/etc/systemd/system/${DASHBOARD_NAME}.service"
+SUDOERS_FILE="/etc/sudoers.d/${DASHBOARD_NAME}"
 
 # Runs a command as the service user, to check things as the service will see them
 run_as_user() {
@@ -76,11 +85,27 @@ require_root() {
     [ "$(id -u)" -eq 0 ] || die "run with sudo: sudo $0 $ORIG_ARGS"
 }
 
+remove_dashboard() {
+    if [ -f "$DASHBOARD_UNIT_FILE" ]; then
+        info "Stopping and disabling $DASHBOARD_NAME"
+        systemctl disable --now "$DASHBOARD_NAME" || true
+        rm -f "$DASHBOARD_UNIT_FILE"
+        systemctl daemon-reload
+        systemctl reset-failed "$DASHBOARD_NAME" 2>/dev/null || true
+        info "Removed $DASHBOARD_UNIT_FILE"
+    fi
+    if [ -f "$SUDOERS_FILE" ]; then
+        rm -f "$SUDOERS_FILE"
+        info "Removed $SUDOERS_FILE"
+    fi
+}
+
 uninstall() {
     require_systemd
     require_root
+    remove_dashboard
     if [ ! -f "$UNIT_FILE" ]; then
-        info "No $UNIT_FILE - nothing to remove"
+        info "No $UNIT_FILE - nothing more to remove"
         exit 0
     fi
     info "Stopping and disabling $SERVICE_NAME"
@@ -114,6 +139,66 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+
+# The dashboard runs as the same user as WPS, so it can signal WPS to reload and read its logs.
+# systemd-journal lets it read the system journal (journalctl -u $SERVICE_NAME).
+render_dashboard_unit() {
+    cat <<EOF
+[Unit]
+Description=WPS - web dashboard for the $SERVICE_NAME service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$RUN_USER
+WorkingDirectory=$WPS_DIR
+ExecStart="$PYTHON" dashboard.py --service $SERVICE_NAME
+Restart=on-failure
+RestartSec=10
+$(getent group systemd-journal >/dev/null 2>&1 && echo "SupplementaryGroups=systemd-journal")
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# Exactly the commands dashboard.py runs, for exactly this service. sudo matches the command's
+# full path, so list each path systemctl can be found at.
+render_sudoers() {
+    local cmds="" path action
+    for path in /usr/bin/systemctl /bin/systemctl; do
+        [ -x "$path" ] || continue
+        for action in start stop restart reload; do
+            cmds="${cmds:+$cmds, }$path --no-block $action $SERVICE_NAME"
+        done
+    done
+    cat <<EOF
+# Written by install_service.sh: lets the WPS dashboard ($DASHBOARD_NAME, running as $RUN_USER)
+# start, stop, restart and reload the $SERVICE_NAME service, and nothing else.
+$RUN_USER ALL=(root) NOPASSWD: $cmds
+EOF
+}
+
+# install_file PATH MODE CONTENT: writes CONTENT to PATH if it differs, keeping the old version as PATH.bak
+install_file() {
+    local path="$1" mode="$2" content="$3"
+    if [ -f "$path" ]; then
+        if [ "$(cat "$path")" = "$content" ]; then
+            info "$path is already up to date"
+        else
+            cp "$path" "$path.bak"
+            info "Updating $path (previous version saved as $path.bak)"
+            printf '%s\n' "$content" > "$path"
+        fi
+    else
+        info "Writing $path"
+        printf '%s\n' "$content" > "$path"
+    fi
+    chmod "$mode" "$path"
 }
 
 if [ "$ACTION" = "uninstall" ]; then
@@ -151,6 +236,14 @@ esac
 if [ "$ACTION" = "dry-run" ]; then
     echo "# Would be written to $UNIT_FILE"
     render_unit
+    if [ "$DASHBOARD" -eq 1 ]; then
+        echo
+        echo "# Would be written to $DASHBOARD_UNIT_FILE"
+        render_dashboard_unit
+        echo
+        echo "# Would be written to $SUDOERS_FILE"
+        render_sudoers
+    fi
     exit 0
 fi
 
@@ -190,27 +283,34 @@ done
 
 # --- Install ----------------------------------------------------------------------
 
-NEW_UNIT="$(render_unit)"
-if [ -f "$UNIT_FILE" ]; then
-    if [ "$(cat "$UNIT_FILE")" = "$NEW_UNIT" ]; then
-        info "$UNIT_FILE is already up to date"
-    else
-        cp "$UNIT_FILE" "$UNIT_FILE.bak"
-        info "Updating $UNIT_FILE (previous version saved as $UNIT_FILE.bak)"
-        printf '%s\n' "$NEW_UNIT" > "$UNIT_FILE"
-    fi
+install_file "$UNIT_FILE" 644 "$(render_unit)"
+
+if [ "$DASHBOARD" -eq 1 ]; then
+    install_file "$DASHBOARD_UNIT_FILE" 644 "$(render_dashboard_unit)"
+    # Check the sudoers rule before putting it in place - a broken file in sudoers.d breaks sudo
+    SUDOERS_TMP="$(mktemp)"
+    render_sudoers > "$SUDOERS_TMP"
+    visudo -cqf "$SUDOERS_TMP" || { rm -f "$SUDOERS_TMP"; die "the generated sudoers rule didn't validate - not installing it"; }
+    install_file "$SUDOERS_FILE" 440 "$(cat "$SUDOERS_TMP")"
+    rm -f "$SUDOERS_TMP"
 else
-    info "Writing $UNIT_FILE"
-    printf '%s\n' "$NEW_UNIT" > "$UNIT_FILE"
+    remove_dashboard
 fi
-chmod 644 "$UNIT_FILE"
 
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME" >/dev/null
 info "Enabled $SERVICE_NAME to start at boot"
+if [ "$DASHBOARD" -eq 1 ]; then
+    systemctl enable "$DASHBOARD_NAME" >/dev/null
+    info "Enabled $DASHBOARD_NAME to start at boot"
+fi
 
 if [ "$START" -eq 0 ]; then
-    info "Not starting now (--no-start). Start with: sudo systemctl start $SERVICE_NAME"
+    if [ "$DASHBOARD" -eq 1 ]; then
+        info "Not starting now (--no-start). Start with: sudo systemctl start $SERVICE_NAME $DASHBOARD_NAME"
+    else
+        info "Not starting now (--no-start). Start with: sudo systemctl start $SERVICE_NAME"
+    fi
     exit 0
 fi
 
@@ -231,6 +331,17 @@ else
     die "$SERVICE_NAME didn't stay running. See: journalctl -u $SERVICE_NAME -n 50 and journalctl -t WPS -n 50"
 fi
 
+if [ "$DASHBOARD" -eq 1 ]; then
+    # Restarting WPS restarts the dashboard by itself; this covers a new or changed dashboard unit
+    systemctl restart "$DASHBOARD_NAME"
+    sleep 2
+    if systemctl is-active --quiet "$DASHBOARD_NAME"; then
+        info "$DASHBOARD_NAME is running"
+    else
+        warn "$DASHBOARD_NAME didn't stay running (dashboard.enabled false in env.json, or its port in use?). See: journalctl -u $DASHBOARD_NAME -n 50"
+    fi
+fi
+
 cat <<EOF
 
 WPS is installed as the '$SERVICE_NAME' service.
@@ -241,3 +352,11 @@ WPS is installed as the '$SERVICE_NAME' service.
   Restart:               sudo systemctl restart $SERVICE_NAME
   Remove the service:    sudo $0 --uninstall
 EOF
+
+if [ "$DASHBOARD" -eq 1 ]; then
+    cat <<EOF
+
+The web dashboard is the '$DASHBOARD_NAME' service. Open it now and set its password:
+http://<this node's address>:8095/ (or the port set in env.json's dashboard block)
+EOF
+fi

@@ -84,7 +84,7 @@ Repeat on every BPQ node running a replicated WPS instance.
 
 ### 2. WPS on each node
 
-Add or edit the `replication` block in `env.json` (`env.py` adds it with defaults on first run after upgrading), by hand or on the [web dashboard's](/docs/installation/INSTALLATION.md#web-dashboard) Admin page, then **restart WPS**. Identity and topology - `enabled`, `dappsCallsign`, `originCallsign`, `peers`, `relay`, `appSlug`, `bootstrapFromTs` - are acted on at startup and always need a restart. The rest (`dappsRestUrl`, `streamTtlSeconds`, the poll and reconcile intervals, `ackDelaySeconds`, `batchSize`, `activityRetentionDays`) also apply on a warm reload, from each pump's next pass. `dappsSysopPassword` is only read by `dapps-tools/dapps_queue.py`.
+Add or edit the `replication` block in `env.json` (`env.py` adds it with defaults on first run after upgrading), by hand or on the [web dashboard's](/docs/installation/INSTALLATION.md#web-dashboard) Config page, then **restart WPS**. Identity and topology - `enabled`, `dappsCallsign`, `originCallsign`, `peers`, `relay`, `appSlug`, `bootstrapFromTs` - are acted on at startup and always need a restart. The rest (`dappsRestUrl`, `streamTtlSeconds`, the poll and reconcile intervals, `ackDelaySeconds`, `batchSize`, `activityRetentionDays`) also apply on a warm reload, from each pump's next pass. `dappsSysopPassword` is only read by `dapps-tools/dapps_queue.py`.
 
 ```json
 "replication": {
@@ -474,7 +474,7 @@ Also added: a unique index `idx_unique_post_cid_ts` on posts, so a replicated po
 
 ### Dashboard
 
-The Replication part of WPS's [web dashboard](/docs/installation/INSTALLATION.md#web-dashboard) is a read-only view of the replication tables. WPS prints `Dashboard on http://0.0.0.0:8095/` at startup; browse to the node's address on port 8095, log in, and choose **Replication** at the top left. It's shown whenever `replication.enabled` is `true`. Its address, password and on/off switch are the dashboard's own settings, in the top-level `dashboard` block. It can also be run on its own with `python3 replication_dashboard.py` from the WPS directory - handy while WPS itself is stopped, and it shows Replication that way even with replication disabled, saying so.
+The Replication part of WPS's [web dashboard](/docs/installation/INSTALLATION.md#web-dashboard) is a read-only view of the replication tables. The dashboard runs as its own service, `wps-dashboard`, and logs `Dashboard on http://0.0.0.0:8095/` at startup; browse to the node's address on port 8095, log in, and choose **Replication** at the top left. It's shown whenever `replication.enabled` is `true`. Its address, password and on/off switch are the dashboard's own settings, in the top-level `dashboard` block. It can also be run on its own with `python3 replication_dashboard.py` from the WPS directory - handy while WPS itself is stopped, and it shows Replication that way even with replication disabled, saying so.
 
 | Tab | Shows |
 | - | - |
@@ -626,6 +626,6 @@ Anything that happened after the copy is then filled in by digests.
 |`db.py`|Replication tables (in `dbInit`), `_replicate_capture`, `_replicate_online_status` (hands presence to `replication.notify_presence`), `set_applying_remote`, `REPLICATED_USER_FIELDS`, and the capture calls inside `dbInsertPost`, `dbUpdatePost`, `dbInsertMessage`, `dbUpdateMessage`, `dbUserUpdate`|
 |`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); presence (`notify_presence`, `_presence_pump_tick`, `_handle_presence`, `_check_digest_presence`) and the presence snapshot (`request_online_users`, `_handle_online_request`, `_handle_online_response`); relaying (`_relay_pump_tick`, `_log_relayed`, `_next_hop`, `_learn_route`, `_bootstrap_new_origin`); activity recording for the dashboard (`_record`, `_submit_control`, `_prune_activity`); `start()`|
 |`replication_dashboard.py`|The Replication dashboard: JSON API over the replication tables plus its page, served by `dashboard.py`; also runnable standalone|
-|`wps.py`|Calls `replication.start()` and `dashboard.start()` at boot, after `db.dbInit`, and `replication.request_online_users()` after clearing `online_origin`|
+|`wps.py`|Calls `replication.start()` at boot, after `db.dbInit`, and `replication.request_online_users()` after clearing `online_origin`|
 |`env.py`|Default `replication` block added to `env.json`|
 |`requirements.txt`|`requests`|
