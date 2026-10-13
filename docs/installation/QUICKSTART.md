@@ -211,50 +211,70 @@ It should finish with `wps is running` and `wps-dashboard is running`. If WPS do
 
 WPS now runs in the background and starts at boot. Replication is still off until Step 3.
 
+Now browse to the dashboard at `http://<node-ip>:8095/` and **set its password straight away**. There's no default: the first person to open it chooses the password, and the dashboard can change every WPS setting. You'll use it to configure replication in Step 3.
+
+> [!WARNING]
+> The dashboard shows message and post content and can edit `env.json`, and it uses plain HTTP. Keep port 8095 off the internet. See [Web Dashboard](/docs/installation/INSTALLATION.md#web-dashboard).
+
 Run the script again after moving the WPS directory or changing Python environment: it updates the services and restarts WPS. To remove the services, run `sudo ./install_service.sh --uninstall` (your WPS files and data are left alone).
 
 See [Running WPS as a Service](/docs/installation/INSTALLATION.md#running-wps-as-a-service) for the options, and for setting the services up by hand instead.
 
+### 2.4 Check and manage WPS from the dashboard
+
+Log in to the dashboard at `http://<node-ip>:8095/` and choose **Service** at the top left.
+
+**Check it's running.** The **WPS** card should show a green **running** label and `systemd service wps`, with:
+- **Running since**: when WPS last started
+- **Connected users**: who's connected now
+- **Automatic restarts**: how many times systemd has restarted WPS after it stopped. If this keeps going up, WPS is crashing: check the logs
+
+If it shows **stopped** or **failed**, check the logs (below), fix the problem, then click **Start**.
+
+**Start, stop and restart.** The buttons on the WPS card:
+
+| Button | Use it to | Disconnects users |
+| - | - | - |
+| **Start** | Start WPS when it's stopped | - |
+| **Stop** | Stop WPS. Nobody can connect until you start it again | Yes |
+| **Restart** | Apply settings the Config page marks **restart**, such as the replication settings in Step 3 | Yes, while it restarts |
+| **Reload** | Re-read `env.json` and warm-reload WPS's code, e.g. after a `git pull` | No |
+
+**Stop** and **Restart** ask you to confirm first. The **Dashboard** card's **Restart dashboard** button restarts only the dashboard. You don't usually need it, since the dashboard restarts by itself whenever WPS does.
+
+**Read the logs.** The **Logs** card at the bottom shows the last 200 lines by default. Choose which log with the first drop-down:
+- **journalctl: WPS service**: startup messages and errors. Start here if WPS won't start or keeps restarting
+- **wps.log**: what WPS is doing, including `REPLICATION` lines once replication is on
+- **db.log**: database activity
+- **journalctl: dashboard service**: the dashboard's own messages
+
+Type in the filter box to show only matching lines (e.g. `Replication`), and tick **Follow (5s)** to watch new lines arrive.
+
+From a terminal, the same things are `sudo systemctl status wps`, `sudo systemctl start|stop|restart|reload wps` and `journalctl -u wps`.
+
 ## Step 3 - Configure Replication
 
-### 3.1 Edit `env.json`
+### 3.1 Set replication on the Config page
 
-In the WPS directory, find the `replication` block in `env.json` and set these six values. Leave everything else at its default.
+Log in to the dashboard at `http://<node-ip>:8095/`. It opens on the **Config** page. Scroll down to the **Replication** section and set these six settings. Leave everything else at its default.
 
-```json
-"replication": {
-    "enabled": true,
-    "dappsCallsign": "T3EST-7",
-    "originCallsign": "T3EST",
-    "peers": [
-        {"originCallsign": "T4EST", "dappsCallsign": "T4EST-7"}
-    ],
-    "relay": true,
-    "appSlug": "wps-repl",
-    ...
-}
-```
+| Setting | Set to | Example (node A) |
+| - | - | - |
+| `enabled` | Ticked | ☑ |
+| `dappsCallsign` | **This** node's DAPPS callsign, exactly as entered in Step 1.2, SSID included | `T3EST-7` |
+| `originCallsign` | **This** node's origin callsign | `T3EST` |
+| `peers` | One entry per **neighbour**. Click **+ Add peer** for each, and fill in its `originCallsign` and `dappsCallsign`. Only the nodes this one links to directly, never nodes further along the tree | `T4EST` / `T4EST-7` |
+| `relay` | Ticked, on every node, including the nodes at the ends of the tree | ☑ |
+| `appSlug` | Leave as `wps-repl`. Must be the same on every node | `wps-repl` |
 
-| Setting | Set to |
+The changed settings are listed in the bar at the bottom of the page. Click **Save and apply**. Each of these settings is labelled **restart**, so the page marks them *restart pending*: they take effect when you restart WPS in [3.6](#36-restart-wps).
+
+Each neighbour lists you in return. In the [example tree](#32-the-tree-who-neighbours-whom), node B sits between A and C, so it has two entries under `peers`:
+
+| `originCallsign` | `dappsCallsign` |
 | - | - |
-| `enabled` | `true` |
-| `dappsCallsign` | **This** node's DAPPS callsign, exactly as entered in Step 1.2, SSID included |
-| `originCallsign` | **This** node's origin callsign |
-| `peers` | One entry per **neighbour**: its origin callsign and its DAPPS callsign. Only the nodes this one links to directly, never nodes further along the tree |
-| `relay` | `true`, on every node, including the nodes at the ends of the tree |
-| `appSlug` | Leave as `wps-repl`. Must be the same on every node |
-
-Each neighbour lists you in return. In the [example tree](#32-the-tree-who-neighbours-whom), node B sits between A and C, so it lists both:
-
-```json
-"dappsCallsign": "T4EST-7",
-"originCallsign": "T4EST",
-"peers": [
-    {"originCallsign": "T3EST", "dappsCallsign": "T3EST-7"},
-    {"originCallsign": "T5EST", "dappsCallsign": "T5EST-7"}
-],
-"relay": true
-```
+| `T3EST` | `T3EST-7` |
+| `T5EST` | `T5EST-7` |
 
 ### 3.2 The tree: who neighbours whom
 
@@ -290,24 +310,13 @@ Set it to the current time in epoch milliseconds. Get the value with:
 python3 -c "import time; print(int(time.time() * 1000))"
 ```
 
-Add it to the `replication` block:
+Enter the number in the `bootstrapFromTs` field in the Config page's **Replication** section (e.g. `1790000000000`), together with the settings in 3.1, then **Save and apply**.
 
-```json
-"replication": {
-    "enabled": true,
-    "dappsCallsign": "T3EST-7",
-    "originCallsign": "T3EST",
-    "peers": [
-        {"originCallsign": "T4EST", "dappsCallsign": "T4EST-7"}
-    ],
-    "relay": true,
-    "bootstrapFromTs": 1790000000000,
-    ...
-}
-```
+> [!WARNING]
+> **Set and check `bootstrapFromTs` before you restart WPS in [3.6](#36-restart-wps).** That restart switches replication on, and `bootstrapFromTs` is only read then. If it's empty or wrong at that moment, your node asks its neighbours for their full history, and setting it afterwards does nothing. After saving, reload the Config page and check the value is there, and that it's 13 digits (milliseconds, not seconds).
 
-- **Set it before your first start with replication enabled.** It only takes effect then. Afterwards it is ignored, so it's safe to leave in `env.json`.
-- **Neighbour first.** The existing node you will link to must add your node to its `peers` list and restart **before** you start your node. They must also run a WPS version that supports `bootstrapFromTs`.
+- **Set it before your first start with replication enabled.** It only takes effect then. Afterwards it is ignored, so it's safe to leave set.
+- **Neighbour first.** The existing node you will link to must add your node to its `peers` and restart WPS **before** you restart yours in 3.6. They must also run a WPS version that supports `bootstrapFromTs`.
 - **Older content stays behind.** Posts and messages from before the cutoff never reach your node. They remain on the nodes that already had them.
 - **Your neighbour sets the limit.** Content from nodes further away comes to you through your neighbour, which can only pass on what it has logged since it joined or turned on `relay`. If your cutoff is earlier than that, you get their content from that point instead.
 - **Leave it unset** on existing nodes, and when you're setting up a brand-new tree where every node starts empty, because then there's no history to replay.
@@ -326,36 +335,30 @@ See [Bringing up a new instance](/docs/replication/REPLICATION.md#bringing-up-a-
 
 ### 3.6 Restart WPS
 
-WPS reads the replication settings at startup, so restart it to turn replication on:
+> [!WARNING]
+> Joining an existing tree? Check `bootstrapFromTs` is set on the Config page **before** you restart (see [3.3](#33-joining-an-existing-tree-set-bootstrapfromts)). This restart switches replication on, and it's too late to set it afterwards.
 
-```
-sudo systemctl restart wps
-```
+WPS reads the replication settings at startup. Go to the dashboard's **Service** page (top left), click **Restart**, then **Restart WPS** to confirm. Connected users are disconnected while WPS restarts, and their clients reconnect afterwards.
 
-Or use the dashboard's Service page, if you've already set its password (see [4.2](#42-replication-dashboard)).
+The dashboard restarts along with WPS. Reload the page: the *restart pending* marks on the Config page are gone, and a **Replication** page now appears at the top left.
+
+If the dashboard isn't reachable, restart from a terminal instead: `sudo systemctl restart wps`.
 
 ## Step 4 - Check It Works
 
 ### 4.1 Startup message
 
-```
-journalctl -t WPS -n 50
-```
-
-You should see:
+On the dashboard's **Service** page, check WPS shows **running**, and that **Automatic restarts** isn't going up. In the **Logs** card, choose **journalctl: WPS service** and type `Replication` in the filter box. You should see:
 
 ```
 Replication started: origin=... app=wps-repl peers=... relay=... dapps=...
 ```
 
-and `journalctl -u wps-dashboard -n 20` should show `Dashboard on http://0.0.0.0:8095/`.
+From a terminal, the same lines are in `journalctl -t WPS -n 50`.
 
 ### 4.2 Replication dashboard
 
-Browse to `http://<node-ip>:8095/`. The first time, it asks you to set a dashboard password - do this straight away, since whoever sets it first owns it. Then choose **Replication** at the top left. Once the nodes are up, each neighbour should show as healthy on the **Overview** tab within a few minutes. Origins that reach this node through a neighbour are listed as **relayed via** that neighbour.
-
-> [!WARNING]
-> The dashboard shows message and post content and can edit `env.json`, and it uses plain HTTP. Keep port 8095 off the internet. See [Web Dashboard](/docs/installation/INSTALLATION.md#web-dashboard).
+On the dashboard, choose **Replication** at the top left. Once the nodes are up, each neighbour should show as healthy on the **Overview** tab within a few minutes. Origins that reach this node through a neighbour are listed as **relayed via** that neighbour.
 
 ### 4.3 End to end
 
@@ -367,12 +370,12 @@ Delivery takes seconds to minutes depending on the link. The **Activity log** ta
 
 | Startup message or symptom | Fix |
 | - | - |
-| `Replication disabled ...` | `replication.enabled` is not `true` in `env.json` |
-| `Replication enabled but replication.dappsCallsign/peers are not configured ...` | Set `dappsCallsign` and add at least one entry to `peers` |
+| `Replication disabled ...`, or no **Replication** page on the dashboard | `enabled` isn't ticked in the Config page's Replication section, or WPS hasn't been restarted since |
+| `Replication enabled but replication.dappsCallsign/peers are not configured ...` | On the Config page, set `dappsCallsign` and add at least one peer, then restart WPS |
 | DAPPS test message never arrives | Node not accepting the DAPPS callsign (on BPQ, `APPLICATION` line missing the DAPPS callsign), node not restarted, AGW not reachable, neighbour not added, or AXIP `MAP` missing for the DAPPS callsign. Fix this before looking at WPS |
 | Dashboard shows `rejected` items | The sender isn't in `peers`, or a callsign doesn't match exactly. Check both callsigns for each neighbour, SSIDs included, and that `relay` is `true` on this node |
 | Posts reach neighbours but not nodes further away | `relay` is `false` on the node in the middle |
 | Posts land in the wrong channel or don't show | `channels.json` differs between nodes |
-| Anything else | Set `minWpsLogLevel` to `INFO` on the dashboard's Config page (it applies straight away), and look for `REPLICATION` lines in `wps.log` - the dashboard's Service page shows it. See [Monitoring and Operations](/docs/replication/REPLICATION.md#monitoring-and-operations) |
+| Anything else | Set `minWpsLogLevel` to `INFO` on the dashboard's Config page (it applies straight away), then on the Service page choose **wps.log** in the Logs card and filter for `REPLICATION`. See [Monitoring and Operations](/docs/replication/REPLICATION.md#monitoring-and-operations) |
 
-Replication's identity and topology settings (`enabled`, callsigns, `peers`, `relay`, `appSlug`, `bootstrapFromTs`) are only read at startup: after changing them, restart WPS from the dashboard's Service page or with `sudo systemctl restart wps`. The dashboard's Config page marks every setting that needs a restart and applies the rest when you save.
+Replication's identity and topology settings (`enabled`, callsigns, `peers`, `relay`, `appSlug`, `bootstrapFromTs`) are only read at startup: after changing them on the Config page, restart WPS from the Service page. The Config page marks every setting that needs a restart and applies the rest when you save.
