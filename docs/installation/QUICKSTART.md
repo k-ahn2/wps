@@ -24,10 +24,7 @@ This guide is deliberately short. For the detail behind each step see:
 
 ## Before You Start
 
-**Repeat Steps 1 to 4 on every node** that will run a replicated WPS instance. Each node needs:
-- A working BPQ or Xrouter node on a `systemd`-based Linux (e.g. Raspberry Pi OS)
-- `git` and Python 3
-- A packet link (RF, AXIP or AXUDP) to each node it will peer with: every other node in a full mesh, or just its neighbours in a tree (see [3.2](#32-more-than-two-nodes-full-mesh-or-tree))
+**Repeat Steps 1 to 4 on every node** that will run a replicated WPS instance. Work through the [checklist](#prerequisite-checklist) below first.
 
 **Agree callsigns with the other sysops first.** Every node needs three, and every node needs to know the others':
 
@@ -41,6 +38,40 @@ The examples below use node A's values. Swap in your own.
 
 > [!IMPORTANT]
 > With more than two nodes, decide the layout first. In a **full mesh** (the default), every instance lists every other instance as a peer. In a **tree** (`relay` on), each instance lists only its neighbours, and they pass content on. See [3.2](#32-more-than-two-nodes-full-mesh-or-tree).
+
+### Prerequisite checklist
+
+Tick all of these before Step 1. Most problems later come from a callsign that doesn't match or a link that never worked.
+
+**This node**
+- [ ] A working BPQ or Xrouter node on a `systemd`-based Linux (e.g. Raspberry Pi OS)
+- [ ] `sudo` access on it
+- [ ] `git` and Python 3 installed (`git --version`, `python3 --version`)
+- [ ] These TCP ports free, or you know which you'll use instead: `5000` (DAPPS dashboard), `8000` (AGW), `63001` (WPS), `8095` (WPS dashboard)
+- [ ] Two unused `APPLICATION` numbers in `bpq32.cfg`, one for WPS and one for DAPPS (this guide uses `1` and `2`)
+
+**The node(s) you'll replicate to**
+- [ ] You know which nodes this one will peer with: every other node in a full mesh, or only its neighbours in a tree (see [3.2](#32-more-than-two-nodes-full-mesh-or-tree))
+- [ ] You have a packet link (RF, AXIP or AXUDP) to each of them, and have confirmed it by connecting from your node to theirs
+- [ ] Each peer's sysop is setting up WPS and DAPPS too, and you've agreed when you'll test together
+- [ ] Joining a mesh or tree that already has content? Agree a `bootstrapFromTs` starting point with an existing sysop (see [3.3](#33-joining-an-existing-mesh-or-tree-set-bootstrapfromts))
+
+**Callsigns**
+- [ ] You've chosen your node, DAPPS and origin callsigns, and the DAPPS callsign is different from your node and WPS callsigns and not used by anything else on your node
+- [ ] You've sent your DAPPS and origin callsigns to each peer's sysop
+- [ ] You have each peer's **DAPPS callsign** and **origin callsign**, SSIDs included, checked character by character
+
+**Agreed with the other sysops**
+- [ ] The layout (full mesh or tree), and so the `relay` setting, which must be the same on every node
+- [ ] Everyone will run the same WPS version
+- [ ] One shared `channels.json`, and who supplies it (see [3.4](#34-match-channelsjson))
+- [ ] If bots are on, which single node runs them (see [3.5](#35-things-to-agree-with-the-other-sysops))
+
+It helps to write the peers down as you'll enter them in Step 1.4 and Step 3.1:
+
+| Peer | Node callsign | DAPPS callsign | Origin callsign | Node port that reaches it |
+| - | - | - | - | - |
+| Node B | `T4EST-1` | `T4EST-7` | `T4EST` | e.g. `2` |
 
 ## Step 1 - Install DAPPS
 
@@ -268,47 +299,29 @@ See [Bringing up a new instance](/docs/replication/REPLICATION.md#bringing-up-a-
 
 ## Step 4 - Run WPS as a Service
 
-From the WPS directory, run:
+First stop the copy of WPS you started in [2.1](#21-download-and-first-run) (`Ctrl+C`). If it's still running, it holds the TCP port and the service can't start.
+
+Then, from the WPS directory, as your normal user (not root):
 
 ```
+cd ~/wps
 sudo ./install_service.sh
 ```
 
-This installs, enables and starts the `wps` service, running as you, and the `wps-dashboard` service for the [web dashboard](/docs/installation/INSTALLATION.md#web-dashboard). See [Quick install](/docs/installation/INSTALLATION.md#quick-install) for options.
+The script:
+1. Checks your user can write to the WPS directory, and that Python can import `requests`
+2. Installs the `wps` service, running as you, using the virtual environment's Python if the WPS directory has one (`.venv`, `venv` or `env`), otherwise `python3`
+3. Installs the `wps-dashboard` service for the [web dashboard](/docs/installation/INSTALLATION.md#web-dashboard), plus a sudoers rule that lets the dashboard start, stop and restart WPS (and nothing else)
+4. Enables both to start at boot, starts them, and checks they stay running
 
-Or set it up by hand: create `/etc/systemd/system/wps.service`, changing `User` and both paths if you aren't the `pi` user in `/home/pi/wps`:
+It should finish with `wps is running` and `wps-dashboard is running`. If WPS doesn't stay running, the script says so and shows which logs to check.
 
-```ini
-[Unit]
-Description=WPS - Packet Radio Messaging Service
-After=network-online.target
-Wants=network-online.target
+> [!TIP]
+> To see the files it will write before installing anything, run `./install_service.sh --dry-run` (no `sudo` needed). Run `./install_service.sh --help` for all the options.
 
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/home/pi/wps
-ExecStart=/usr/bin/python3 wps.py
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
-RestartSec=10
-KillSignal=SIGINT
-TimeoutStopSec=90
-StandardOutput=null
-StandardError=journal
+Run the script again after moving the WPS directory or changing Python environment: it updates the services and restarts WPS. To remove the services, run `sudo ./install_service.sh --uninstall` (your WPS files and data are left alone).
 
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start it:
-
-```
-sudo systemctl daemon-reload
-sudo systemctl enable --now wps
-```
-
-See [Running WPS as a Service](/docs/installation/INSTALLATION.md#running-wps-as-a-service) for what each setting does.
+See [Running WPS as a Service](/docs/installation/INSTALLATION.md#running-wps-as-a-service) for the options, and for setting the services up by hand instead.
 
 ## Step 5 - Check It Works
 
