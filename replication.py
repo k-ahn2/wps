@@ -206,6 +206,12 @@ def _dapps_inbound():
     return resp.json()
 
 
+def _sender_callsign(msg):
+    # originatorCallsign is the DAPPS node that submitted the message; sourceCallsign is only
+    # the last hop that handed it to us, which changes with routing. Older DAPPS lack the former.
+    return msg.get("originatorCallsign") or msg.get("sourceCallsign")
+
+
 def _dapps_ack(dapps_id):
     resp = requests.post(f"{DAPPS_REST_URL}/AppApi/inbound/{APP_SLUG}/{dapps_id}/ack", timeout=10)
     resp.raise_for_status()
@@ -877,7 +883,7 @@ def _record_inbound_error(msg, error):
     except Exception:
         envelope = None
     op = envelope.get("op") if isinstance(envelope, dict) else None
-    _record("in", "sync" if op in _CONTROL_OPS else "data", op, "error", peer=msg.get("sourceCallsign"),
+    _record("in", "sync" if op in _CONTROL_OPS else "data", op, "error", peer=_sender_callsign(msg),
             origin=envelope.get("origin") if isinstance(envelope, dict) else None,
             seq=envelope.get("seq") if isinstance(envelope, dict) and op not in _CONTROL_OPS else None,
             detail=f"Not acked, DAPPS will redeliver: {error}", dapps_id=dapps_id, event=envelope)
@@ -947,15 +953,15 @@ def _handle_inbound(msg):
 
     # Anyone who can reach this node's DAPPS can address wps-repl@<our callsign>, and DAPPS
     # doesn't authenticate senders beyond the callsign it stamps on the message. So only
-    # accept events from configured peers: both the DAPPS-stamped source callsign (when
+    # accept events from configured peers: both the DAPPS-stamped originator callsign (when
     # present) and the identity claimed inside the envelope must be a peer. Anything else is
     # logged and dropped (acked, so it doesn't sit in the queue and get re-polled forever).
     # `by` and `requested_by` carry the sender's DAPPS callsign; `origin` carries its origin callsign.
     # With relay on, an origin that isn't a peer is accepted when a peer relays it: that peer
-    # is the DAPPS-stamped source, or (where there is none) names itself in `by`.
+    # is the DAPPS-stamped originator, or (where there is none) names itself in `by`.
     claim_key = {"ack": "by", "sync.request": "requested_by", "seq_at.request": "requested_by", "online.request": "requested_by"}.get(op, "origin")
     claimed = envelope.get(claim_key)
-    source = msg.get("sourceCallsign")
+    source = _sender_callsign(msg)
     relayed_by = (source or envelope.get("by")) if claim_key == "origin" and not _is_configured_peer_origin(claimed) else None
     if claim_key != "origin":
         claimed_ok = _is_configured_peer(claimed)
