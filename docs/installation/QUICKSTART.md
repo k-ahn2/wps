@@ -18,13 +18,12 @@ This guide is deliberately short. For the detail behind each step see:
 2. [Step 1 - Install DAPPS](#step-1---install-dapps)
 3. [Step 2 - Install WPS](#step-2---install-wps)
 4. [Step 3 - Configure Replication](#step-3---configure-replication)
-5. [Step 4 - Run WPS as a Service](#step-4---run-wps-as-a-service)
-6. [Step 5 - Check It Works](#step-5---check-it-works)
-7. [Common Problems](#common-problems)
+5. [Step 4 - Check It Works](#step-4---check-it-works)
+6. [Common Problems](#common-problems)
 
 ## Before You Start
 
-**Repeat Steps 1 to 4 on every node** that will run a replicated WPS instance. Work through the [checklist](#prerequisite-checklist) below first.
+**Repeat Steps 1 to 3 on every node** that will run a replicated WPS instance. Work through the [checklist](#prerequisite-checklist) below first.
 
 **Agree callsigns with the other sysops first.** Every node needs three, and every node needs to know its neighbours':
 
@@ -188,6 +187,34 @@ Restart BPQ. See [Node Integration](/docs/installation/INSTALLATION.md#node-inte
 
 Not yet tested with WPS and DAPPS, so no configuration is given here. See the Xrouter documentation for adding an application that connects to a TCP port.
 
+### 2.3 Run WPS as a service
+
+First stop the copy of WPS you started in 2.1 (`Ctrl+C`). If it's still running, it holds the TCP port and the service can't start.
+
+Then, from the WPS directory, as your normal user (not root):
+
+```
+cd ~/wps
+sudo ./install_service.sh
+```
+
+The script:
+1. Checks your user can write to the WPS directory, and that Python can import `requests`
+2. Installs the `wps` service, running as you, using the virtual environment's Python if the WPS directory has one (`.venv`, `venv` or `env`), otherwise `python3`
+3. Installs the `wps-dashboard` service for the [web dashboard](/docs/installation/INSTALLATION.md#web-dashboard), plus a sudoers rule that lets the dashboard start, stop and restart WPS (and nothing else)
+4. Enables both to start at boot, starts them, and checks they stay running
+
+It should finish with `wps is running` and `wps-dashboard is running`. If WPS doesn't stay running, the script says so and shows which logs to check.
+
+> [!TIP]
+> To see the files it will write before installing anything, run `./install_service.sh --dry-run` (no `sudo` needed). Run `./install_service.sh --help` for all the options.
+
+WPS now runs in the background and starts at boot. Replication is still off until Step 3.
+
+Run the script again after moving the WPS directory or changing Python environment: it updates the services and restarts WPS. To remove the services, run `sudo ./install_service.sh --uninstall` (your WPS files and data are left alone).
+
+See [Running WPS as a Service](/docs/installation/INSTALLATION.md#running-wps-as-a-service) for the options, and for setting the services up by hand instead.
+
 ## Step 3 - Configure Replication
 
 ### 3.1 Edit `env.json`
@@ -297,35 +324,19 @@ See [Bringing up a new instance](/docs/replication/REPLICATION.md#bringing-up-a-
 - **One agreed tree.** Agree who neighbours whom, with no loops, and keep `relay` set to `true` everywhere.
 - **Bots on one node only.** If `botsEnabled` is `true`, run each bot on just one instance or its posts will double up.
 
-## Step 4 - Run WPS as a Service
+### 3.6 Restart WPS
 
-First stop the copy of WPS you started in [2.1](#21-download-and-first-run) (`Ctrl+C`). If it's still running, it holds the TCP port and the service can't start.
-
-Then, from the WPS directory, as your normal user (not root):
+WPS reads the replication settings at startup, so restart it to turn replication on:
 
 ```
-cd ~/wps
-sudo ./install_service.sh
+sudo systemctl restart wps
 ```
 
-The script:
-1. Checks your user can write to the WPS directory, and that Python can import `requests`
-2. Installs the `wps` service, running as you, using the virtual environment's Python if the WPS directory has one (`.venv`, `venv` or `env`), otherwise `python3`
-3. Installs the `wps-dashboard` service for the [web dashboard](/docs/installation/INSTALLATION.md#web-dashboard), plus a sudoers rule that lets the dashboard start, stop and restart WPS (and nothing else)
-4. Enables both to start at boot, starts them, and checks they stay running
+Or use the dashboard's Service page, if you've already set its password (see [4.2](#42-replication-dashboard)).
 
-It should finish with `wps is running` and `wps-dashboard is running`. If WPS doesn't stay running, the script says so and shows which logs to check.
+## Step 4 - Check It Works
 
-> [!TIP]
-> To see the files it will write before installing anything, run `./install_service.sh --dry-run` (no `sudo` needed). Run `./install_service.sh --help` for all the options.
-
-Run the script again after moving the WPS directory or changing Python environment: it updates the services and restarts WPS. To remove the services, run `sudo ./install_service.sh --uninstall` (your WPS files and data are left alone).
-
-See [Running WPS as a Service](/docs/installation/INSTALLATION.md#running-wps-as-a-service) for the options, and for setting the services up by hand instead.
-
-## Step 5 - Check It Works
-
-### 5.1 Startup message
+### 4.1 Startup message
 
 ```
 journalctl -t WPS -n 50
@@ -339,14 +350,14 @@ Replication started: origin=... app=wps-repl peers=... relay=... dapps=...
 
 and `journalctl -u wps-dashboard -n 20` should show `Dashboard on http://0.0.0.0:8095/`.
 
-### 5.2 Replication dashboard
+### 4.2 Replication dashboard
 
 Browse to `http://<node-ip>:8095/`. The first time, it asks you to set a dashboard password - do this straight away, since whoever sets it first owns it. Then choose **Replication** at the top left. Once the nodes are up, each neighbour should show as healthy on the **Overview** tab within a few minutes. Origins that reach this node through a neighbour are listed as **relayed via** that neighbour.
 
 > [!WARNING]
 > The dashboard shows message and post content and can edit `env.json`, and it uses plain HTTP. Keep port 8095 off the internet. See [Web Dashboard](/docs/installation/INSTALLATION.md#web-dashboard).
 
-### 5.3 End to end
+### 4.3 End to end
 
 Connect a client (e.g. [Frames](http://frames.oarc.uk)) to node A and post in a channel. Connect a client to node B and check the post arrives. Then try the other direction. Also check a post reaches a node that isn't a direct neighbour, such as A to C in the example.
 
