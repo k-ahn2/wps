@@ -1,6 +1,6 @@
 # Quick Start - DAPPS, WPS and Replication
 
-The minimum steps to get two (or more) packet nodes each running WPS, with messages, posts and user names replicating between them over DAPPS.
+The minimum steps to get two or more packet nodes each running WPS, linked as a **tree**, with messages, posts and user names replicating between them over DAPPS.
 
 This guide is deliberately short. For the detail behind each step see:
 - [Installation](/docs/installation/INSTALLATION.md) - full WPS install, `env.json` reference, running as a service
@@ -26,7 +26,7 @@ This guide is deliberately short. For the detail behind each step see:
 
 **Repeat Steps 1 to 4 on every node** that will run a replicated WPS instance. Work through the [checklist](#prerequisite-checklist) below first.
 
-**Agree callsigns with the other sysops first.** Every node needs three, and every node needs to know the others':
+**Agree callsigns with the other sysops first.** Every node needs three, and every node needs to know its neighbours':
 
 | Name | Example (node A) | Example (node B) | Used for |
 | - | - | - | - |
@@ -37,7 +37,7 @@ This guide is deliberately short. For the detail behind each step see:
 The examples below use node A's values. Swap in your own.
 
 > [!IMPORTANT]
-> With more than two nodes, decide the layout first. In a **full mesh** (the default), every instance lists every other instance as a peer. In a **tree** (`relay` on), each instance lists only its neighbours, and they pass content on. See [3.2](#32-more-than-two-nodes-full-mesh-or-tree).
+> This guide links the nodes as a **tree**. Each node lists only its **neighbours** (the nodes it links to directly) as peers, and every node has `relay` on, so content is passed along the tree to the nodes beyond. Agree who neighbours whom before you start. See [3.2](#32-the-tree-who-neighbours-whom). For a full mesh instead, see [Replication - How It Works](/docs/replication/REPLICATION.md).
 
 ### Prerequisite checklist
 
@@ -51,25 +51,25 @@ Tick all of these before Step 1. Most problems later come from a callsign that d
 - [ ] Two unused `APPLICATION` numbers in `bpq32.cfg`, one for WPS and one for DAPPS (this guide uses `1` and `2`)
 
 **The node(s) you'll replicate to**
-- [ ] You know which nodes this one will peer with: every other node in a full mesh, or only its neighbours in a tree (see [3.2](#32-more-than-two-nodes-full-mesh-or-tree))
-- [ ] You have a packet link (RF, AXIP or AXUDP) to each of them, and have confirmed it by connecting from your node to theirs
-- [ ] Each peer's sysop is setting up WPS and DAPPS too, and you've agreed when you'll test together
-- [ ] Joining a mesh or tree that already has content? Agree a `bootstrapFromTs` starting point with an existing sysop (see [3.3](#33-joining-an-existing-mesh-or-tree-set-bootstrapfromts))
+- [ ] You know this node's neighbours in the tree: the nodes it will link to directly and list as peers (see [3.2](#32-the-tree-who-neighbours-whom))
+- [ ] You have a packet link (RF, AXIP or AXUDP) to each neighbour, and have confirmed it by connecting from your node to theirs
+- [ ] Each neighbour's sysop is setting up WPS and DAPPS too, and you've agreed when you'll test together
+- [ ] Joining a tree that already has content? Agree a `bootstrapFromTs` starting point with your neighbour's sysop (see [3.3](#33-joining-an-existing-tree-set-bootstrapfromts))
 
 **Callsigns**
 - [ ] You've chosen your node, DAPPS and origin callsigns, and the DAPPS callsign is different from your node and WPS callsigns and not used by anything else on your node
-- [ ] You've sent your DAPPS and origin callsigns to each peer's sysop
-- [ ] You have each peer's **DAPPS callsign** and **origin callsign**, SSIDs included, checked character by character
+- [ ] You've sent your DAPPS and origin callsigns to each neighbour's sysop
+- [ ] You have each neighbour's **DAPPS callsign** and **origin callsign**, SSIDs included, checked character by character
 
 **Agreed with the other sysops**
-- [ ] The layout (full mesh or tree), and so the `relay` setting, which must be the same on every node
+- [ ] The shape of the tree: who neighbours whom, with no loops, and `relay` on at every node
 - [ ] Everyone will run the same WPS version
 - [ ] One shared `channels.json`, and who supplies it (see [3.4](#34-match-channelsjson))
 - [ ] If bots are on, which single node runs them (see [3.5](#35-things-to-agree-with-the-other-sysops))
 
-It helps to write the peers down as you'll enter them in Step 1.4 and Step 3.1:
+It helps to write your neighbours down as you'll enter them in Step 1.4 and Step 3.1:
 
-| Peer | Node callsign | DAPPS callsign | Origin callsign | Node port that reaches it |
+| Neighbour | Node callsign | DAPPS callsign | Origin callsign | Node port that reaches it |
 | - | - | - | - | - |
 | Node B | `T4EST-1` | `T4EST-7` | `T4EST` | e.g. `2` |
 
@@ -131,16 +131,16 @@ nc -vz localhost 8000
 
 Not yet tested with WPS and DAPPS, so no configuration is given here. See the Xrouter documentation for adding an application callsign and enabling AGW.
 
-### 1.4 Add each peer as a neighbour
+### 1.4 Add each neighbour
 
-In the DAPPS dashboard's **Neighbours** panel, add each peer's **DAPPS callsign** (e.g. `T4EST-7`) and the node port that reaches it.
+In the DAPPS dashboard's **Neighbours** panel, add each neighbour's **DAPPS callsign** (e.g. `T4EST-7`) and the node port that reaches it.
 
 > [!NOTE]
-> If the link is AXIP/AXUDP with per-callsign `MAP` entries, add a `MAP` for the peer's DAPPS callsign as well as its node callsign.
+> If the link is AXIP/AXUDP with per-callsign `MAP` entries, add a `MAP` for the neighbour's DAPPS callsign as well as its node callsign.
 
 ### 1.5 Prove the link
 
-Once the peer has also finished Step 1, use the dashboard's **Send a test message** form to send to the peer's DAPPS callsign, and confirm it appears on the peer's `/Inbound` page. **Don't move on to replication until this works in both directions.**
+Once each neighbour has also finished Step 1, use the dashboard's **Send a test message** form to send to the neighbour's DAPPS callsign, and confirm it appears on the neighbour's `/Inbound` page. **Don't move on to replication until this works in both directions.**
 
 ## Step 2 - Install WPS
 
@@ -202,7 +202,7 @@ In the WPS directory, find the `replication` block in `env.json` and set these s
     "peers": [
         {"originCallsign": "T4EST", "dappsCallsign": "T4EST-7"}
     ],
-    "relay": false,
+    "relay": true,
     "appSlug": "wps-repl",
     ...
 }
@@ -213,28 +213,27 @@ In the WPS directory, find the `replication` block in `env.json` and set these s
 | `enabled` | `true` |
 | `dappsCallsign` | **This** node's DAPPS callsign, exactly as entered in Step 1.2, SSID included |
 | `originCallsign` | **This** node's origin callsign |
-| `peers` | One entry per node this one links to: its origin callsign and its DAPPS callsign. In a full mesh, every **other** node. In a tree, only this node's **neighbours** |
-| `relay` | `false` for a full mesh (and for two nodes), `true` for a tree. Must be the same on every node |
+| `peers` | One entry per **neighbour**: its origin callsign and its DAPPS callsign. Only the nodes this one links to directly, never nodes further along the tree |
+| `relay` | `true`, on every node, including the nodes at the ends of the tree |
 | `appSlug` | Leave as `wps-repl`. Must be the same on every node |
 
-The peer's config is the mirror image of yours. For node B in the example:
+Each neighbour lists you in return. In the [example tree](#32-the-tree-who-neighbours-whom), node B sits between A and C, so it lists both:
 
 ```json
 "dappsCallsign": "T4EST-7",
 "originCallsign": "T4EST",
 "peers": [
-    {"originCallsign": "T3EST", "dappsCallsign": "T3EST-7"}
-]
+    {"originCallsign": "T3EST", "dappsCallsign": "T3EST-7"},
+    {"originCallsign": "T5EST", "dappsCallsign": "T5EST-7"}
+],
+"relay": true
 ```
 
-### 3.2 More than two nodes: full mesh or tree
+### 3.2 The tree: who neighbours whom
 
-With two nodes, leave `relay` as `false` and list each other. With three or more, choose one layout and use it on every node:
+Each node lists only its neighbours in `peers`, and passes everything it receives on to its other neighbours. A node only needs a packet link and a DAPPS route to its neighbours, not to every node.
 
-- **Full mesh** (`relay: false`). Every node lists every other node in `peers` and needs a DAPPS route to each. Each post is sent directly from its origin to every node.
-- **Tree** (`relay: true`). Each node lists only the nodes it links to directly, and passes everything it receives on to its other neighbours. Useful when a node can't reach every other node, or to keep traffic off a busy link.
-
-For example, a tree with B in the middle:
+For example, a tree of three nodes with B in the middle:
 
 ```
 T3EST (A) ─── T4EST (B) ─── T5EST (C)
@@ -246,17 +245,17 @@ T3EST (A) ─── T4EST (B) ─── T5EST (C)
 | B | A, C | `true` |
 | C | B | `true` |
 
-A post made on C reaches A through B, and the other way round.
+A post made on C reaches A through B, and the other way round. With just two nodes, each lists the other, and `relay` is still `true` so a third node can join later.
 
-- **No loops.** The links must form a tree. If A, B and C all list each other with `relay` on, it still works, but every post crosses some links twice.
-- **Every node, together.** A node with `relay` off rejects content relayed to it. To move an existing mesh to a tree, update every node, set `relay: true` everywhere, cut each `peers` list down to its neighbours, then restart them all.
+- **No loops.** The links must form a tree. If A, B and C all list each other, it still works, but every post crosses some links twice.
+- **`relay` on everywhere.** A node with `relay` off rejects content relayed to it, and doesn't pass anything on.
 - **A link down cuts off everything beyond it.** If the A–B link fails in the example, A and C don't see each other's posts until it's back. They then catch up automatically.
 
 See [Relaying - tree topology](/docs/replication/REPLICATION.md#8-relaying---tree-topology) for how it works.
 
-### 3.3 Joining an existing mesh or tree? Set `bootstrapFromTs`
+### 3.3 Joining an existing tree? Set `bootstrapFromTs`
 
-If your node is joining nodes that are already replicating, set `bootstrapFromTs` **on your new node only**. Without it, your node asks every peer for its full history, and every post and message ever made is sent again over packet radio. With it, your node only receives content from that time onwards.
+If your node is joining nodes that are already replicating, set `bootstrapFromTs` **on your new node only**. Without it, your node asks its neighbours for their full history, and every post and message ever made is sent again over packet radio. With it, your node only receives content from that time onwards.
 
 Set it to the current time in epoch milliseconds. Get the value with:
 
@@ -274,16 +273,17 @@ Add it to the `replication` block:
     "peers": [
         {"originCallsign": "T4EST", "dappsCallsign": "T4EST-7"}
     ],
+    "relay": true,
     "bootstrapFromTs": 1790000000000,
     ...
 }
 ```
 
 - **Set it before your first start with replication enabled.** It only takes effect then. Afterwards it is ignored, so it's safe to leave in `env.json`.
-- **Peers first.** Each existing node you will peer with (in a tree, just your neighbour) must add your node to its `peers` list and restart **before** you start your node. They must also run a WPS version that supports `bootstrapFromTs`.
+- **Neighbour first.** The existing node you will link to must add your node to its `peers` list and restart **before** you start your node. They must also run a WPS version that supports `bootstrapFromTs`.
 - **Older content stays behind.** Posts and messages from before the cutoff never reach your node. They remain on the nodes that already had them.
-- **In a tree, your neighbour sets the limit.** Content from nodes further away comes to you through your neighbour, which can only pass on what it has logged since it joined or turned on `relay`. If your cutoff is earlier than that, you get their content from that point instead.
-- **Leave it unset** on existing nodes, and when you're setting up a brand-new mesh where every node starts empty, because then there's no history to replay.
+- **Your neighbour sets the limit.** Content from nodes further away comes to you through your neighbour, which can only pass on what it has logged since it joined or turned on `relay`. If your cutoff is earlier than that, you get their content from that point instead.
+- **Leave it unset** on existing nodes, and when you're setting up a brand-new tree where every node starts empty, because then there's no history to replay.
 
 See [Bringing up a new instance](/docs/replication/REPLICATION.md#bringing-up-a-new-instance) for how it works and the other options.
 
@@ -294,7 +294,7 @@ See [Bringing up a new instance](/docs/replication/REPLICATION.md#bringing-up-a-
 ### 3.5 Things to agree with the other sysops
 
 - **Same WPS version on every node.** Update all nodes together with `git pull`.
-- **Same layout on every node.** Agree full mesh or tree, and who neighbours whom, and set `relay` the same everywhere.
+- **One agreed tree.** Agree who neighbours whom, with no loops, and keep `relay` set to `true` everywhere.
 - **Bots on one node only.** If `botsEnabled` is `true`, run each bot on just one instance or its posts will double up.
 
 ## Step 4 - Run WPS as a Service
@@ -341,14 +341,14 @@ and `journalctl -u wps-dashboard -n 20` should show `Dashboard on http://0.0.0.0
 
 ### 5.2 Replication dashboard
 
-Browse to `http://<node-ip>:8095/`. The first time, it asks you to set a dashboard password - do this straight away, since whoever sets it first owns it. Then choose **Replication** at the top left. Once the nodes are up, each peer should show as healthy on the **Overview** tab within a few minutes. In a tree, origins that reach this node through a neighbour are listed as **relayed via** that neighbour.
+Browse to `http://<node-ip>:8095/`. The first time, it asks you to set a dashboard password - do this straight away, since whoever sets it first owns it. Then choose **Replication** at the top left. Once the nodes are up, each neighbour should show as healthy on the **Overview** tab within a few minutes. Origins that reach this node through a neighbour are listed as **relayed via** that neighbour.
 
 > [!WARNING]
 > The dashboard shows message and post content and can edit `env.json`, and it uses plain HTTP. Keep port 8095 off the internet. See [Web Dashboard](/docs/installation/INSTALLATION.md#web-dashboard).
 
 ### 5.3 End to end
 
-Connect a client (e.g. [Frames](http://frames.oarc.uk)) to node A and post in a channel. Connect a client to node B and check the post arrives. Then try the other direction. In a tree, also check a post reaches a node that isn't a direct neighbour, such as A to C in the example.
+Connect a client (e.g. [Frames](http://frames.oarc.uk)) to node A and post in a channel. Connect a client to node B and check the post arrives. Then try the other direction. Also check a post reaches a node that isn't a direct neighbour, such as A to C in the example.
 
 Delivery takes seconds to minutes depending on the link. The **Activity log** tab on each dashboard shows the event being sent and received.
 
@@ -359,8 +359,8 @@ Delivery takes seconds to minutes depending on the link. The **Activity log** ta
 | `Replication disabled ...` | `replication.enabled` is not `true` in `env.json` |
 | `Replication enabled but replication.dappsCallsign/peers are not configured ...` | Set `dappsCallsign` and add at least one entry to `peers` |
 | DAPPS test message never arrives | Node not accepting the DAPPS callsign (on BPQ, `APPLICATION` line missing the DAPPS callsign), node not restarted, AGW not reachable, neighbour not added, or AXIP `MAP` missing for the DAPPS callsign. Fix this before looking at WPS |
-| Dashboard shows `rejected` items | The sender isn't in `peers`, or a callsign doesn't match exactly. Check both callsigns for each peer, SSIDs included. In a tree, also check `relay` is `true` on this node |
-| In a tree, posts reach neighbours but not nodes further away | `relay` is `false` on the node in the middle |
+| Dashboard shows `rejected` items | The sender isn't in `peers`, or a callsign doesn't match exactly. Check both callsigns for each neighbour, SSIDs included, and that `relay` is `true` on this node |
+| Posts reach neighbours but not nodes further away | `relay` is `false` on the node in the middle |
 | Posts land in the wrong channel or don't show | `channels.json` differs between nodes |
 | Anything else | Set `minWpsLogLevel` to `INFO` on the dashboard's Config page (it applies straight away), and look for `REPLICATION` lines in `wps.log` - the dashboard's Service page shows it. See [Monitoring and Operations](/docs/replication/REPLICATION.md#monitoring-and-operations) |
 
