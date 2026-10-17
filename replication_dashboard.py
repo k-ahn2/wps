@@ -105,6 +105,12 @@ def api_status(cur, _query):
     pending = {r["origin"].upper(): dict(r) for r in cur.fetchall()}
     cur.execute("SELECT origin, requested_at FROM replication_bootstrap_pending")
     bootstrap = {r["origin"].upper(): r["requested_at"] for r in cur.fetchall()}
+    # Read from the table, not replication._routes: the dashboard can run in its own process,
+    # where the routes WPS has learned were never loaded.
+    routes = {}
+    if replication.RELAY and _has_table(cur, "replication_route"):
+        cur.execute("SELECT origin, via FROM replication_route")
+        routes = {r["origin"].upper(): r["via"] for r in cur.fetchall()}
 
     def activity_one(sql, params):
         if not activity_ok:
@@ -196,7 +202,7 @@ def api_status(cur, _query):
         "self": {"latest_seq": my_latest, "epoch": epoch, "outbox_count": outbox_count, "outbox_oldest_seq": outbox_oldest},
         "peers": peers,
         "other_origins": [{"origin": o, "applied_seq": cursors.get(o), "pending": pending.get(o),
-                           "via": replication._routes.get(o) if replication.RELAY else None} for o in other_origins],
+                           "via": routes.get(o)} for o in other_origins],
         "counts_24h": counts,
         "recent_issues": recent_issues,
         "dapps_poll": dapps_poll,
