@@ -125,6 +125,22 @@ def get_db_connection():
     conn.execute("PRAGMA wal_autocheckpoint=100")
     return conn
 
+# wal_autocheckpoint is triggered by WAL size, not time, so a few connects and disconnects can
+# sit in wps.db-wal for hours. wps.py runs dbWalCheckpoint this often as well, so wps.db is
+# never more than about this far behind.
+WAL_CHECKPOINT_SECONDS = 60
+
+def dbWalCheckpoint(CONN_DB_CURSOR):
+    '''
+    Copies committed pages from wps.db-wal into wps.db. PASSIVE never waits on or blocks
+    readers and writers - pages a reader still needs are left for the next pass.
+    '''
+    try:
+        CONN_DB_CURSOR.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        CONN_DB_CURSOR.fetchone()
+    except Exception as e:
+        db_logger("dbWalCheckpoint", f"WAL checkpoint failed: {e}", "ERROR")
+
 def dbInit(CONN_DB_CURSOR):
     create_users_table = '''
     CREATE TABLE IF NOT EXISTS users (

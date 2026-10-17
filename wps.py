@@ -221,6 +221,16 @@ def code_reload_key_listener():
     finally:
         restore_terminal()
 
+def wal_checkpoint_loop():
+    '''
+    Process-lifetime thread with its own connection. Looks up db.dbWalCheckpoint on every pass,
+    so a warm reload of db.py is picked up without restarting the thread.
+    '''
+    cursor = db.get_db_connection().cursor()
+    while True:
+        time.sleep(db.WAL_CHECKPOINT_SECONDS)
+        db.dbWalCheckpoint(cursor)
+
 def load_bots_config():
     '''
     Reads bots/bots.json - keyed by bot name (the Python module under the bots/ package to
@@ -455,6 +465,9 @@ def startup_and_listen():
 
     # Create the database tables, if they don't exist
     db.dbInit(global_cursor)
+
+    # Keep wps.db itself current, not just wps.db plus wps.db-wal (see db.WAL_CHECKPOINT_SECONDS)
+    threading.Thread(target=wal_checkpoint_loop, daemon=True, name='wal_checkpoint').start()
 
     # Start instance-to-instance replication over DAPPS (outbox/inbox/reconcile pumps).
     # No-ops (loudly) if replication.enabled isn't set in env.json. Process-lifetime threads,
