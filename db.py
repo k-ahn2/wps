@@ -304,6 +304,23 @@ def dbInit(CONN_DB_CURSOR):
     CONN_DB_CURSOR.execute("CREATE INDEX IF NOT EXISTS idx_replication_activity_at ON replication_activity (at)")
     CONN_DB_CURSOR.execute("CREATE INDEX IF NOT EXISTS idx_replication_activity_item ON replication_activity (origin, seq)")
 
+    # Clients will use the last seen time (ls) in Ham Enquiry as their lhts watermark, so
+    # name_last_updated must never be later than it, or the user is resent on every connect.
+    # Users created by replicated presence used to get local time here instead of the origin's
+    # last seen time. Written directly, not through dbUserUpdate, so nothing is replicated -
+    # each instance fixes its own records, and it's a no-op once they are.
+    last_seen = """MAX(
+            COALESCE(json_extract(user, '$.last_connected'), json_extract(user, '$.lastseen'), 0),
+            COALESCE(json_extract(user, '$.last_disconnected'), json_extract(user, '$.lastseen'), 0)
+        )"""
+    CONN_DB_CURSOR.execute(f"""
+    UPDATE users
+    SET user = json_set(user, '$.name_last_updated', {last_seen})
+    WHERE json_extract(user, '$.name_last_updated') > {last_seen}
+    """)
+    if CONN_DB_CURSOR.rowcount > 0:
+        db_logger("dbInit", f"Moved name_last_updated back to the last seen time for {CONN_DB_CURSOR.rowcount} users")
+
     CONN_DB_CURSOR.connection.commit()
 
 def sourceValueToJsonValue(value):
@@ -1375,7 +1392,11 @@ def dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_update_timestamp):
         select_query = """
         SELECT user
         FROM users
-        WHERE json_extract(user, '$.name_last_updated') > ?
+        WHERE MAX(
+            COALESCE(json_extract(user, '$.name_last_updated'), 0),
+            COALESCE(json_extract(user, '$.last_connected'), json_extract(user, '$.lastseen'), 0),
+            COALESCE(json_extract(user, '$.last_disconnected'), json_extract(user, '$.lastseen'), 0)
+        ) > ?
         """
         params = [last_ham_update_timestamp]
         db_logger("dbGetUpdatedHams", "Query: " + ' '.join(select_query.split()) + " | Params: " + str(params))

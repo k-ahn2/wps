@@ -71,7 +71,7 @@ table is just the keys and what they mean.
 | - | - | - |
 | `callsign` | string | Identity / lookup key. Never updated after creation |
 | `name` | string | Display name. Source: connect object `n` (default `-`). Updated on connect when it changes |
-| `name_last_updated` | number (epoch s) | When `name` last changed. Drives Ham Enquiry (`dbGetUpdatedHams`) |
+| `name_last_updated` | number (epoch s) | When `name` last changed. With `last_connected` and `last_disconnected`, drives Ham Enquiry (`dbGetUpdatedHams`) |
 | `last_connected` | number (epoch s) | Most recent connect. Set on every connect |
 | `last_disconnected` | number (epoch s) | Most recent socket close |
 | `is_online` | number (`0` / `1`) | `1` while at least one socket for the callsign is open. Only set after the receipt of the user's connect string. Reset to `0` on server startup incase of ungraceful WPS close |
@@ -256,7 +256,7 @@ Where each key is read (for field semantics - none of these write):
 | `is_online` | [`dbGetOnlineUsers`](/db.py#L405), [`socket_send_handler_other_connected_user`](/handlers.py#L1960) |
 | `name`, `name_last_updated` | [`dbGetUpdatedHams`](/db.py#L984), [`dbGetMessagedUsers`](/db.py#L434), `ham_enquiry_handler`, `user_enquiry_handler` |
 | `avatar`, `avatar_last_updated` | [`dbGetUpdatedAvatars`](/db.py#L1014), `avatar_enquiry_handler` |
-| `last_connected`, `last_disconnected` | [`dbGetMessagedUsers`](/db.py#L434), `user_enquiry_handler`, [stats.py](/stats.py#L26) (`uculsd` stat) |
+| `last_connected`, `last_disconnected` | [`dbGetMessagedUsers`](/db.py#L434), [`dbGetUpdatedHams`](/db.py#L1373) and `ham_enquiry_object` (Ham Enquiry `ls`), `user_enquiry_handler`, [stats.py](/stats.py#L26) (`uculsd` stat) |
 | `channel_subscriptions` | [`dbChannelSubscribers`](/db.py#L745), [`check_auto_subscriptions`](/handlers.py#L1982), `existing_connect_handler` |
 | `channel_notifications_since_last_logout` | [`dbChannelSubscribers`](/db.py#L751), `post_handler` |
 | `paused_channels` | [`dbPausedCallsignsForChannel`](/db.py#L800), `unpause_channel_handler` |

@@ -366,7 +366,9 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     }
     if user_database_record.get('created_by_replication'):
         user_updated_fields['created_by_replication'] = 0
-    
+        # name_last_updated may be 0 if replication created the user with no last seen time
+        user_updated_fields['name_last_updated'] = connect_timestamp
+
     wps_logger("CONNECT HANDLER", callsign, f"User is now marked as online")
     wps_logger("CONNECT HANDLER", callsign, f"Is New User = {is_new_user}") if is_new_user == 1 else None
     
@@ -521,21 +523,7 @@ def first_time_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, i
     # Return ham updates
     ###
 
-    response = { "t": "he", "h": [] }
-
-    updated_hams_result = db.dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_timestamp)
-
-    for ham in updated_hams_result['data']:
-        
-        response["h"].append({
-            "c": ham['callsign'],
-            "n": ham.get('name', '-'),
-            "ts": ham.get('name_last_updated', 0)
-        })
-
-    if len(response["h"]) > 0:
-        wps_logger("CONNECT HANDLER", callsign, f"User name change response {response}")
-        socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
+    ham_updates_connect_handler(CONN_DB_CURSOR, callsign, CONN, last_ham_timestamp)
 
 def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, user_db_record, previous_connect_timestamp):
     '''
@@ -835,22 +823,44 @@ def existing_connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN, use
     # Return ham updates
     ###
 
+    ham_updates_connect_handler(CONN_DB_CURSOR, callsign, CONN, last_ham_timestamp)
+        
+def ham_enquiry_object(ham):
+    '''
+    Builds a Ham Enquiry entry from a user record
+    ts is when the name last changed, ls the latest of last_connected and last_disconnected
+    '''
+
+    # Users not seen since last_connected and last_disconnected replaced lastseen only have lastseen
+    last_connected = ham.get('last_connected', ham.get('lastseen')) or 0
+    last_disconnected = ham.get('last_disconnected', ham.get('lastseen')) or 0
+
+    return {
+        "c": ham['callsign'],
+        "n": ham.get('name', '-'),
+        "ts": ham.get('name_last_updated', 0),
+        "ls": max(last_connected, last_disconnected)
+    }
+
+def ham_updates_connect_handler(CONN_DB_CURSOR, callsign, CONN, last_ham_timestamp):
+    '''
+    Returns every ham whose name, last_connected or last_disconnected is newer than the client's lhts
+    '''
+
     response = { "t": "he", "h": [] }
 
     updated_hams_result = db.dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_timestamp)
+    if updated_hams_result['result'] == 'failure':
+        close_connection(CONN_DB_CURSOR, callsign, CONN)
+        return
 
     for ham in updated_hams_result['data']:
-        
-        response["h"].append({
-            "c": ham['callsign'],
-            "n": ham.get('name', '-'),
-            "ts": ham.get('name_last_updated', 0)
-        })
+        response["h"].append(ham_enquiry_object(ham))
 
     if len(response["h"]) > 0:
-        wps_logger("CONNECT HANDLER", callsign, f"User name change response {response}")
+        wps_logger("CONNECT HANDLER", callsign, f"Ham updates response {response}")
         socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)
-        
+
 def online_users_connect_handler(CONN_DB_CURSOR, callsign, CONN):
     ###
     # Returns all online users to the client, called only at the point of connect
@@ -1374,7 +1384,7 @@ def user_enquiry_handler(CONN_DB_CURSOR, user_enquiry, callsign, CONN):
 
 def ham_enquiry_handler(CONN_DB_CURSOR, ham_enquiry, callsign, CONN):
     '''
-    Accepts an array of callsigns and returns the name and last connected or disconnected timestamp
+    Accepts an array of callsigns and returns the name, name updated timestamp and last connected or disconnected timestamp
     Is used by channels and will be used by messages in future
     '''
         
@@ -1395,12 +1405,7 @@ def ham_enquiry_handler(CONN_DB_CURSOR, ham_enquiry, callsign, CONN):
         ham_enquiry_response = ham_enquiry_response['data']
         
         if ham_enquiry_response != None:
-            response["h"].append({
-
-                "c": ham_enquiry_response['callsign'],
-                "n": ham_enquiry_response.get('name', '-'),
-                "ts": ham_enquiry_response.get('name_last_updated', 0),
-            })
+            response["h"].append(ham_enquiry_object(ham_enquiry_response))
 
     wps_logger("HAM ENQUIRY HANDLER", callsign, f"Response: {response}")
     socket_send_handler(CONN_DB_CURSOR, CONN, callsign, response)

@@ -45,7 +45,7 @@ ___
 |Last Message|`lm`|`1740299150`|Number|Timestamp of last message - seconds since epoch|
 |Last Emoji|`le`|`1740266497`|Number|Timestamp of last message emoji - seconds since epoch|
 |Last Edit|`led`|`1739318078`|Number|Timestamp of last message edit - seconds since epoch|
-|Last Ham Timestamp|`lhts`|`1739318078`|Number|Timestamp of last Ham (i.e. User) update. Currently only changes on Name change|
+|Last Ham Timestamp|`lhts`|`1739318078`|Number|Timestamp of last Ham (i.e. User) update - the latest `ts` or `ls` the client holds from [Type he - Ham Enquiry](#type-he---ham-enquiry)|
 |Last Channels Timestamp|`lcts`|`1755000000000`|Number|Optional - Timestamp of the channel list already held by the client, in milliseconds since epoch. If supplied and older than the server's channel list, WPS returns a `chl` object - see [Type chl - Channel List](/docs/protocol/CHANNELS.md#type-chl---channel-list)|
 |Version|`v`|`0.94.13`|String|3-tier `major.minor.patch` version of the client. Legacy 2-tier / numeric values (e.g. `0.44`) are still accepted and compared component-wise|
 |App Code|`a`|`FRM`|String|Optional - 3-character code identifying the client app, matched against an `appCode` in env.json's `apps` array to determine the minimum and recommended versions to check against. If omitted (or unknown), the minimum and recommended version checks are skipped|
@@ -205,7 +205,7 @@ Not registered
 
 ## Type he - Ham Enquiry
 
-Used by Channels to fetch a user's name. 
+Used by the client to fetch a user's name and last seen time. Also sent by the server as part of the connect sequence, containing every user whose name, last connected or last disconnected timestamp is later than the client's `lhts`
 
 ### Client to Server
 <hr>
@@ -236,7 +236,8 @@ Used by Channels to fetch a user's name.
 |**Callsign Objects**|
 |Callsign|`c`|`T3EST`|String|User's callsign, from the user record in the WPS database
 |Name|`n`|`Tester`|String|User's name, from the user record in the WPS database
-|Timestamp|`ts`|`1738869165936`|String|The timestamp the user's name was updated, from the user record in the WPS database
+|Timestamp|`ts`|`1738869165`|Number|The timestamp the user's name was updated, from the user record in the WPS database
+|Last Seen|`ls`|`1740252223`|Number|The later of the user's last connected and last disconnected timestamps - seconds since epoch
 
 ### JSON Example
 
@@ -247,7 +248,8 @@ Used by Channels to fetch a user's name.
       {
          "c": "T3EST", 
          "n": "Tester", 
-         "ts": 1738869165936
+         "ts": 1738869165,
+         "ls": 1740252223
       }
    ]
 }
@@ -337,7 +339,7 @@ Sent by the server as part of the connect sequence - contains an array of users 
 ## Type u - User Updates
 
 > [!IMPORTANT]
-> User Updates is depracated and is in the process of being replaced with Ham Enquiry, type `he`.
+> User Updates is deprecated. WPS sends it alongside Ham Enquiry, type `he`, until all clients have moved to `he`, which carries the same name and last seen time as `ls`.
 
 Sent by the server as part of the connect sequence - contains updated name and last seen times for all users the connecting callsign has messaged, providing it has changed since last login
 
@@ -677,8 +679,8 @@ Upon receipt, WPS returns:
       - if > `maxNewPostsToReturnPerChannelOnConnect`, return channel headers as type `pch`
    - new post emojis, sent in batches of 10 as type `cpemb`
    - new post edits, sent in batches of 4 as type `cpedb`
-   - updated last seen times and name changes as type `u`, for Messaged users
-   - updated name changes as type `he`, for Channel users
+   - updated last seen times and name changes as type `u`, for Messaged users (deprecated, see [Type u - User Updates](#type-u---user-updates))
+   - updated names and last seen times as type `he`, for every user changed since `lhts`
    - online users, local and at replication peers, as type `o`
    - if the client supplies `lcts` and the server's channel list is newer, WPS also sends a `chl` object - see [Type chl - Channel List](/docs/protocol/CHANNELS.md#type-chl---channel-list)
 
@@ -705,8 +707,9 @@ For an existing user connecting with new browser, WPS returns
 1. A type `c` object sent to the client, containing:
    - new message counts (because they could have messages waiting)
    - whether there is a version upgrade
-2. All recipients the user has ever communicated with, sent to repopulate the recipient list in the browser, sent as type `u`
+2. All recipients the user has ever communicated with, sent to repopulate the recipient list in the browser, sent as type `u` (deprecated, see [Type u - User Updates](#type-u---user-updates))
 3. The last 10 messages exchanged with each recipient, sent in batches of 10 as type `mb`
+4. Names and last seen times for every user as type `he`, as `lhts` is 0
 
 > [!NOTE]
 > There is currently no way to recover every message ever sent if a user connects from a new browser. WPS will implement a method for handling this in future

@@ -668,7 +668,18 @@ def _apply_and_broadcast(cur, envelope):
         if (existing["data"].get("name_last_updated") or 0) >= (data.get("name_last_updated") or 0):
             wps_logger("REPLICATION APPLY", ORIGIN, f"Stale user.update for {callsign}, ignoring")
             return "stale"
-        update_resp = db.dbUserUpdate(cur, callsign, {k: v for k, v in data.items() if k in db.REPLICATED_USER_FIELDS})
+        user_update = {k: v for k, v in data.items() if k in db.REPLICATED_USER_FIELDS}
+        # A name only changes on connect, so name_last_updated is a connect at origin. Presence
+        # isn't replayed, so it may never arrive - move last_connected forward to match, keeping
+        # name_last_updated no later than the last seen time clients use as their watermark.
+        name_last_updated = data.get("name_last_updated") or 0
+        if (existing["data"].get("last_connected") or 0) < name_last_updated:
+            user_update["last_connected"] = name_last_updated
+            # As in _apply_online_status - a last_connected would otherwise hide that the user
+            # has never connected here
+            if "last_connected" not in existing["data"] and "lastseen" not in existing["data"]:
+                user_update["created_by_replication"] = 1
+        update_resp = db.dbUserUpdate(cur, callsign, user_update)
         if update_resp["result"] == "failure":
             raise RuntimeError(f"dbUserUpdate failed: {update_resp['error']}")
 
@@ -709,12 +720,13 @@ def _apply_online_status(cur, origin, callsign, name, is_online, ts=None, presen
     if user is None:
         # Unlike user.update, an online status creates the user, so they're known here
         # before their first connect. created_by_replication makes connect_handler treat the
-        # first local connect as a new user's. name_last_updated is local time, so clients
-        # pick the name up through the normal name-update watermark.
+        # first local connect as a new user's. name_last_updated is the origin's ts, the same
+        # last seen time clients use as their watermark, so it is never later than it - or 0
+        # with no ts, leaving the user to be picked up on their first local connect.
         user = {
             "callsign": callsign,
             "name": name or "-",
-            "name_last_updated": round(time.time()),
+            "name_last_updated": ts or 0,
             "channel_subscriptions": env.get('autoSubscribeToChannelIds', []),
             "created_by_replication": 1,
         }
