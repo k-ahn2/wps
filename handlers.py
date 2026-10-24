@@ -295,7 +295,8 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     event_logger(timestamp_milliseconds(), 'USER_CONNECT', callsign, { "total": len(CONNECTIONS) }, None)
 
     client_channel_subscriptions = connect_object.get('cc', [])
-    name_from_client = connect_object.get('n', '-')
+    # "-" only for a new user; an existing user's stored name is kept when the client sends none
+    name_from_client = connect_object.get('n') or '-'
     client_version = connect_object.get('v', 0)
     connect_timestamp = round(time.time())
 
@@ -372,7 +373,7 @@ def connect_handler(CONN_DB_CURSOR, callsign, connect_object, CONN):
     wps_logger("CONNECT HANDLER", callsign, f"User is now marked as online")
     wps_logger("CONNECT HANDLER", callsign, f"Is New User = {is_new_user}") if is_new_user == 1 else None
     
-    if user_database_record['name'] != name_from_client:
+    if connect_object.get('n') and user_database_record.get('name') != name_from_client:
         wps_logger("CONNECT HANDLER", callsign, f"Name Update from {user_database_record['name']} to {name_from_client}")        
         user_updated_fields['name'] = name_from_client
         user_updated_fields['name_last_updated'] = connect_timestamp

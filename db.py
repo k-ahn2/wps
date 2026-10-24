@@ -254,6 +254,10 @@ def dbInit(CONN_DB_CURSOR):
     existing_peer_ack_columns = [row[1] for row in CONN_DB_CURSOR.execute("PRAGMA table_info(replication_peer_ack)")]
     if "submitted_seq" not in existing_peer_ack_columns:
         CONN_DB_CURSOR.execute("ALTER TABLE replication_peer_ack ADD COLUMN submitted_seq INTEGER NOT NULL DEFAULT 0")
+    # 1 for a peer added to replication.peers: nothing is sent to it until it says where it
+    # wants our stream from (seq_at.request, sync.request or ack). See replication._start_peer_stream.
+    if "awaiting_request" not in existing_peer_ack_columns:
+        CONN_DB_CURSOR.execute("ALTER TABLE replication_peer_ack ADD COLUMN awaiting_request INTEGER NOT NULL DEFAULT 0")
 
     # With replication.relay on: how far each neighbour has been sent (submitted_seq) and has
     # applied (acked_seq) each other origin's stream that this instance passes on to it.

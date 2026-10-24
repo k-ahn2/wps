@@ -335,8 +335,10 @@ def _outbox_pump_tick():
     # to DAPPS for a given peer in seq order. On the first failure for a peer we stop and
     # retry from that same seq next tick.
     for peer in PEERS:
-        cur.execute("SELECT submitted_seq FROM replication_peer_ack WHERE peer = ?", (peer,))
+        cur.execute("SELECT submitted_seq, awaiting_request FROM replication_peer_ack WHERE peer = ?", (peer,))
         row = cur.fetchone()
+        if row and row[1]:
+            continue  # a new peer that hasn't yet said where it wants our stream from
         submitted_seq = row[0] if row else 0
 
         cur.execute(
@@ -734,6 +736,15 @@ def _apply_online_status(cur, origin, callsign, name, is_online, ts=None, presen
         create_resp = db.dbCreateNewUser(cur, user)
         if create_resp["result"] == "failure":
             raise RuntimeError(f"dbCreateNewUser failed: {create_resp['error']}")
+    elif user.get("name") in (None, "", "-") and name not in (None, "", "-"):
+        # Created here with no name to go on (the "-" above, or a connect with no name). A user
+        # new at origin never sends a user.update - their name went into the new record, not
+        # an update - so presence is the only thing that can fill it in.
+        name_update = {"name": name, "name_last_updated": max(user.get("name_last_updated") or 0, ts or 0)}
+        wps_logger("REPLICATION APPLY", ORIGIN, f"Name for {callsign} was {user.get('name')!r}, setting from {origin}: {name}")
+        name_resp = db.dbUserUpdate(cur, callsign, name_update)
+        if name_resp["result"] == "failure":
+            raise RuntimeError(f"dbUserUpdate failed: {name_resp['error']}")
 
     # Only ever moves forward: events from different origins arrive in no particular order.
     # Applied even when the status itself is stale - the user did still connect or
@@ -809,15 +820,18 @@ def _log_relayed(cur, origin, seq, envelope):
     With relay on, keeps every applied event (stale or ignored too, so the log has no gaps) in
     replication_log, in the apply's transaction, for _relay_pump_tick to pass on and
     _handle_sync_request to re-send. Also starts a forward cursor, just before this event, for
-    each peer that origin's events go on to and that hasn't got one yet.
+    each peer that origin's events go on to and that hasn't got one yet - except a new peer
+    still awaiting its first request, whose forward cursors only its own requests start.
     '''
     logged = {k: v for k, v in envelope.items() if k not in ("acks", "by")}
     cur.execute(
         "INSERT OR IGNORE INTO replication_log (origin, seq, ts, op, event) VALUES (?, ?, ?, ?, ?)",
         (origin, seq, logged.get("ts") or 0, logged["op"], json.dumps(logged, separators=(',', ':')))
     )
+    cur.execute("SELECT peer FROM replication_peer_ack WHERE awaiting_request = 1")
+    awaiting = {row[0].upper() for row in cur.fetchall()}
     for peer in PEERS:
-        if _relays_to(peer, origin):
+        if _relays_to(peer, origin) and peer.upper() not in awaiting:
             cur.execute("INSERT OR IGNORE INTO replication_forward (peer, origin, submitted_seq) VALUES (?, ?, ?)", (peer, origin, seq - 1))
 
 
@@ -1121,16 +1135,23 @@ def _handle_data_event(envelope, peer, dapps_id, batch_note=None):
         return
 
     if seq > last_applied + 1:
-        wps_logger("REPLICATION INBOX", ORIGIN, f"Gap from {origin}: have {last_applied}, got {seq} - buffering and requesting resend")
+        # Ask only for the hole directly below this event. Seqs already buffered below it arrived
+        # fine, so asking from last_applied would have each one in a run (say a backlog delivered
+        # after a gap) re-request the event that came just before it.
+        cur.execute("SELECT MAX(seq) FROM replication_pending WHERE origin = ? AND seq > ? AND seq < ?", (origin, last_applied, seq))
+        below = cur.fetchone()[0]
+        from_seq = (below or last_applied) + 1
+        wps_logger("REPLICATION INBOX", ORIGIN, f"Gap from {origin}: have {last_applied}, got {seq} - buffering" + (" and requesting resend" if from_seq < seq else ""))
         cur.execute(
             "INSERT OR REPLACE INTO replication_pending (origin, seq, event) VALUES (?, ?, ?)",
             (origin, seq, json.dumps(envelope, separators=(',', ':')))
         )
         conn.commit()
-        _record("in", "data", op, "buffered", peer=peer, origin=origin, seq=seq,
-                detail=f"Gap: have {last_applied}, requesting {last_applied + 1}-{seq - 1}", dapps_id=dapps_id, event=envelope)
+        detail = f"Gap: have {last_applied}, " + (f"requesting {from_seq}-{seq - 1}" if from_seq < seq else f"follows buffered {below}")
+        _record("in", "data", op, "buffered", peer=peer, origin=origin, seq=seq, detail=detail, dapps_id=dapps_id, event=envelope)
         # DAPPS delivered it fine - the gap is an application-level concern, so the message is still acked
-        _request_sync(origin, last_applied + 1, seq - 1)
+        if from_seq < seq:
+            _request_sync(origin, from_seq, seq - 1)
         return
 
     outcome = _apply_one(conn, cur, origin, seq, envelope)
@@ -1254,11 +1275,13 @@ def _handle_app_ack(envelope):
         return
     # An ack also implies the peer already holds everything up to seq (e.g. via a
     # sync.request resend), so advance submitted_seq too rather than re-submitting it.
+    # It also says where the peer wants our stream from, so a new peer's wait is over.
     cur.execute(
         "INSERT INTO replication_peer_ack (peer, peer_acked_seq, submitted_seq) VALUES (?, ?, ?) "
         "ON CONFLICT(peer) DO UPDATE SET "
         "peer_acked_seq = MAX(peer_acked_seq, excluded.peer_acked_seq), "
-        "submitted_seq = MAX(submitted_seq, excluded.submitted_seq)",
+        "submitted_seq = MAX(submitted_seq, excluded.submitted_seq), "
+        "awaiting_request = 0",
         (peer, seq, seq)
     )
     conn.commit()
@@ -1464,6 +1487,9 @@ def _handle_sync_request(envelope):
         _record("out", "sync", "sync.request", "failed", peer=requester, origin=origin,
                 detail=f"Cannot serve {len(missing)} of {to_seq - from_seq + 1} requested seq(s), not in replication_log as {origin}: {shown}")
 
+    # Live events after this range follow by the outbox/relay pump, if they aren't yet.
+    _start_peer_stream(cur, conn, requester, origin, max(served_to, from_seq - 1))
+
     for chunk in _batches([(seq, json.loads(event_json)) for seq, event_json in rows]):
         envelopes = [envelope for _, envelope in chunk]
         note = _batch_note(chunk)
@@ -1484,6 +1510,28 @@ def _handle_sync_request(envelope):
             detail = f"Re-sent for sync.request {from_seq}-{to_seq}" + (f" - {note}" if note else "")
             _record("out", "data", envelope.get("op"), "resent", peer=requester, origin=origin, seq=seq,
                     detail=detail, dapps_id=dapps_id)
+
+
+def _start_peer_stream(cur, conn, peer, origin, after_seq):
+    '''
+    A peer has asked for origin's stream (seq_at.request or sync.request), so the outbox pump
+    (our own origin) or relay pump (another origin) can start sending it events after_seq
+    onwards. Only the first request does anything: a peer already being sent the stream keeps
+    its cursor, and retried requests don't wind it back. Until then nothing is sent to a new
+    peer, so it gets only what it asked for - never our backlog by assumption.
+    '''
+    peer = _PEER_SPELLING.get(peer.upper(), peer)
+    if origin == ORIGIN:
+        cur.execute("UPDATE replication_peer_ack SET submitted_seq = ?, awaiting_request = 0 WHERE peer = ? AND awaiting_request = 1", (after_seq, peer))
+    elif _relays_to(peer, origin):
+        cur.execute("INSERT OR IGNORE INTO replication_forward (peer, origin, submitted_seq) VALUES (?, ?, ?)", (peer, origin, after_seq))
+    else:
+        return
+    started = cur.rowcount
+    conn.commit()
+    if started:
+        wps_logger("REPLICATION", ORIGIN, f"{peer} asked for {origin}: sending it events after seq {after_seq}")
+        _outbox_wake.set()
 
 
 def _fill_gap_to_pending(origin):
@@ -1551,6 +1599,7 @@ def _handle_seq_at_request(envelope):
         seed_seq = first_seq_at_or_after - 1
 
     wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request from {requester} for {origin} at ts={target_ts}: answering seq={seed_seq}")
+    _start_peer_stream(cur, conn, requester, origin, seed_seq)
     response = {"op": "seq_at.response", "origin": origin, "seq": seed_seq, "requested_by": requester}
     if origin != ORIGIN:
         response["by"] = DAPPS_CALLSIGN
@@ -1587,29 +1636,28 @@ def _handle_seq_at_response(envelope):
 
 def _start_bootstrap_if_configured(cur, conn):
     '''
-    Called once from start(). If replication.bootstrapFromTs is set and this instance has never
-    resolved a starting cursor for any peer, mark every peer pending and let
+    Called once from start(). If replication.bootstrapFromTs is set, mark pending every
+    configured peer that has no cursor yet and isn't already pending, and let
     _retry_bootstrap_pending (called immediately below, then every reconcile tick) send the
-    seq_at.request. Safe to call on every restart: once replication_bootstrap_pending is empty
-    and replication_origin_cursor has rows, bootstrapFromTs is inert and this is a no-op, so
-    it's fine to leave the setting in env.json indefinitely.
+    seq_at.request. Decided per origin, like _bootstrap_new_origin: a cursor or pending row
+    left by an earlier start for some other origin (say a peer since removed) mustn't stop a
+    new peer bootstrapping and leave it requesting that peer's whole history instead. Safe to
+    call on every restart: a peer with a cursor is never bootstrapped again, so it's fine to
+    leave the setting in env.json indefinitely.
     '''
     if not BOOTSTRAP_FROM_TS:
         return
 
-    cur.execute("SELECT 1 FROM replication_bootstrap_pending LIMIT 1")
-    restart_mid_bootstrap = cur.fetchone() is not None
-    if restart_mid_bootstrap:
-        return  # rows already there from a prior start; _retry_bootstrap_pending will chase them
-
-    cur.execute("SELECT 1 FROM replication_origin_cursor LIMIT 1")
-    if cur.fetchone() is not None:
-        return  # already bootstrapped (or caught up organically) in an earlier run
-
+    started = []
     for peer_origin, _ in _PEER_PAIRS:
-        cur.execute("INSERT OR IGNORE INTO replication_bootstrap_pending (origin, requested_at) VALUES (?, ?)", (peer_origin, _now_ms()))
+        cur.execute("SELECT 1 FROM replication_origin_cursor WHERE origin = ? UNION ALL "
+                    "SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (peer_origin, peer_origin))
+        if cur.fetchone() is None:
+            cur.execute("INSERT INTO replication_bootstrap_pending (origin, requested_at) VALUES (?, ?)", (peer_origin, _now_ms()))
+            started.append(peer_origin)
     conn.commit()
-    wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Bootstrapping from ts={BOOTSTRAP_FROM_TS}: requesting seq_at from {PEERS}")
+    if started:
+        wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Bootstrapping {', '.join(started)} from ts={BOOTSTRAP_FROM_TS}: requesting seq_at")
 
 
 def _retry_bootstrap_pending():
@@ -2075,10 +2123,14 @@ def start():
     conn = db.get_db_connection()
     cur = conn.cursor()
     for peer in PEERS:
-        cur.execute("INSERT OR IGNORE INTO replication_peer_ack (peer, peer_acked_seq) VALUES (?, 0)", (peer,))
         # Fold in rows an earlier version keyed by the peer's own spelling of its callsign.
         cur.execute("SELECT MAX(peer_acked_seq), MAX(submitted_seq) FROM replication_peer_ack WHERE UPPER(peer) = UPPER(?) AND peer != ?", (peer, peer))
         stray_acked, stray_submitted = cur.fetchone()
+        # A peer new to `peers` waits for its own request before anything is sent to it - see
+        # _start_peer_stream. Pushing the outbox from 0 would send it everything, whatever its
+        # bootstrapFromTs asked for. A peer that only changed spelling isn't new.
+        cur.execute("INSERT OR IGNORE INTO replication_peer_ack (peer, peer_acked_seq, awaiting_request) VALUES (?, 0, ?)",
+                    (peer, 1 if stray_acked is None else 0))
         if stray_acked is not None:
             cur.execute("UPDATE replication_peer_ack SET peer_acked_seq = MAX(peer_acked_seq, ?), submitted_seq = MAX(submitted_seq, ?) WHERE peer = ?",
                         (stray_acked, stray_submitted, peer))
