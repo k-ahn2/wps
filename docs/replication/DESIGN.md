@@ -41,7 +41,7 @@ Version 1 implements the proposal's core: capture, publish, receive and apply, a
 |Peer trust|Not covered|Inbound messages are accepted only from configured peers|
 |Emoji reactions|Applied and fanned out live (`cpem`, `mem`)|Applied and pushed live. Messages: `mem`, which already carries the full list. Posts: the event has the merged reaction list, so the apply compares it with the stored list and sends one `cpem` per reaction added or removed|
 |`user.update`|`name` and other portable fields|`name` and `name_last_updated`, guarded by `name_last_updated`. Unknown users are ignored|
-|Avatars|`avatar.update` operation|Not implemented|
+|Avatars|`avatar.update` operation|Not in the stream. Compared and copied by a nightly user sync on its own queue instead - see [Nightly user sync](/docs/replication/REPLICATION.md#9-nightly-user-sync)|
 |Edit or reaction before its insert|Buffered until the insert arrives|Handled by `seq` ordering and gap buffering. An edit that still finds no post raises and is retried|
 |Instance rebuild|"seq restored from the replicated DB"|Not automatic. Documented manual recovery; a digest lower than the applied cursor is logged as an error|
 |`epoch`|Bumps when the seq store is reinitialised|Stamped on events and used in the stream id; bumped by hand, never automatically|

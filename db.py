@@ -1,4 +1,4 @@
-import sqlite3, json, time, sys
+import sqlite3, json, time, sys, hashlib
 import datetime
 import threading
 from logger import *
@@ -295,6 +295,16 @@ def dbInit(CONN_DB_CURSOR):
     CREATE TABLE IF NOT EXISTS replication_bootstrap_pending (
         origin TEXT PRIMARY KEY,
         requested_at INTEGER
+    );
+    ''')
+
+    # Nightly user sync (replication._start_user_sync): when this instance last sent its
+    # users.digest to each peer it starts the sync with, so a restart neither skips nor
+    # repeats a night.
+    CONN_DB_CURSOR.execute('''
+    CREATE TABLE IF NOT EXISTS replication_user_sync (
+        peer TEXT PRIMARY KEY,
+        last_started_at INTEGER
     );
     ''')
 
@@ -1439,6 +1449,56 @@ def dbGetUpdatedHams(CONN_DB_CURSOR, last_ham_update_timestamp):
             "params": [ last_ham_update_timestamp ]
         }
         db_logger("dbGetUpdatedHams", "Return: " + str(return_error), 'ERROR')
+        return return_error
+
+def avatarHash(avatar):
+    '''
+    Short fingerprint of an avatar, so the nightly user sync can tell two avatars apart
+    without sending them. Empty for no avatar.
+    '''
+    return hashlib.sha1(avatar.encode()).hexdigest()[:8] if avatar else ""
+
+def dbGetUserSyncSummary(CONN_DB_CURSOR):
+    '''
+    Every user as compared by the nightly user sync (replication._users_summary):
+    [callsign, name, name_last_updated, last_connected, last_disconnected, avatar_ts, avatar hash].
+    avatar_ts is when the avatar was set at the instance it was set on - avatar_last_updated
+    for records from before avatar_ts existed. Missing numbers are 0.
+    '''
+    try:
+        select_query = """
+        SELECT
+            json_extract(user, '$.callsign'),
+            json_extract(user, '$.name'),
+            COALESCE(json_extract(user, '$.name_last_updated'), 0),
+            COALESCE(json_extract(user, '$.last_connected'), json_extract(user, '$.lastseen'), 0),
+            COALESCE(json_extract(user, '$.last_disconnected'), json_extract(user, '$.lastseen'), 0),
+            COALESCE(json_extract(user, '$.avatar_ts'), json_extract(user, '$.avatar_last_updated'), 0),
+            json_extract(user, '$.avatar')
+        FROM users
+        WHERE json_extract(user, '$.callsign') IS NOT NULL
+        """
+        db_logger("dbGetUserSyncSummary", "Query: " + ' '.join(select_query.split()))
+
+        CONN_DB_CURSOR.execute(select_query)
+        data = [[row[0], row[1], row[2], row[3], row[4], row[5] if row[6] else 0, avatarHash(row[6])]
+                for row in CONN_DB_CURSOR]
+
+        # Not the rows themselves - this runs over every user
+        db_logger("dbGetUserSyncSummary", f"Return: {len(data)} users")
+        return {
+            "result": "success",
+            "data": data
+        }
+
+    except Exception as e:
+        return_error = {
+            "result": "failure",
+            "error": str(e),
+            "function": "dbGetUserSyncSummary",
+            "params": []
+        }
+        db_logger("dbGetUserSyncSummary", "Return: " + str(return_error), 'ERROR')
         return return_error
 
 def dbGetUpdatedAvatars(CONN_DB_CURSOR, callsign, last_avatar_timestamp):

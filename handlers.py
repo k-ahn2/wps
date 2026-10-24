@@ -1081,8 +1081,11 @@ def avatar_handler(CONN_DB_CURSOR, callsign, CONN, avatar_object):
     
     avatar_last_updated = round(time.time())
 
-    avatar_update = { 
+    # avatar_ts is when the avatar was set, compared by the nightly user sync. avatar_last_updated
+    # is the clients' watermark, which the sync sets to local time when it brings in an avatar.
+    avatar_update = {
         "avatar_last_updated": avatar_last_updated,
+        "avatar_ts": avatar_last_updated,
         "avatar": avatar_object['a']
     }
 

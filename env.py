@@ -68,7 +68,8 @@ env_template = {
         "ackDelaySeconds": 30,
         "batchSize": 1,
         "bootstrapFromTs": None,
-        "activityRetentionDays": 7
+        "activityRetentionDays": 7,
+        "userSyncTime": "02:30"
     },
     "dashboard": {
         "enabled": True,

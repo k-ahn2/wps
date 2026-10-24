@@ -299,6 +299,7 @@ EXPORT_FIELD_NOTES = {
     "category": "data = a replicated change (post.insert, post.edit, post.emoji, msg.insert, msg.edit, msg.emoji, "
                 "user.update, and user.online from versions that still sent presence in the stream); "
                 "sync = control message (ack, digest, sync.request, seq_at.request, seq_at.response, online.request, online.response, presence); "
+                "users = nightly user sync (users.digest, users.avatar), on the <appSlug>-users queue; "
                 "system = local DAPPS polling failed/recovered.",
     "peer": "The other instance's DAPPS callsign (sender for in, destination for out).",
     "origin / seq": "The instance that originated the data event and its sequence number - together they identify "
@@ -548,7 +549,7 @@ __BASE_CSS__</style>
   <section class="view" id="view-activity">
     <div class="card">
       <div class="filters">
-        <select id="f-category"><option value="">All categories</option><option value="data">Data</option><option value="sync">Sync</option><option value="system">System</option></select>
+        <select id="f-category"><option value="">All categories</option><option value="data">Data</option><option value="sync">Sync</option><option value="users">Users</option><option value="system">System</option></select>
         <select id="f-direction"><option value="">Both directions</option><option value="in">Received</option><option value="out">Sent</option></select>
         <select id="f-status"><option value="">Any status</option></select>
         <select id="f-peer"><option value="">All peers</option></select>

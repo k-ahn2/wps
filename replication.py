@@ -183,9 +183,9 @@ def _decode_payload(payload):
 
 # --- DAPPS REST client --------------------------------------------------------------------
 
-def _dapps_submit(dest_callsign, payload_dict, stream_id=None, gap_timeout_seconds=None, ttl=None):
+def _dapps_submit(dest_callsign, payload_dict, stream_id=None, gap_timeout_seconds=None, ttl=None, app=None):
     body = {
-        "app": APP_SLUG,
+        "app": app or APP_SLUG,
         "destCallsign": dest_callsign,
         "payload": base64.b64encode(json.dumps(_to_wire(payload_dict), separators=(',', ':')).encode()).decode(),
     }
@@ -200,8 +200,8 @@ def _dapps_submit(dest_callsign, payload_dict, stream_id=None, gap_timeout_secon
     return resp.json()["id"]
 
 
-def _dapps_inbound():
-    resp = requests.get(f"{DAPPS_REST_URL}/AppApi/inbound/{APP_SLUG}", timeout=10)
+def _dapps_inbound(app=None):
+    resp = requests.get(f"{DAPPS_REST_URL}/AppApi/inbound/{app or APP_SLUG}", timeout=10)
     resp.raise_for_status()
     return resp.json()
 
@@ -212,8 +212,8 @@ def _sender_callsign(msg):
     return msg.get("originatorCallsign") or msg.get("sourceCallsign")
 
 
-def _dapps_ack(dapps_id):
-    resp = requests.post(f"{DAPPS_REST_URL}/AppApi/inbound/{APP_SLUG}/{dapps_id}/ack", timeout=10)
+def _dapps_ack(dapps_id, app=None):
+    resp = requests.post(f"{DAPPS_REST_URL}/AppApi/inbound/{app or APP_SLUG}/{dapps_id}/ack", timeout=10)
     resp.raise_for_status()
 
 
@@ -868,6 +868,11 @@ def _inbox_pump_pass():
         _flush_due_acks()
     except Exception as e:
         wps_logger("REPLICATION INBOX", ORIGIN, f"Tick error: {e}", "ERROR")
+    try:
+        _users_inbox_tick()
+        _flush_users_cascade()
+    except Exception as e:
+        wps_logger("REPLICATION USERS", ORIGIN, f"Tick error: {e}", "ERROR")
     fast = time.monotonic() < _inbox_fast_until
     time.sleep(INBOX_FAST_POLL_SECONDS if fast else INBOX_POLL_SECONDS)
 
@@ -909,6 +914,10 @@ def _record_inbound_error(msg, error):
     except Exception:
         envelope = None
     op = envelope.get("op") if isinstance(envelope, dict) else None
+    if op in _USERS_OPS:
+        _record("in", "users", op, "error", peer=_sender_callsign(msg),
+                detail=f"Not acked, DAPPS will redeliver: {error}", dapps_id=dapps_id, event=_users_event_for_log(envelope))
+        return
     _record("in", "sync" if op in _CONTROL_OPS else "data", op, "error", peer=_sender_callsign(msg),
             origin=envelope.get("origin") if isinstance(envelope, dict) else None,
             seq=envelope.get("seq") if isinstance(envelope, dict) and op not in _CONTROL_OPS else None,
@@ -1301,6 +1310,7 @@ def _reconcile_pass():
         _send_digest()
         _log_backlog()
         _prune_activity()
+        _start_user_sync()
     except Exception as e:
         wps_logger("REPLICATION RECONCILE", ORIGIN, f"Tick error: {e}", "ERROR")
     time.sleep(RECONCILE_INTERVAL_SECONDS)
@@ -2027,6 +2037,388 @@ def _apply_online_snapshot(conn, cur, origin, at, users):
     _presence_floor[origin] = max(_presence_floor.get(origin, 0), at)
 
     wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.response for {origin}: {len(online)} online, {len(gone)} cleared")
+
+
+# --- Nightly user sync: users, names, last seen times and avatars, state against state ------
+
+# The stream carries name changes as they happen and presence carries last seen times, but
+# neither can repair what it never delivered: a user.update or presence that was lost or
+# expired, a user created on one instance and never heard of on another, history skipped by
+# bootstrapFromTs. Avatars aren't in the stream at all. So once a night each instance sends the
+# peers it starts the sync with (the side of each link with the lower originCallsign) a
+# users.digest summarising every user. The receiver takes whatever is newer, creates users it
+# lacks, and replies with whatever it holds newer plus the avatars it wants (`want`); the
+# avatars follow, one per users.avatar message. Comparing state rather than replaying events
+# also covers anything that was never captured.
+#
+# Nothing applied here is captured into the stream. With relay on, a neighbour only hears of a
+# change through its own link, so whatever is taken from one neighbour is passed on straight
+# away to the others as a partial digest of just those callsigns: a change crosses the whole
+# tree in one night. It ends because only a newer value is ever taken.
+#
+# It travels on its own DAPPS queue: an older version never polls it, so can't stall on ops it
+# doesn't know, and a night's avatars never hold up the ordered stream.
+USERS_APP_SLUG = f"{APP_SLUG}-users"
+USER_SYNC_TIME = REPLICATION_CONFIG.get('userSyncTime', '02:30')  # local HH:MM; empty turns the sync off
+USER_SYNC_TTL_SECONDS = 86400  # anything that expires is covered by the next night's run
+# Changes taken from one neighbour are passed on once nothing more has changed for this long,
+# so a night's avatars go on as one digest rather than one each.
+USER_SYNC_CASCADE_SETTLE_SECONDS = 60
+_USERS_OPS = {"users.digest", "users.avatar"}
+
+_users_cascade = _kept('_users_cascade', dict)  # neighbour DAPPS callsign -> callsigns to pass on to it
+_users_cascade_due = _kept('_users_cascade_due', float)  # time.monotonic() after which they're sent
+
+# A digest entry, as built by db.dbGetUserSyncSummary
+_U_CALLSIGN, _U_NAME, _U_NAME_TS, _U_LAST_CONNECTED, _U_LAST_DISCONNECTED, _U_AVATAR_TS, _U_AVATAR_HASH = range(7)
+_NO_USER = [None, None, 0, 0, 0, 0, ""]
+
+
+def _users_summary(cur):
+    '''Every user here as a digest entry, keyed by upper-case callsign.'''
+    resp = db.dbGetUserSyncSummary(cur)
+    if resp["result"] == "failure":
+        raise RuntimeError(f"dbGetUserSyncSummary failed: {resp['error']}")
+    return {entry[_U_CALLSIGN].upper(): entry for entry in resp["data"]}
+
+
+def _valid_user_entry(entry):
+    return (isinstance(entry, list) and len(entry) == 7 and isinstance(entry[_U_CALLSIGN], str) and entry[_U_CALLSIGN]
+            and (entry[_U_NAME] is None or isinstance(entry[_U_NAME], str))
+            and all(isinstance(entry[i] or 0, (int, float)) for i in (_U_NAME_TS, _U_LAST_CONNECTED, _U_LAST_DISCONNECTED, _U_AVATAR_TS))
+            and isinstance(entry[_U_AVATAR_HASH] or "", str))
+
+
+def _name_key(entry):
+    # A placeholder name (none yet, or "-") loses to any real one, whatever its timestamp. A tie
+    # on timestamp goes to the greater name, so both sides pick the same one.
+    name = entry[_U_NAME]
+    return (0, 0, "") if name in (None, "", "-") else (1, entry[_U_NAME_TS] or 0, name)
+
+
+def _avatar_key(entry):
+    # A tie on timestamp goes to the greater hash, so both sides pick the same avatar
+    return (entry[_U_AVATAR_TS] or 0, entry[_U_AVATAR_HASH]) if entry[_U_AVATAR_HASH] else (0, "")
+
+
+def _user_entry_newer(mine, theirs):
+    '''Whether mine holds anything newer than theirs.'''
+    return (_name_key(mine) > _name_key(theirs)
+            or (mine[_U_LAST_CONNECTED] or 0) > (theirs[_U_LAST_CONNECTED] or 0)
+            or (mine[_U_LAST_DISCONNECTED] or 0) > (theirs[_U_LAST_DISCONNECTED] or 0)
+            or _avatar_key(mine) > _avatar_key(theirs))
+
+
+def _users_event_for_log(envelope):
+    '''The envelope as kept in the activity log: an avatar is replaced by its size.'''
+    if not isinstance(envelope, dict) or not isinstance(envelope.get("avatar"), str):
+        return envelope
+    return {**envelope, "avatar": f"<{len(envelope['avatar'])} bytes>"}
+
+
+def _describe_users(envelope):
+    op = envelope.get("op")
+    if op == "users.digest":
+        users = envelope.get("users")
+        want = envelope.get("want")
+        return (f"{len(users) if isinstance(users, list) else '?'} user(s)"
+                + (", changed callsigns only" if envelope.get("partial") else "")
+                + (", reply" if envelope.get("reply") else "")
+                + (f", wants avatars for {', '.join(want)}" if isinstance(want, list) and want else ""))
+    if op == "users.avatar":
+        avatar = envelope.get("avatar")
+        return f"Avatar for {envelope.get('callsign')} ({len(avatar) if isinstance(avatar, str) else '?'} bytes)"
+    return None
+
+
+def _submit_users(dest, payload):
+    '''_dapps_submit on the users queue, recording the attempt either way. Re-raises on failure.'''
+    try:
+        dapps_id = _dapps_submit(dest, payload, ttl=USER_SYNC_TTL_SECONDS, app=USERS_APP_SLUG)
+    except Exception as e:
+        _record("out", "users", payload["op"], "failed", peer=dest, detail=f"{_describe_users(payload)} - {e}",
+                event=_users_event_for_log(payload))
+        raise
+    _record("out", "users", payload["op"], "sent", peer=dest, detail=_describe_users(payload), dapps_id=dapps_id,
+            event=_users_event_for_log(payload))
+    return dapps_id
+
+
+def _user_sync_due_at():
+    '''Today's sync time in epoch ms once it has passed, else None. None as well when it's off.'''
+    if not USER_SYNC_TIME:
+        return None
+    try:
+        hour, minute = (int(part) for part in USER_SYNC_TIME.split(":"))
+    except ValueError:
+        wps_logger("REPLICATION USERS", ORIGIN, f"replication.userSyncTime {USER_SYNC_TIME!r} is not HH:MM, no user sync", "ERROR")
+        return None
+    now = time.localtime()
+    due = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, hour, minute, 0, 0, 0, -1))
+    return round(due * 1000) if time.time() >= due else None
+
+
+def _start_user_sync():
+    '''
+    Called every reconcile tick. Once today's userSyncTime has passed, sends a full digest to
+    each peer this instance starts the sync with and hasn't sent one to since. One that fails is
+    tried again next tick.
+    '''
+    due_at = _user_sync_due_at()
+    if due_at is None:
+        return
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT peer, last_started_at FROM replication_user_sync")
+        started = {peer.upper(): at for peer, at in cur.fetchall()}
+        entries = None
+        for origin, peer in _PEER_PAIRS:
+            # The peer with the lower originCallsign starts each link's sync, so it runs once a night, not twice
+            if ORIGIN.upper() >= origin.upper() or (started.get(peer.upper()) or 0) >= due_at:
+                continue
+            if entries is None:
+                entries = list(_users_summary(cur).values())
+            try:
+                _submit_users(peer, {"op": "users.digest", "by": DAPPS_CALLSIGN, "users": entries})
+            except Exception as e:
+                wps_logger("REPLICATION USERS", ORIGIN, f"Failed to send users.digest to {peer}, will retry: {e}", "ERROR")
+                continue
+            cur.execute("INSERT INTO replication_user_sync (peer, last_started_at) VALUES (?, ?) "
+                        "ON CONFLICT(peer) DO UPDATE SET last_started_at = excluded.last_started_at", (peer, _now_ms()))
+            conn.commit()
+            wps_logger("REPLICATION USERS", ORIGIN, f"Nightly user sync started with {peer}: {len(entries)} users")
+    finally:
+        conn.close()
+
+
+def _users_inbox_tick():
+    if not _dapps_poll_ok:
+        return  # the main queue's poll has just failed, and recorded why
+    try:
+        inbound = _dapps_inbound(USERS_APP_SLUG)
+    except Exception as e:
+        wps_logger("REPLICATION USERS", ORIGIN, f"Failed to poll DAPPS inbound: {e}", "ERROR")
+        return
+    for msg in inbound:
+        try:
+            _handle_users_inbound(msg)
+            _recorded_inbound_errors.pop(msg.get("id"), None)
+        except Exception as e:
+            # Not acked - DAPPS will redeliver next poll. Applying again is harmless, as only newer values are taken.
+            wps_logger("REPLICATION USERS", ORIGIN, f"Failed to handle inbound {msg.get('id')}: {e}", "ERROR")
+            _record_inbound_error(msg, e)
+
+
+def _handle_users_inbound(msg):
+    dapps_id = msg["id"]
+    envelope = _decode_payload(msg["payload"])
+    op = envelope.get("op")
+    # The sync runs only between neighbours, never relayed, so the sender (`by`, its DAPPS
+    # callsign) must be a configured peer, as must the DAPPS-stamped originator where there is one.
+    source = _sender_callsign(msg)
+    by = envelope.get("by")
+    if not _is_configured_peer(by) or (source is not None and not _is_configured_peer(source)):
+        wps_logger("REPLICATION USERS", ORIGIN, f"Rejecting message {dapps_id} from unconfigured peer (source={source}, by={by}, op={op})", "ERROR")
+        _record("in", "users", op, "rejected", peer=source, detail=f"Unconfigured peer (source={source}, by={by})",
+                dapps_id=dapps_id, event=_users_event_for_log(envelope))
+        _dapps_ack(dapps_id, USERS_APP_SLUG)
+        return
+
+    peer = _PEER_SPELLING.get(by.upper(), by)
+    _last_heard_from[peer.upper()] = time.monotonic()
+    _record("in", "users", op, "received", peer=peer, detail=_describe_users(envelope), dapps_id=dapps_id,
+            event=_users_event_for_log(envelope))
+
+    if op == "users.digest":
+        _handle_users_digest(envelope, peer)
+    elif op == "users.avatar":
+        _handle_users_avatar(envelope, peer)
+    else:
+        wps_logger("REPLICATION USERS", ORIGIN, f"Ignoring unknown op {op!r} from {peer}", "WARNING")
+    _dapps_ack(dapps_id, USERS_APP_SLUG)
+
+
+def _apply_user_entry(cur, entry, local):
+    '''
+    Takes whatever in a peer's digest entry is newer than local, this user's own entry (None if
+    the user is unknown here, when they're created). Returns what changed, for the activity log.
+    '''
+    callsign = entry[_U_CALLSIGN]
+    changes = []
+    if local is None:
+        # As for a user created by presence: created_by_replication makes their first connect
+        # here be handled as a new user's, and name_last_updated is never later than the last
+        # seen time, the clients' watermark
+        user = {
+            "callsign": callsign,
+            "name": entry[_U_NAME] or "-",
+            "name_last_updated": min(entry[_U_NAME_TS] or 0, max(entry[_U_LAST_CONNECTED] or 0, entry[_U_LAST_DISCONNECTED] or 0)),
+            "channel_subscriptions": env.get('autoSubscribeToChannelIds', []),
+            "created_by_replication": 1,
+        }
+        create_resp = db.dbCreateNewUser(cur, user)
+        if create_resp["result"] == "failure":
+            raise RuntimeError(f"dbCreateNewUser failed: {create_resp['error']}")
+        local = [callsign, user["name"], user["name_last_updated"], 0, 0, 0, ""]
+        changes.append("created")
+
+    update = {}
+    if _name_key(entry) > _name_key(local):
+        update["name"] = entry[_U_NAME]
+        update["name_last_updated"] = entry[_U_NAME_TS] or 0
+        changes.append(f"name {entry[_U_NAME]}")
+    if (entry[_U_LAST_CONNECTED] or 0) > (local[_U_LAST_CONNECTED] or 0):
+        update["last_connected"] = entry[_U_LAST_CONNECTED]
+    if (entry[_U_LAST_DISCONNECTED] or 0) > (local[_U_LAST_DISCONNECTED] or 0):
+        update["last_disconnected"] = entry[_U_LAST_DISCONNECTED]
+    # As in user.update: clients' watermark is the last seen time, so name_last_updated must
+    # never be later than it
+    if update.get("name_last_updated", 0) > max(update.get("last_connected", local[_U_LAST_CONNECTED] or 0),
+                                                 update.get("last_disconnected", local[_U_LAST_DISCONNECTED] or 0)):
+        update["last_connected"] = update["name_last_updated"]
+    if "last_connected" in update or "last_disconnected" in update:
+        changes.append("last seen")
+        # As in _apply_online_status - a last_connected would otherwise hide that the user has never connected here
+        if not local[_U_LAST_CONNECTED] and "created" not in changes:
+            update["created_by_replication"] = 1
+
+    if update:
+        update_resp = db.dbUserUpdate(cur, callsign, update)
+        if update_resp["result"] == "failure":
+            raise RuntimeError(f"dbUserUpdate failed: {update_resp['error']}")
+    return changes
+
+
+def _handle_users_digest(envelope, peer):
+    '''
+    Takes what's newer in a peer's digest, sends any avatars it wants, and - unless the digest
+    is itself a reply - replies with what's newer here and the avatars wanted from it. A reply
+    is answered only by a request for avatars, which is never answered with another digest.
+    '''
+    entries = envelope.get("users")
+    entries = [e for e in entries if _valid_user_entry(e)] if isinstance(entries, list) else []
+    want_from_us = envelope.get("want")
+    want_from_us = [c for c in want_from_us if isinstance(c, str)] if isinstance(want_from_us, list) else []
+
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    db.set_applying_remote(True)
+    try:
+        local = _users_summary(cur)
+        changed, applied, want = set(), [], []
+        for entry in entries:
+            mine = local.get(entry[_U_CALLSIGN].upper())
+            changes = _apply_user_entry(cur, entry, mine)
+            if changes:
+                changed.add(entry[_U_CALLSIGN])
+                applied.append(f"{entry[_U_CALLSIGN]} ({', '.join(changes)})")
+            if _avatar_key(entry) > _avatar_key(mine or _NO_USER):
+                want.append(entry[_U_CALLSIGN])
+
+        back = []
+        if not envelope.get("reply"):
+            # Against what was here before applying, so nothing just taken from the peer goes back
+            listed = {e[_U_CALLSIGN].upper(): e for e in entries}
+            back = [mine for key, mine in local.items()
+                    if (key in listed and _user_entry_newer(mine, listed[key]))
+                    or (key not in listed and not envelope.get("partial"))]
+
+        for callsign in want_from_us:
+            _send_avatar(cur, peer, callsign)
+    finally:
+        db.set_applying_remote(False)
+        conn.close()
+
+    _record("in", "users", "users.digest", "applied" if applied else "unchanged", peer=peer,
+            detail=(f"Took {', '.join(applied)}" if applied else "Nothing newer")
+                   + (f"; wants avatars for {', '.join(want)}" if want else "")
+                   + (f"; sent avatars for {', '.join(want_from_us)}" if want_from_us else ""))
+    if applied:
+        wps_logger("REPLICATION USERS", ORIGIN, f"users.digest from {peer}: took {', '.join(applied)}")
+    _queue_users_cascade(peer, changed)
+
+    if back or want:
+        _submit_users(peer, {"op": "users.digest", "by": DAPPS_CALLSIGN, "users": back, "want": want, "reply": True})
+
+
+def _send_avatar(cur, peer, callsign):
+    resp = db.dbUserSearch(cur, callsign)
+    if resp["result"] == "failure":
+        raise RuntimeError(f"dbUserSearch failed: {resp['error']}")
+    user = resp["data"]
+    if not user or not user.get("avatar"):
+        return
+    _submit_users(peer, {"op": "users.avatar", "by": DAPPS_CALLSIGN, "callsign": user["callsign"], "avatar": user["avatar"],
+                         "ts": user.get("avatar_ts") or user.get("avatar_last_updated") or 0})
+
+
+def _handle_users_avatar(envelope, peer):
+    callsign, avatar, ts = envelope.get("callsign"), envelope.get("avatar"), envelope.get("ts")
+    if not isinstance(callsign, str) or not isinstance(avatar, str) or not avatar or not isinstance(ts, (int, float)):
+        _record("in", "users", "users.avatar", "ignored", peer=peer, detail="Malformed users.avatar")
+        return
+
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    db.set_applying_remote(True)
+    try:
+        resp = db.dbUserSearch(cur, callsign)
+        if resp["result"] == "failure":
+            raise RuntimeError(f"dbUserSearch failed: {resp['error']}")
+        user = resp["data"]
+        if user is None:
+            # The digest that asked for it created the user, so this is a stray
+            _record("in", "users", "users.avatar", "ignored", peer=peer, detail=f"{callsign} is not a user here")
+            return
+        mine = (user.get("avatar_ts") or user.get("avatar_last_updated") or 0, db.avatarHash(user.get("avatar"))) if user.get("avatar") else (0, "")
+        if (ts, db.avatarHash(avatar)) <= mine:
+            _record("in", "users", "users.avatar", "stale", peer=peer, detail=f"Avatar for {callsign} is no newer than the one here")
+            return
+        # avatar_last_updated is the clients' watermark: local time, or a client that has
+        # already been sent avatars from after ts would never ask for this one
+        update_resp = db.dbUserUpdate(cur, callsign, {"avatar": avatar, "avatar_ts": ts, "avatar_last_updated": round(time.time())})
+        if update_resp["result"] == "failure":
+            raise RuntimeError(f"dbUserUpdate failed: {update_resp['error']}")
+    finally:
+        db.set_applying_remote(False)
+        conn.close()
+
+    _record("in", "users", "users.avatar", "applied", peer=peer, detail=f"Avatar for {callsign} ({len(avatar)} bytes)")
+    wps_logger("REPLICATION USERS", ORIGIN, f"Avatar for {callsign} taken from {peer}")
+    _queue_users_cascade(peer, {callsign})
+
+
+def _queue_users_cascade(source_peer, callsigns):
+    '''With relay on, queues changes taken from source_peer to be passed on to every other neighbour.'''
+    global _users_cascade_due
+    if not RELAY or not callsigns:
+        return
+    for peer in PEERS:
+        if peer.upper() != source_peer.upper():
+            _users_cascade.setdefault(peer, set()).update(callsigns)
+    _users_cascade_due = time.monotonic() + USER_SYNC_CASCADE_SETTLE_SECONDS
+
+
+def _flush_users_cascade():
+    global _users_cascade_due
+    if not _users_cascade or time.monotonic() < _users_cascade_due:
+        return
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    try:
+        local = _users_summary(cur)
+    finally:
+        conn.close()
+    for peer in list(_users_cascade):
+        entries = [local[c.upper()] for c in sorted(_users_cascade[peer]) if c.upper() in local]
+        try:
+            if entries:
+                _submit_users(peer, {"op": "users.digest", "by": DAPPS_CALLSIGN, "users": entries, "partial": True})
+            del _users_cascade[peer]
+        except Exception as e:
+            wps_logger("REPLICATION USERS", ORIGIN, f"Failed to pass user changes on to {peer}, will retry: {e}", "ERROR")
+            _users_cascade_due = time.monotonic() + USER_SYNC_CASCADE_SETTLE_SECONDS
 
 
 def _log_backlog():

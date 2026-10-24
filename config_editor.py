@@ -65,7 +65,7 @@ LIVE = {
     "replication.dappsRestUrl", "replication.streamTtlSeconds", "replication.outboxPollSeconds",
     "replication.inboxPollSeconds", "replication.inboxFastPollSeconds", "replication.inboxFastPollWindowSeconds",
     "replication.reconcileIntervalSeconds", "replication.ackDelaySeconds", "replication.batchSize",
-    "replication.activityRetentionDays",
+    "replication.activityRetentionDays", "replication.userSyncTime",
 }
 SCRIPT = {
     "events.enableBpqEvents": "bpq_queue_monitor.py - restart it to apply",
@@ -145,6 +145,7 @@ HELP = {
     "replication.batchSize": "Most events per DAPPS message. Leave at 1 until every peer understands batches.",
     "replication.bootstrapFromTs": "Epoch ms. Only for a brand-new instance joining an existing mesh; leave empty otherwise.",
     "replication.activityRetentionDays": "Days of history kept for the Replication dashboard.",
+    "replication.userSyncTime": "Local time (HH:MM) of the nightly user and avatar sync with each peer. Empty turns it off.",
     "dashboard.enabled": "Run this web dashboard. If you turn it off, turn it back on by editing env.json and running: sudo systemctl start wps-dashboard",
     "dashboard.host": "Listen address. 0.0.0.0 accepts connections on every interface; 127.0.0.1 only from this machine.",
     "dashboard.port": "Dashboard HTTP port.",

@@ -15,6 +15,7 @@
     6. [Acknowledge](#6-acknowledge)
     7. [Reconcile](#7-reconcile)
     8. [Relaying - tree topology](#8-relaying---tree-topology)
+    9. [Nightly user sync](#9-nightly-user-sync)
 6. [Data Model](#data-model)
 7. [Guarantees and Failure Behaviour](#guarantees-and-failure-behaviour)
 8. [Monitoring and Operations](#monitoring-and-operations)
@@ -84,7 +85,7 @@ Repeat on every BPQ node running a replicated WPS instance.
 
 ### 2. WPS on each node
 
-Add or edit the `replication` block in `env.json` (`env.py` adds it with defaults on first run after upgrading), by hand or on the [web dashboard's](/docs/installation/INSTALLATION.md#web-dashboard) Config page, then **restart WPS**. Identity and topology - `enabled`, `dappsCallsign`, `originCallsign`, `peers`, `relay`, `appSlug`, `bootstrapFromTs` - are acted on at startup and always need a restart. The rest (`dappsRestUrl`, `streamTtlSeconds`, the poll and reconcile intervals, `ackDelaySeconds`, `batchSize`, `activityRetentionDays`) also apply on a warm reload, from each pump's next pass. `dappsSysopPassword` is only read by `dapps-tools/dapps_queue.py`.
+Add or edit the `replication` block in `env.json` (`env.py` adds it with defaults on first run after upgrading), by hand or on the [web dashboard's](/docs/installation/INSTALLATION.md#web-dashboard) Config page, then **restart WPS**. Identity and topology - `enabled`, `dappsCallsign`, `originCallsign`, `peers`, `relay`, `appSlug`, `bootstrapFromTs` - are acted on at startup and always need a restart. The rest (`dappsRestUrl`, `streamTtlSeconds`, the poll and reconcile intervals, `ackDelaySeconds`, `batchSize`, `activityRetentionDays`, `userSyncTime`) also apply on a warm reload, from each pump's next pass. `dappsSysopPassword` is only read by `dapps-tools/dapps_queue.py`.
 
 ```json
 "replication": {
@@ -116,6 +117,7 @@ Add or edit the `replication` block in `env.json` (`env.py` adds it with default
 |`ackDelaySeconds`|Number|`30`|How long application acks are held so several can be combined into one - see [Acknowledge](#6-acknowledge)|
 |`bootstrapFromTs`|Number (epoch ms)|`null`|Set only on a brand-new instance joining an existing mesh, to skip replaying full history - see [Bringing up a new instance](#bringing-up-a-new-instance). Leave `null` for a normal instance|
 |`activityRetentionDays`|Number|`7`|How long rows are kept in `replication_activity`, the history behind the [dashboard](#dashboard). Pruned every reconcile tick|
+|`userSyncTime`|String|`02:30`|Local time (`HH:MM`) of the [nightly user sync](#9-nightly-user-sync). Checked every reconcile tick, so it starts up to `reconcileIntervalSeconds` later. Empty turns it off|
 
 Each peer needs the mirror-image configuration: its own `dappsCallsign`, and a `peers` list that includes yours. With `relay` off, replication is **full mesh** - every instance lists every other instance. With `relay` on, each instance lists only its neighbours in a tree - see [Relaying](#8-relaying---tree-topology).
 
@@ -142,7 +144,9 @@ On startup WPS prints one of:
 
 **Presence is not in the stream.** Who is online is current state, not history: only each user's latest status matters. Numbering it into `replication_log` would mean a new or lagging peer is sent every connect and disconnect ever made. So a change to a user's `is_online` (connect, last disconnect, and the reset of online users at startup) goes to each peer as a [`presence`](#presence) control message instead. A peer records it as `online_origin` (see [Apply](#5-apply)) and sends `uc` or `ud` with `or` set to the origin to all connected users, only when `online_origin` changes and the user isn't connected here.
 
-**Not replicated:** avatars, pairing state, channel subscriptions and paused channels, push tokens, `is_online`, `last_client_version`, notification bookkeeping, and `channels.json`. `is_online` and push details are properties of one node; keep `channels.json` identical by hand. A user record is created by the user's first connect on an instance, or by presence from a peer for a callsign not yet known there. `user.update` never creates users.
+**Not replicated:** pairing state, channel subscriptions and paused channels, push tokens, `is_online`, `last_client_version`, notification bookkeeping, and `channels.json`. `is_online` and push details are properties of one node; keep `channels.json` identical by hand. A user record is created by the user's first connect on an instance, by presence from a peer for a callsign not yet known there, or by the [nightly user sync](#9-nightly-user-sync). `user.update` never creates users.
+
+**Nightly, outside the stream:** users, names, last seen times and avatars are also compared with each peer once a night, which creates missing users and takes whatever is newer - see [Nightly user sync](#9-nightly-user-sync). It is the only way avatars reach other instances, so a new avatar takes up to a day.
 
 ## The Replication Event
 
@@ -432,6 +436,46 @@ How it works:
 
 To move from full mesh to a tree, upgrade every instance, set `relay: true` on every instance, cut each `peers` list down to its neighbours, and restart them all. An instance with `relay` off rejects relayed events as from an unconfigured peer.
 
+### 9. Nightly user sync
+
+The stream carries name changes as they happen and presence carries last seen times, but neither can repair what it never delivered: a `user.update` or `presence` that was lost or expired, a user created on one instance and never heard of on another, history skipped by `bootstrapFromTs`. Avatars aren't in the stream at all. So once a night each pair of neighbouring instances compares its users directly, state against state.
+
+It runs on its own DAPPS queue, `<appSlug>-users` (`wps-repl-users` by default), with a TTL of a day. An older version never polls that queue, so it can't stall on messages it doesn't understand, and a night's avatars never hold up the ordered stream. The sync simply doesn't happen with a peer that hasn't been upgraded.
+
+```mermaid
+sequenceDiagram
+    participant A as A (AAA)
+    participant B as B (BBB)
+    A->>B: users.digest {users: [every user]}
+    Note over B: takes what is newer, creates missing users
+    B->>A: users.digest {reply, users: [newer at B], want: [G1AAA]}
+    A->>B: users.avatar {callsign: G1AAA, avatar, ts}
+    Note over A: takes what is newer
+    A->>B: users.digest {reply, users: [], want: [G2CCC]} (only if A wants avatars)
+    B->>A: users.avatar {callsign: G2CCC, ...}
+```
+
+- **When.** Every reconcile tick checks whether today's `userSyncTime` has passed. On each link, the instance with the lower `originCallsign` starts the sync, so it runs once a night, not twice. `replication_user_sync` records when it last did so for each peer. A restart therefore neither repeats a night nor skips one: an instance started after `userSyncTime` runs straight away. A digest DAPPS refuses is retried next tick.
+- **The digest.** One entry per user: `[callsign, name, name_last_updated, last_connected, last_disconnected, avatar_ts, avatar hash]`, the hash being the first 8 hex digits of the avatar's SHA-1. About 50 bytes a user. DAPPS fragments a large digest.
+- **Newest wins**, field by field:
+    - **Name:** the later `name_last_updated`. A placeholder name (none, or `-`) loses to any real one.
+    - **Last connected and last disconnected:** each only moves forward.
+    - **Avatar:** the later `avatar_ts`.
+    - **Ties:** a tie on timestamp goes to the greater name or avatar hash, so both sides settle on the same value.
+    - **Watermark rule:** as with `user.update`, `last_connected` is moved up to `name_last_updated` if needed, so a name is never later than the last seen time clients use as their watermark.
+- **Missing users** are created as presence creates them, with default subscriptions and `created_by_replication`.
+- **Replies.** The receiver replies with every user it holds anything newer for, plus users the sender lacks, and `want`: the callsigns whose avatars it wants. A reply is answered only by sending the avatars it wants and, if needed, a `want` of its own, so the exchange always ends.
+- **Avatars** travel one per `users.avatar` message. The receiver checks the avatar is still newer than its own, then stores it with `avatar_ts` from the sender and `avatar_last_updated` set to local time. `avatar_last_updated` is the clients' avatar watermark (`lats`), so an avatar arriving a day late is still picked up. A local avatar change sets both to the same time.
+- **Not captured.** Nothing the sync applies goes into the stream.
+- **Relay.** With `relay` on, an instance hears of a change only through its own link. So whatever it takes from one neighbour is passed on to its other neighbours as a digest of just those callsigns (`partial`), once nothing more has arrived for 60 seconds. On a tree A - B - C, a change made on A reaches C the same night. It ends because only a newer value is ever taken. Without `relay` every pair compares directly and nothing is passed on.
+
+| `op` | Fields |
+| - | - |
+|`users.digest`|`by` (sender's DAPPS callsign), `users` (entries as above), `want` (callsigns whose avatars the sender wants), `reply` (answers a digest), `partial` (only the listed callsigns are compared, so a user missing from it isn't sent back)|
+|`users.avatar`|`by`, `callsign`, `avatar`, `ts` (its `avatar_ts`)|
+
+Messages are accepted only from configured peers: `by` and the DAPPS-stamped originator must both be in `peers`. Each run shows on the dashboard's activity log under the `users` category, with the changes taken in the `applied` row's detail.
+
 ## Data Model
 
 All replication tables live in `wps.db` and are created by `db.dbInit`.
@@ -446,8 +490,9 @@ All replication tables live in `wps.db` and are created by `db.dbInit`.
 |`replication_peer_ack`|Per configured peer: `peer_acked_seq` (highest of our events the peer confirmed applied), `submitted_seq` (highest handed to DAPPS for it), `awaiting_request` (a newly added peer that hasn't yet asked for our stream, so nothing is sent to it)|Startup, outbox pump, acknowledgements|
 |`replication_origin_cursor`|Per remote origin: `last_applied_seq`, the highest contiguous event applied|Inbox pump|
 |`replication_pending`|Events that arrived ahead of a gap, waiting for their predecessors|Inbox pump|
-|`replication_activity`|Observational history for the [dashboard](#dashboard): one row per data event sent or received and per control message, with direction, category (`data`/`sync`/`system`), peer, `origin`/`seq`, outcome and (for inbound rows) the full envelope. Nothing in the protocol reads it; pruned after `activityRetentionDays`|Outbox, inbox and reconcile pumps (`_record`)|
+|`replication_activity`|Observational history for the [dashboard](#dashboard): one row per data event sent or received and per control message, with direction, category (`data`/`sync`/`users`/`system`), peer, `origin`/`seq`, outcome and (for inbound rows) the full envelope. Nothing in the protocol reads it; pruned after `activityRetentionDays`|Outbox, inbox and reconcile pumps (`_record`)|
 |`replication_bootstrap_pending`|Origins a fresh instance has sent a `seq_at.request` to but not yet heard back from - only ever populated when `bootstrapFromTs` is set. While a row exists for an origin, normal digest/gap handling for it is withheld so it doesn't request full history from seq 0|Startup (`_start_bootstrap_if_configured`), inbox pump (`_handle_seq_at_response` deletes the row once resolved)|
+|`replication_user_sync`|Per peer this instance starts the [nightly user sync](#9-nightly-user-sync) with: `last_started_at`, when it last sent that peer its digest|Reconcile pump (`_start_user_sync`)|
 
 Also added: a unique index `idx_unique_post_cid_ts` on posts, so a replicated post can be inserted idempotently the way messages already were. If an existing database somehow holds duplicate `(cid, ts)` rows the index cannot be created; that is logged to `db.log` and WPS carries on without it.
 
@@ -479,7 +524,7 @@ The Replication part of WPS's [web dashboard](/docs/installation/INSTALLATION.md
 | Tab | Shows |
 | - | - |
 |Overview|Our latest `seq` and outbox backlog; per peer: health, how far they have acknowledged our stream, how far we have applied theirs (against the `latest_seq` in their last digest), buffered gaps, when we last heard from and sent to them; last-24h counts by direction/category/status; recent failures|
-|Activity log|Every data event received or sent and every sync message (`ack`, `digest`, `sync.request`, `seq_at.*`, `online.*`, `presence`) in both directions, plus local DAPPS going unreachable and recovering. Filter by category, direction, status, peer, problems only, or free text over content|
+|Activity log|Every data event received or sent and every sync message (`ack`, `digest`, `sync.request`, `seq_at.*`, `online.*`, `presence`) and nightly user sync message (`users.digest`, `users.avatar`) in both directions, plus local DAPPS going unreachable and recovering. Filter by category, direction, status, peer, problems only, or free text over content|
 |Received items|Each inbound data delivery and its outcome: `applied`, `buffered` (gap or bootstrap), `duplicate`, `stale` (older than what we hold), `ignored`, `rejected` (unconfigured sender) or `error` (apply failed, will retry)|
 |Sent items|Every event this instance originated (`replication_log`), with each peer's state: `queued` (not yet in DAPPS), `submitted`, `acked`|
 |Buffered|The current contents of `replication_pending`|
@@ -610,21 +655,22 @@ Anything that happened after the copy is then filled in by digests.
 
 - **No push notifications for replicated content.** A replicated post or message is applied and broadcast to online users only; the OneSignal push logic runs only for a user's own instance.
 - **Catch-up watermarks.** Clients fetch missed messages and posts on connect by the item's own `ts` being newer than what they last saw. A replicated item that reaches a peer *after* a roaming user connected there, with a `ts` older than that user's watermark, is not sent to them. Users who stay on one home instance are unaffected.
-- **Users are not created by replication**, and a name change for a user unknown on a peer is ignored there.
+- **Users are created by presence and the nightly user sync**, not by the stream: a name change for a user unknown on a peer is ignored there until the sync creates them.
+- **Avatars travel only nightly.** A new avatar takes up to a day to reach other instances, and a reconciled name or avatar carries no live push. The last-writer-wins compares timestamps from different instances' clocks, so keep them on NTP.
 - **A true collision is not merged.** If two instances ever held different content for the same post `(cid, ts)` or message `_id`, each keeps the first it saw and they would diverge. Timestamps are millisecond-precision and include the author, so this is theoretical.
 - **Bots.** Bot posts replicate like any post. If a bot runs on more than one replicated instance, each will post independently and each will receive the other's, so posts double up. Run a given bot on one instance only.
 - **Full mesh or tree.** Without `relay`, every instance must list every other in `peers`. With `relay`, the peer links must form a tree. There is no loop detection, so a loop works but costs repeated transmissions. In a tree each link is a single point of failure: the instances beyond it catch up when it returns. The dashboard lists relayed origins with what has been applied, but not per-neighbour forwarding progress.
 - **REST polling.** The inbox is polled rather than subscribed to, adding up to one poll interval of latency (`inboxFastPollSeconds` while active, `inboxPollSeconds` when quiet). DAPPS's MQTT interface could remove it.
 - **DAPPS authentication is not supported.** If you enable DAPPS's `auth-required` option, the REST calls here would need a bearer token, which is not sent.
 - **Retention.** See [Growth](#growth). `epoch` is not managed automatically.
-- **Not yet replicated:** avatars, pairing, subscriptions and pauses.
+- **Not yet replicated:** pairing, subscriptions and pauses.
 
 ## Code Map
 
 | File | What it holds |
 | - | - |
-|`db.py`|Replication tables (in `dbInit`), `_replicate_capture`, `_replicate_online_status` (hands presence to `replication.notify_presence`), `set_applying_remote`, `REPLICATED_USER_FIELDS`, and the capture calls inside `dbInsertPost`, `dbUpdatePost`, `dbInsertMessage`, `dbUpdateMessage`, `dbUserUpdate`|
-|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); presence (`notify_presence`, `_presence_pump_tick`, `_handle_presence`, `_check_digest_presence`) and the presence snapshot (`request_online_users`, `_handle_online_request`, `_handle_online_response`); relaying (`_relay_pump_tick`, `_log_relayed`, `_next_hop`, `_learn_route`, `_bootstrap_new_origin`); activity recording for the dashboard (`_record`, `_submit_control`, `_prune_activity`); `start()`|
+|`db.py`|Replication tables (in `dbInit`), `_replicate_capture`, `_replicate_online_status` (hands presence to `replication.notify_presence`), `set_applying_remote`, `REPLICATED_USER_FIELDS`, and the capture calls inside `dbInsertPost`, `dbUpdatePost`, `dbInsertMessage`, `dbUpdateMessage`, `dbUserUpdate`; `dbGetUserSyncSummary` and `avatarHash` for the nightly user sync|
+|`replication.py`|The DAPPS REST client; the outbox, inbox and reconcile pumps; `_apply_and_broadcast`; the `bootstrapFromTs` handshake (`_start_bootstrap_if_configured`, `_retry_bootstrap_pending`, `_handle_seq_at_request`, `_handle_seq_at_response`, `_fill_gap_to_pending`); presence (`notify_presence`, `_presence_pump_tick`, `_handle_presence`, `_check_digest_presence`) and the presence snapshot (`request_online_users`, `_handle_online_request`, `_handle_online_response`); relaying (`_relay_pump_tick`, `_log_relayed`, `_next_hop`, `_learn_route`, `_bootstrap_new_origin`); the nightly user sync (`_start_user_sync`, `_users_inbox_tick`, `_handle_users_digest`, `_handle_users_avatar`, `_flush_users_cascade`); activity recording for the dashboard (`_record`, `_submit_control`, `_prune_activity`); `start()`|
 |`replication_dashboard.py`|The Replication dashboard: JSON API over the replication tables plus its page, served by `dashboard.py`; also runnable standalone|
 |`wps.py`|Calls `replication.start()` at boot, after `db.dbInit`, and `replication.request_online_users()` after clearing `online_origin`|
 |`env.py`|Default `replication` block added to `env.json`|
