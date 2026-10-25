@@ -1,6 +1,8 @@
 import sqlite3, json, time, sys, hashlib
 import datetime
 import threading
+import traceback
+import weakref
 from logger import *
 
 # Environment Variables. db.py's settings - the database file, and whether and as whom to capture
@@ -119,11 +121,110 @@ def get_db_connection():
     modest write volume the default could leave wps.db untouched for days - so anything that
     copies just wps.db would silently miss recent writes. The setting is per-connection, but
     the WAL is shared, so any connection opened here triggers the checkpoint when it commits.
+
+    Every connection is a TrackedConnection, so dbConnectionWatchdog can name the holder of a
+    long write transaction.
     '''
-    conn = sqlite3.connect(DB_FILENAME)
+    conn = sqlite3.connect(DB_FILENAME, timeout=DB_BUSY_TIMEOUT_SECONDS, factory=TrackedConnection)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA wal_autocheckpoint=100")
+    with _open_connections_lock:
+        _open_connections.add(conn)
     return conn
+
+# --- Connection diagnostics ---------------------------------------------------------------
+#
+# SQLite allows one writer at a time. A connection that starts a write and doesn't commit holds
+# the lock, and every other writer waits up to DB_BUSY_TIMEOUT_SECONDS, then fails with
+# "database is locked". dbConnectionWatchdog, run every second by wps.py, logs to wps.log any
+# connection holding a write transaction for LONG_TRANSACTION_SECONDS, naming where it was
+# opened and what that thread is doing now, and reports hourly how many connections are open
+# and who opened them, so a leak shows.
+
+# Python's default is 5 seconds
+DB_BUSY_TIMEOUT_SECONDS = 30
+LONG_TRANSACTION_SECONDS = 2
+CONNECTION_REPORT_SECONDS = 3600
+
+class TrackedConnection(sqlite3.Connection):
+    '''
+    A sqlite3 connection that remembers the thread and code that opened it.
+    '''
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        thread = threading.current_thread()
+        self.opened_thread = thread.name
+        self.opened_thread_id = thread.ident
+        self.opened_by = _connection_opener()
+        self.opened_at = time.time()
+        self.transaction_since = None
+        self.transaction_reported = False
+        self.idle_changes = 0
+
+def _connection_opener():
+    '''The code that called get_db_connection, innermost first: up to three frames.'''
+    frames = [f for f in traceback.extract_stack()
+              if f.name not in ('_connection_opener', '__init__', 'get_db_connection')]
+    return " <- ".join(f"{f.filename.rsplit('/', 1)[-1]}:{f.lineno} {f.name}" for f in reversed(frames[-3:]))
+
+# Kept across a warm reload, so connections opened before it are still watched
+_open_connections = globals().get('_open_connections') or weakref.WeakSet()
+_open_connections_lock = globals().get('_open_connections_lock') or threading.Lock()
+_last_connection_report = globals().get('_last_connection_report', 0.0)
+
+def dbConnectionWatchdog():
+    '''
+    Logs, once each, a connection that has held a write transaction for LONG_TRANSACTION_SECONDS
+    and how long it held it in all. Every CONNECTION_REPORT_SECONDS, logs the open connections
+    grouped by opener. in_transaction and total_changes are read from this thread, which is
+    safe: they check the connection is open, not which thread is using it.
+    '''
+    global _last_connection_report
+    now = time.time()
+    with _open_connections_lock:
+        connections = list(_open_connections)
+
+    frames = None
+    for conn in connections:
+        try:
+            in_transaction = conn.in_transaction
+            changes = conn.total_changes
+        except sqlite3.ProgrammingError:
+            continue  # closed
+        since = getattr(conn, 'transaction_since', None)
+        if not in_transaction:
+            conn.idle_changes = changes
+            if getattr(conn, 'transaction_reported', False):
+                wps_logger("DB WATCHDOG", "WPS", f"Write transaction released after {now - since:.0f}s, opened by "
+                           f"{conn.opened_thread}: {conn.opened_by}", "ERROR")
+            conn.transaction_since = None
+            conn.transaction_reported = False
+        elif changes == getattr(conn, 'idle_changes', 0):
+            # Python opens the transaction just before a write, so a writer still waiting for the
+            # lock is in one too. Only a connection that has written something holds the lock.
+            pass
+        elif since is None:
+            conn.transaction_since = now
+        elif not conn.transaction_reported and now - since >= LONG_TRANSACTION_SECONDS:
+            conn.transaction_reported = True
+            if frames is None:
+                frames = sys._current_frames()
+            frame = frames.get(conn.opened_thread_id)
+            doing = ("".join(traceback.format_stack(frame, limit=8)).rstrip() if frame
+                     else "its thread has ended, so the connection is no longer in use")
+            wps_logger("DB WATCHDOG", "WPS", f"Write transaction held for {now - since:.0f}s, blocking other writers. "
+                       f"Opened by {conn.opened_thread}: {conn.opened_by}. That thread is now at:\n{doing}", "ERROR")
+
+    if now - _last_connection_report >= CONNECTION_REPORT_SECONDS:
+        _last_connection_report = now
+        openers = {}
+        for conn in connections:
+            key = f"{getattr(conn, 'opened_thread', '?')}: {getattr(conn, 'opened_by', '?')}"
+            count, oldest = openers.get(key, (0, now))
+            openers[key] = (count + 1, min(oldest, getattr(conn, 'opened_at', now)))
+        lines = [f"{count} x {key} (oldest {(now - oldest) / 60:.0f} min)"
+                 for key, (count, oldest) in sorted(openers.items(), key=lambda item: -item[1][0])]
+        wps_logger("DB WATCHDOG", "WPS", f"{len(connections)} database connections open:\n" + "\n".join(lines))
 
 # wal_autocheckpoint is triggered by WAL size, not time, so a few connects and disconnects can
 # sit in wps.db-wal for hours. wps.py runs dbWalCheckpoint this often as well, so wps.db is

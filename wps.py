@@ -241,6 +241,18 @@ def wal_checkpoint_loop():
         time.sleep(db.WAL_CHECKPOINT_SECONDS)
         db.dbWalCheckpoint(cursor)
 
+def connection_watchdog_loop():
+    '''
+    Process-lifetime thread. Looks up db.dbConnectionWatchdog on every pass, so a warm reload of
+    db.py is picked up without restarting the thread.
+    '''
+    while True:
+        time.sleep(1)
+        try:
+            db.dbConnectionWatchdog()
+        except Exception as e:
+            console_log(f"Connection watchdog error: {e}", "ERROR")
+
 def load_bots_config():
     '''
     Reads bots/bots.json - keyed by bot name (the Python module under the bots/ package to
@@ -478,6 +490,9 @@ def startup_and_listen():
 
     # Keep wps.db itself current, not just wps.db plus wps.db-wal (see db.WAL_CHECKPOINT_SECONDS)
     threading.Thread(target=wal_checkpoint_loop, daemon=True, name='wal_checkpoint').start()
+
+    # Name whoever holds a long write transaction ("database is locked") - see db.dbConnectionWatchdog
+    threading.Thread(target=connection_watchdog_loop, daemon=True, name='connection_watchdog').start()
 
     # Start instance-to-instance replication over DAPPS (outbox/inbox/reconcile pumps).
     # No-ops (loudly) if replication.enabled isn't set in env.json. Process-lifetime threads,
