@@ -1727,6 +1727,7 @@ def _bootstrap_new_origin(cur, conn, origin):
 _presence_queue = _kept('_presence_queue', dict)    # peer DAPPS callsign -> {(origin, callsign): status} waiting to be sent
 _presence_retry_at = _kept('_presence_retry_at', dict)  # peer DAPPS callsign -> time.monotonic() before which a failed send isn't retried
 _presence_lock = _kept('_presence_lock', threading.Lock)
+_presence_send_lock = _kept('_presence_send_lock', threading.Lock)  # held by whoever is sending the queue: the pump, or flush_presence at shutdown
 _last_presence_at = _kept('_last_presence_at', int)  # the latest `at` this instance has stamped
 _presence_at = _kept('_presence_at', dict)          # (origin, callsign) -> `at` of the newest status applied for that user there
 _presence_floor = _kept('_presence_floor', dict)    # origin -> `at` of the newest snapshot of origin applied
@@ -1771,14 +1772,33 @@ def _queue_presence(peer, origin, statuses):
                 queued[key] = status
 
 
-def _presence_pump_tick():
+def _presence_pump_tick(ignore_backoff=False):
     '''
     Sends each peer what is queued for it: one `presence` message per origin, holding each
-    user's latest status. A failed send is queued again and retried after _PRESENCE_RETRY_SECONDS.
+    user's latest status. A failed send is queued again and retried after _PRESENCE_RETRY_SECONDS,
+    unless ignore_backoff (flush_presence), which sends to every peer now.
     '''
+    with _presence_send_lock:
+        _presence_send(ignore_backoff)
+
+
+def flush_presence():
+    '''
+    Called once from wps.py at shutdown, after every connection has been closed: sends peers
+    the offline statuses close_connection has just queued, now. Left to the outbox pump they
+    would be lost - it is a daemon thread, so it dies with the process, and its pass submits
+    the outbox and relay before presence. Waits for a send the pump already has in hand.
+    '''
+    if not ENABLED or not DAPPS_CALLSIGN or not PEERS:
+        return
+    _presence_pump_tick(ignore_backoff=True)
+
+
+def _presence_send(ignore_backoff):
     now = time.monotonic()
     with _presence_lock:
-        taken = {peer: queued for peer, queued in _presence_queue.items() if queued and _presence_retry_at.get(peer, 0) <= now}
+        taken = {peer: queued for peer, queued in _presence_queue.items()
+                 if queued and (ignore_backoff or _presence_retry_at.get(peer, 0) <= now)}
         for peer in taken:
             _presence_queue[peer] = {}
     for peer, queued in taken.items():

@@ -189,6 +189,16 @@ def reload_signal_handler(signum, frame):
     console_log("SIGHUP received, warm-reloading env.json and code")
     threading.Thread(target=reload_code, daemon=True, name='code_reload_signal').start()
 
+def stop_signal_handler(signum, frame):
+    '''
+    SIGTERM handler: stops WPS as Ctrl+C (SIGINT, the unit's KillSignal) does, so a plain
+    `kill` still marks users offline and tells peers before exiting.
+    '''
+    raise KeyboardInterrupt
+
+# How long shutdown waits for session threads to mark their users offline before telling peers
+SHUTDOWN_CLOSE_WAIT_SECONDS = 20
+
 def code_reload_key_listener():
     '''
     Background thread: watches the terminal for the 'r' key (no Enter needed) and warm-
@@ -519,6 +529,7 @@ def startup_and_listen():
                 console_log(f"ERROR: failed to load bot '{bot_name}': {bot_init_e}", "ERROR")
 
     signal.signal(signal.SIGHUP, reload_signal_handler)
+    signal.signal(signal.SIGTERM, stop_signal_handler)
     console_log(f"Send SIGHUP (e.g. 'systemctl reload wps') to warm-reload env.json, db and processing code{' and bots' if BOTS else ''} without disconnecting users")
 
     if sys.stdin.isatty():
@@ -560,18 +571,32 @@ def startup_and_listen():
             ALL_THREADS.append(t)
 
     except KeyboardInterrupt:
-        wps_logger("CONNECTION HANDLER", "-----", "Stopped by Ctrl+C")
-        console_log("Stopped by Ctrl+C, closing down WPS")
+        wps_logger("CONNECTION HANDLER", "-----", "Stopped by Ctrl+C or stop signal")
+        console_log("Stopped, closing down WPS")
 
         if S:
             wps_logger("CONNECTION HANDLER", "-----", "Closing TCP socket listener")
             console_log("Closing TCP socket listener")
             S.close()
 
-        while (len(CONNECTIONS) > 0):
-            wps_logger("CONNECTION HANDLER", "-----", f"Closing connection for {CONNECTIONS[0]['callsign']}")
-            CONNECTIONS[0]['socket'].shutdown(socket.SHUT_RDWR)
-            time.sleep(2)
+        # Each session thread sees its socket close and runs close_connection, which marks the
+        # user offline, tells the other connected users and queues the offline status for peers
+        for C in connections_snapshot():
+            wps_logger("CONNECTION HANDLER", "-----", f"Closing connection for {C['callsign']}")
+            try:
+                C['socket'].shutdown(socket.SHUT_RDWR)
+            except Exception as e:
+                wps_logger("CONNECTION HANDLER", "-----", f"Socket shutdown exception {e} happened for {C['callsign']}")
+
+        shutdown_deadline = time.monotonic() + SHUTDOWN_CLOSE_WAIT_SECONDS
+        while len(CONNECTIONS) > 0 and time.monotonic() < shutdown_deadline:
+            time.sleep(0.2)
+        if len(CONNECTIONS) > 0:
+            wps_logger("CONNECTION HANDLER", "-----", f"Connections still open after {SHUTDOWN_CLOSE_WAIT_SECONDS}s: {[c['callsign'] for c in connections_snapshot()]}", "WARNING")
+
+        # Send peers those offline statuses now - the outbox pump would die with the process first
+        console_log("Sending offline status to replication peers")
+        replication.flush_presence()
 
         wps_logger("CONNECTION HANDLER", "-----", "WPS Exited")
         console_log("WPS Exited")
