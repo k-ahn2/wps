@@ -1461,9 +1461,9 @@ def avatarHash(avatar):
 def dbGetUserSyncSummary(CONN_DB_CURSOR):
     '''
     Every user as compared by the nightly user sync (replication._users_summary):
-    [callsign, name, name_last_updated, last_connected, last_disconnected, avatar_ts, avatar hash].
-    avatar_ts is when the avatar was set at the instance it was set on - avatar_last_updated
-    for records from before avatar_ts existed. Missing numbers are 0.
+    [callsign, name, name_last_updated, last_connected, last_disconnected, avatar_last_updated, avatar hash].
+    avatar_last_updated is when the avatar was set, at whichever instance it was set on - the
+    sync carries it unchanged. Missing numbers are 0.
     '''
     try:
         select_query = """
@@ -1473,7 +1473,7 @@ def dbGetUserSyncSummary(CONN_DB_CURSOR):
             COALESCE(json_extract(user, '$.name_last_updated'), 0),
             COALESCE(json_extract(user, '$.last_connected'), json_extract(user, '$.lastseen'), 0),
             COALESCE(json_extract(user, '$.last_disconnected'), json_extract(user, '$.lastseen'), 0),
-            COALESCE(json_extract(user, '$.avatar_ts'), json_extract(user, '$.avatar_last_updated'), 0),
+            COALESCE(json_extract(user, '$.avatar_last_updated'), 0),
             json_extract(user, '$.avatar')
         FROM users
         WHERE json_extract(user, '$.callsign') IS NOT NULL

@@ -456,23 +456,23 @@ sequenceDiagram
 ```
 
 - **When.** Every reconcile tick checks whether today's `userSyncTime` has passed. On each link, the instance with the lower `originCallsign` starts the sync, so it runs once a night, not twice. `replication_user_sync` records when it last did so for each peer. A restart therefore neither repeats a night nor skips one: an instance started after `userSyncTime` runs straight away. A digest DAPPS refuses is retried next tick.
-- **The digest.** One entry per user: `[callsign, name, name_last_updated, last_connected, last_disconnected, avatar_ts, avatar hash]`, the hash being the first 8 hex digits of the avatar's SHA-1. About 50 bytes a user. DAPPS fragments a large digest.
+- **The digest.** One entry per user: `[callsign, name, name_last_updated, last_connected, last_disconnected, avatar_last_updated, avatar hash]`, the hash being the first 8 hex digits of the avatar's SHA-1. About 50 bytes a user. DAPPS fragments a large digest.
 - **Newest wins**, field by field:
     - **Name:** the later `name_last_updated`. A placeholder name (none, or `-`) loses to any real one.
     - **Last connected and last disconnected:** each only moves forward.
-    - **Avatar:** the later `avatar_ts`.
+    - **Avatar:** the later `avatar_last_updated`.
     - **Ties:** a tie on timestamp goes to the greater name or avatar hash, so both sides settle on the same value.
     - **Watermark rule:** as with `user.update`, `last_connected` is moved up to `name_last_updated` if needed, so a name is never later than the last seen time clients use as their watermark.
 - **Missing users** are created as presence creates them, with default subscriptions and `created_by_replication`.
 - **Replies.** The receiver replies with every user it holds anything newer for, plus users the sender lacks, and `want`: the callsigns whose avatars it wants. A reply is answered only by sending the avatars it wants and, if needed, a `want` of its own, so the exchange always ends.
-- **Avatars** travel one per `users.avatar` message. The receiver checks the avatar is still newer than its own, then stores it with `avatar_ts` from the sender and `avatar_last_updated` set to local time. `avatar_last_updated` is the clients' avatar watermark (`lats`), so an avatar arriving a day late is still picked up. A local avatar change sets both to the same time.
+- **Avatars** travel one per `users.avatar` message. The receiver checks the avatar is still newer than its own, then stores it with the sender's `avatar_last_updated`: the time it was set on the instance it was set on, unchanged by every hop. `avatar_last_updated` is the clients' avatar watermark (`lats`), so a client is offered the same avatars as new whichever instance it connects to. An avatar arriving after a client's watermark has passed its time isn't offered to that client until it next changes.
 - **Not captured.** Nothing the sync applies goes into the stream.
 - **Relay.** With `relay` on, an instance hears of a change only through its own link. So whatever it takes from one neighbour is passed on to its other neighbours as a digest of just those callsigns (`partial`), once nothing more has arrived for 60 seconds. On a tree A - B - C, a change made on A reaches C the same night. It ends because only a newer value is ever taken. Without `relay` every pair compares directly and nothing is passed on.
 
 | `op` | Fields |
 | - | - |
 |`users.digest`|`by` (sender's DAPPS callsign), `users` (entries as above), `want` (callsigns whose avatars the sender wants), `reply` (answers a digest), `partial` (only the listed callsigns are compared, so a user missing from it isn't sent back)|
-|`users.avatar`|`by`, `callsign`, `avatar`, `ts` (its `avatar_ts`)|
+|`users.avatar`|`by`, `callsign`, `avatar`, `ts` (its `avatar_last_updated`)|
 
 Messages are accepted only from configured peers: `by` and the DAPPS-stamped originator must both be in `peers`. Each run shows on the dashboard's activity log under the `users` category, with the changes taken in the `applied` row's detail.
 

@@ -2378,7 +2378,7 @@ def _send_avatar(cur, peer, callsign):
     if not user or not user.get("avatar"):
         return
     _submit_users(peer, {"op": "users.avatar", "by": DAPPS_CALLSIGN, "callsign": user["callsign"], "avatar": user["avatar"],
-                         "ts": user.get("avatar_ts") or user.get("avatar_last_updated") or 0})
+                         "ts": user.get("avatar_last_updated") or 0})
 
 
 def _handle_users_avatar(envelope, peer):
@@ -2399,13 +2399,13 @@ def _handle_users_avatar(envelope, peer):
             # The digest that asked for it created the user, so this is a stray
             _record("in", "users", "users.avatar", "ignored", peer=peer, detail=f"{callsign} is not a user here")
             return
-        mine = (user.get("avatar_ts") or user.get("avatar_last_updated") or 0, db.avatarHash(user.get("avatar"))) if user.get("avatar") else (0, "")
+        mine = (user.get("avatar_last_updated") or 0, db.avatarHash(user.get("avatar"))) if user.get("avatar") else (0, "")
         if (ts, db.avatarHash(avatar)) <= mine:
             _record("in", "users", "users.avatar", "stale", peer=peer, detail=f"Avatar for {callsign} is no newer than the one here")
             return
-        # avatar_last_updated is the clients' watermark: local time, or a client that has
-        # already been sent avatars from after ts would never ask for this one
-        update_resp = db.dbUserUpdate(cur, callsign, {"avatar": avatar, "avatar_ts": ts, "avatar_last_updated": round(time.time())})
+        # avatar_last_updated is the clients' watermark, and keeps the time the avatar was set
+        # at origin, so every instance offers a client the same avatars as new
+        update_resp = db.dbUserUpdate(cur, callsign, {"avatar": avatar, "avatar_last_updated": ts})
         if update_resp["result"] == "failure":
             raise RuntimeError(f"dbUserUpdate failed: {update_resp['error']}")
     finally:
