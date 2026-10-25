@@ -841,6 +841,13 @@ def _drain_pending(conn, cur, origin):
         row = cur.fetchone()
         last_applied = row[0] if row else 0
 
+        # Anything buffered at or below the cursor is already applied: left by a bootstrap that
+        # seeded past it, a duplicate delivery, or a stop between an apply and its DELETE.
+        cur.execute("DELETE FROM replication_pending WHERE origin = ? AND seq <= ?", (origin, last_applied))
+        if cur.rowcount:
+            conn.commit()
+            wps_logger("REPLICATION INBOX", ORIGIN, f"Dropped {cur.rowcount} buffered event(s) of {origin} at or below applied seq {last_applied}")
+
         cur.execute("SELECT seq, event FROM replication_pending WHERE origin = ? AND seq = ?", (origin, last_applied + 1))
         row = cur.fetchone()
         if row is None:
@@ -1308,6 +1315,7 @@ def _reconcile_pass():
         _retry_bootstrap_pending()
         _send_online_requests()
         _send_digest()
+        _sweep_pending()
         _log_backlog()
         _prune_activity()
         _start_user_sync()
@@ -2450,6 +2458,24 @@ def _log_backlog():
     pending_gaps = cur.fetchone()[0]
     if outbox_backlog or pending_gaps:
         wps_logger("REPLICATION RECONCILE", ORIGIN, f"Backlog: {outbox_backlog} outbox row(s) awaiting peer ack, {pending_gaps} gap(s) buffered pending resend")
+
+
+def _sweep_pending():
+    '''
+    Each reconcile tick: drains every origin with buffered events, dropping any already applied,
+    and re-requests the gap below what's left. Otherwise a buffer only drains when that origin's
+    next event arrives, so a quiet origin's could sit there indefinitely.
+    '''
+    conn = db.get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT p.origin FROM replication_pending p "
+                "WHERE NOT EXISTS (SELECT 1 FROM replication_bootstrap_pending b WHERE b.origin = p.origin)")
+    for (origin,) in cur.fetchall():
+        try:
+            _drain_pending(conn, cur, origin)
+            _fill_gap_to_pending(origin)
+        except Exception as e:
+            wps_logger("REPLICATION RECONCILE", ORIGIN, f"Sweeping buffered events of {origin} failed: {e}", "ERROR")
 
 
 # --- Startup -------------------------------------------------------------------------------
