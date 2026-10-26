@@ -329,59 +329,84 @@ def _outbox_pump_pass():
 def _outbox_pump_tick():
     conn = db.get_db_connection()
     cur = conn.cursor()
+    try:
+        # Each peer has its own submitted_seq cursor, so a peer that is down (or slow to accept)
+        # stalls only its own submissions - never another peer's - and events are always handed
+        # to DAPPS for a given peer in seq order. On the first failure for a peer we stop and
+        # retry from that same seq next tick.
+        for peer in PEERS:
+            _flush_submit(cur, conn, peer)
+            cur.execute("SELECT submitted_seq, awaiting_request FROM replication_peer_ack WHERE peer = ?", (peer,))
+            row = cur.fetchone()
+            if row and row[1]:
+                continue  # a new peer that hasn't yet said where it wants our stream from
+            submitted_seq = row[0] if row else 0
 
-    # Each peer has its own submitted_seq cursor, so a peer that is down (or slow to accept)
-    # stalls only its own submissions - never another peer's - and events are always handed
-    # to DAPPS for a given peer in seq order. On the first failure for a peer we stop and
-    # retry from that same seq next tick.
-    for peer in PEERS:
-        cur.execute("SELECT submitted_seq, awaiting_request FROM replication_peer_ack WHERE peer = ?", (peer,))
-        row = cur.fetchone()
-        if row and row[1]:
-            continue  # a new peer that hasn't yet said where it wants our stream from
-        submitted_seq = row[0] if row else 0
+            cur.execute(
+                "SELECT o.seq, l.event, o.dapps_ids FROM replication_outbox o "
+                "JOIN replication_log l ON l.origin = ? AND l.seq = o.seq "
+                "WHERE o.seq > ? ORDER BY o.seq ASC LIMIT ?",
+                (ORIGIN, submitted_seq, max(50, BATCH_SIZE))
+            )
+            rows = [(seq, json.loads(event_json), dapps_ids_json) for seq, event_json, dapps_ids_json in cur.fetchall()]
+            for chunk in _batches(rows):
+                envelopes = [envelope for _, envelope, _ in chunk]
+                first_seq, last_seq = chunk[0][0], chunk[-1][0]
+                label = _events_label(ORIGIN, first_seq, last_seq)
+                # Any ack held for this peer rides along instead of costing its own DAPPS message
+                # later. Added per submission only - replication_log keeps the envelope without it.
+                carried = _take_held_acks(peer)
+                payload = _events_payload(envelopes, {origin: held_seq for origin, (held_seq, _) in carried.items()})
+                try:
+                    dapps_id = _dapps_submit(peer, payload, stream_id=_stream_id_for(ORIGIN, envelopes[0]["epoch"]), gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS)
+                except Exception as e:
+                    _restore_held_acks(carried)
+                    wps_logger("REPLICATION OUTBOX", ORIGIN, f"Submit {label} to {peer} failed, will retry: {e}", "ERROR")
+                    if _last_outbox_failure.get(peer) != first_seq:
+                        _last_outbox_failure[peer] = first_seq
+                        _record("out", "data", envelopes[0].get("op"), "failed", peer=peer, origin=ORIGIN, seq=first_seq, detail=f"Submit to DAPPS failed, retrying every tick: {e}")
+                    break
 
-        cur.execute(
-            "SELECT o.seq, l.event, o.dapps_ids FROM replication_outbox o "
-            "JOIN replication_log l ON l.origin = ? AND l.seq = o.seq "
-            "WHERE o.seq > ? ORDER BY o.seq ASC LIMIT ?",
-            (ORIGIN, submitted_seq, max(50, BATCH_SIZE))
-        )
-        rows = [(seq, json.loads(event_json), dapps_ids_json) for seq, event_json, dapps_ids_json in cur.fetchall()]
-        for chunk in _batches(rows):
-            envelopes = [envelope for _, envelope, _ in chunk]
-            first_seq, last_seq = chunk[0][0], chunk[-1][0]
-            label = _events_label(ORIGIN, first_seq, last_seq)
-            # Any ack held for this peer rides along instead of costing its own DAPPS message
-            # later. Added per submission only - replication_log keeps the envelope without it.
-            carried = _take_held_acks(peer)
-            payload = _events_payload(envelopes, {origin: held_seq for origin, (held_seq, _) in carried.items()})
-            try:
-                dapps_id = _dapps_submit(peer, payload, stream_id=_stream_id_for(ORIGIN, envelopes[0]["epoch"]), gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS)
-            except Exception as e:
-                _restore_held_acks(carried)
-                wps_logger("REPLICATION OUTBOX", ORIGIN, f"Submit {label} to {peer} failed, will retry: {e}", "ERROR")
-                if _last_outbox_failure.get(peer) != first_seq:
-                    _last_outbox_failure[peer] = first_seq
-                    _record("out", "data", envelopes[0].get("op"), "failed", peer=peer, origin=ORIGIN, seq=first_seq, detail=f"Submit to DAPPS failed, retrying every tick: {e}")
-                break
+                _last_outbox_failure.pop(peer, None)
+                _last_data_sent_to[peer.upper()] = time.monotonic()
+                _record_carried_acks(peer, carried, label, dapps_id)
+                now = _now_ms()
+                statements = []
+                for seq, _, dapps_ids_json in chunk:
+                    dapps_ids = json.loads(dapps_ids_json) if dapps_ids_json else {}
+                    dapps_ids[peer] = dapps_id
+                    statements.append((
+                        "UPDATE replication_outbox SET dapps_ids = ?, submitted_at = ? WHERE seq = ?",
+                        (json.dumps(dapps_ids), now if all(p in dapps_ids for p in PEERS) else None, seq)
+                    ))
+                statements.append(("UPDATE replication_peer_ack SET submitted_seq = MAX(submitted_seq, ?) WHERE peer = ?", (last_seq, peer)))
+                _record_submit(cur, conn, peer, statements)
+                note = _batch_note(chunk)
+                for seq, envelope, _ in chunk:
+                    _record("out", "data", envelope.get("op"), "sent", peer=peer, origin=ORIGIN, seq=seq, detail=note, dapps_id=dapps_id)
+    finally:
+        conn.close()
 
-            now = _now_ms()
-            for seq, _, dapps_ids_json in chunk:
-                dapps_ids = json.loads(dapps_ids_json) if dapps_ids_json else {}
-                dapps_ids[peer] = dapps_id
-                cur.execute(
-                    "UPDATE replication_outbox SET dapps_ids = ?, submitted_at = ? WHERE seq = ?",
-                    (json.dumps(dapps_ids), now if all(p in dapps_ids for p in PEERS) else None, seq)
-                )
-            cur.execute("UPDATE replication_peer_ack SET submitted_seq = ? WHERE peer = ?", (last_seq, peer))
-            conn.commit()
-            _last_outbox_failure.pop(peer, None)
-            _last_data_sent_to[peer.upper()] = time.monotonic()
-            note = _batch_note(chunk)
-            for seq, envelope, _ in chunk:
-                _record("out", "data", envelope.get("op"), "sent", peer=peer, origin=ORIGIN, seq=seq, detail=note, dapps_id=dapps_id)
-            _record_carried_acks(peer, carried, label, dapps_id)
+
+# Cursor writes for submissions DAPPS has accepted but that couldn't be recorded (the database
+# was locked, say): peer, or (peer, origin) for a relayed origin -> [(sql, params), ...]. Written
+# before anything more is sent there, so a failed write never has the pump submit them again.
+_unrecorded_submits = _kept('_unrecorded_submits', dict)
+
+
+def _record_submit(cur, conn, key, statements):
+    _unrecorded_submits[key] = statements
+    _flush_submit(cur, conn, key)
+
+
+def _flush_submit(cur, conn, key):
+    statements = _unrecorded_submits.get(key)
+    if statements is None:
+        return
+    for sql, params in statements:
+        cur.execute(sql, params)
+    conn.commit()
+    del _unrecorded_submits[key]
 
 
 def _record_carried_acks(peer, carried, label, dapps_id):
@@ -404,40 +429,47 @@ def _relay_pump_tick():
         return
     conn = db.get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT peer, origin, submitted_seq FROM replication_forward")
-    for peer, origin, submitted_seq in cur.fetchall():
-        if peer.upper() not in _PEER_SPELLING or not _relays_to(peer, origin):
-            continue
-        cur.execute(
-            "SELECT seq, event FROM replication_log WHERE origin = ? AND seq > ? ORDER BY seq ASC LIMIT ?",
-            (origin, submitted_seq, max(50, BATCH_SIZE))
-        )
-        rows = [(seq, json.loads(event_json)) for seq, event_json in cur.fetchall()]
-        for chunk in _batches(rows):
-            envelopes = [envelope for _, envelope in chunk]
-            first_seq, last_seq = chunk[0][0], chunk[-1][0]
-            label = _events_label(origin, first_seq, last_seq)
-            carried = _take_held_acks(peer)
-            payload = _events_payload(envelopes, {o: held_seq for o, (held_seq, _) in carried.items()})
-            try:
-                dapps_id = _dapps_submit(peer, payload, stream_id=_stream_id_for(origin, envelopes[0]["epoch"]), gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS)
-            except Exception as e:
-                _restore_held_acks(carried)
-                wps_logger("REPLICATION RELAY", ORIGIN, f"Relay {label} to {peer} failed, will retry: {e}", "ERROR")
-                if _last_outbox_failure.get((peer, origin)) != first_seq:
-                    _last_outbox_failure[(peer, origin)] = first_seq
-                    _record("out", "data", envelopes[0].get("op"), "failed", peer=peer, origin=origin, seq=first_seq, detail=f"Relay to DAPPS failed, retrying every tick: {e}")
-                break
+    try:
+        for key in [key for key in _unrecorded_submits if isinstance(key, tuple)]:
+            _flush_submit(cur, conn, key)
+        cur.execute("SELECT peer, origin, submitted_seq FROM replication_forward")
+        for peer, origin, submitted_seq in cur.fetchall():
+            if peer.upper() not in _PEER_SPELLING or not _relays_to(peer, origin):
+                continue
+            cur.execute(
+                "SELECT seq, event FROM replication_log WHERE origin = ? AND seq > ? ORDER BY seq ASC LIMIT ?",
+                (origin, submitted_seq, max(50, BATCH_SIZE))
+            )
+            rows = [(seq, json.loads(event_json)) for seq, event_json in cur.fetchall()]
+            for chunk in _batches(rows):
+                envelopes = [envelope for _, envelope in chunk]
+                first_seq, last_seq = chunk[0][0], chunk[-1][0]
+                label = _events_label(origin, first_seq, last_seq)
+                carried = _take_held_acks(peer)
+                payload = _events_payload(envelopes, {o: held_seq for o, (held_seq, _) in carried.items()})
+                try:
+                    dapps_id = _dapps_submit(peer, payload, stream_id=_stream_id_for(origin, envelopes[0]["epoch"]), gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS)
+                except Exception as e:
+                    _restore_held_acks(carried)
+                    wps_logger("REPLICATION RELAY", ORIGIN, f"Relay {label} to {peer} failed, will retry: {e}", "ERROR")
+                    if _last_outbox_failure.get((peer, origin)) != first_seq:
+                        _last_outbox_failure[(peer, origin)] = first_seq
+                        _record("out", "data", envelopes[0].get("op"), "failed", peer=peer, origin=origin, seq=first_seq, detail=f"Relay to DAPPS failed, retrying every tick: {e}")
+                    break
 
-            cur.execute("UPDATE replication_forward SET submitted_seq = ? WHERE peer = ? AND origin = ?", (last_seq, peer, origin))
-            conn.commit()
-            _last_outbox_failure.pop((peer, origin), None)
-            _last_data_sent_to[peer.upper()] = time.monotonic()
-            note = _batch_note(chunk)
-            for seq, envelope in chunk:
-                _record("out", "data", envelope.get("op"), "sent", peer=peer, origin=origin, seq=seq,
-                        detail="Relayed" + (f" - {note}" if note else ""), dapps_id=dapps_id)
-            _record_carried_acks(peer, carried, label, dapps_id)
+                _last_outbox_failure.pop((peer, origin), None)
+                _last_data_sent_to[peer.upper()] = time.monotonic()
+                _record_carried_acks(peer, carried, label, dapps_id)
+                _record_submit(cur, conn, (peer, origin), [(
+                    "UPDATE replication_forward SET submitted_seq = MAX(submitted_seq, ?) WHERE peer = ? AND origin = ?",
+                    (last_seq, peer, origin)
+                )])
+                note = _batch_note(chunk)
+                for seq, envelope in chunk:
+                    _record("out", "data", envelope.get("op"), "sent", peer=peer, origin=origin, seq=seq,
+                            detail="Relayed" + (f" - {note}" if note else ""), dapps_id=dapps_id)
+    finally:
+        conn.close()
 
 
 def _batches(rows):
@@ -1120,60 +1152,62 @@ def _handle_data_event(envelope, peer, dapps_id, batch_note=None):
 
     conn = db.get_db_connection()
     cur = conn.cursor()
+    try:
+        _learn_route(cur, conn, origin, peer)
+        _bootstrap_new_origin(cur, conn, origin)
 
-    _learn_route(cur, conn, origin, peer)
-    _bootstrap_new_origin(cur, conn, origin)
+        cur.execute("SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
+        if cur.fetchone() is not None:
+            # Still waiting to learn where to start this origin's stream (see
+            # _start_bootstrap_if_configured). Buffer verbatim rather than treating this as a gap
+            # from seq 0 - that would trigger a sync.request for the entire history, exactly what
+            # bootstrapFromTs exists to avoid. _handle_seq_at_response drains this once resolved.
+            wps_logger("REPLICATION INBOX", ORIGIN, f"{origin}/{seq} arrived while bootstrap is still pending - buffering")
+            cur.execute(
+                "INSERT OR REPLACE INTO replication_pending (origin, seq, event) VALUES (?, ?, ?)",
+                (origin, seq, json.dumps(envelope, separators=(',', ':')))
+            )
+            conn.commit()
+            _record("in", "data", op, "buffered", peer=peer, origin=origin, seq=seq,
+                    detail="Bootstrap for this origin still pending - held until seq_at.response arrives", dapps_id=dapps_id, event=envelope)
+            return
 
-    cur.execute("SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
-    if cur.fetchone() is not None:
-        # Still waiting to learn where to start this origin's stream (see
-        # _start_bootstrap_if_configured). Buffer verbatim rather than treating this as a gap
-        # from seq 0 - that would trigger a sync.request for the entire history, exactly what
-        # bootstrapFromTs exists to avoid. _handle_seq_at_response drains this once resolved.
-        wps_logger("REPLICATION INBOX", ORIGIN, f"{origin}/{seq} arrived while bootstrap is still pending - buffering")
-        cur.execute(
-            "INSERT OR REPLACE INTO replication_pending (origin, seq, event) VALUES (?, ?, ?)",
-            (origin, seq, json.dumps(envelope, separators=(',', ':')))
-        )
-        conn.commit()
-        _record("in", "data", op, "buffered", peer=peer, origin=origin, seq=seq,
-                detail="Bootstrap for this origin still pending - held until seq_at.response arrives", dapps_id=dapps_id, event=envelope)
-        return
+        cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
+        row = cur.fetchone()
+        last_applied = row[0] if row else 0
 
-    cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
-    row = cur.fetchone()
-    last_applied = row[0] if row else 0
+        if seq <= last_applied:
+            wps_logger("REPLICATION INBOX", ORIGIN, f"Duplicate delivery of {origin}/{seq}, already applied - ack and drop")
+            _record("in", "data", op, "duplicate", peer=peer, origin=origin, seq=seq,
+                    detail=f"Already applied up to {last_applied} - dropped", dapps_id=dapps_id, event=envelope)
+            return
 
-    if seq <= last_applied:
-        wps_logger("REPLICATION INBOX", ORIGIN, f"Duplicate delivery of {origin}/{seq}, already applied - ack and drop")
-        _record("in", "data", op, "duplicate", peer=peer, origin=origin, seq=seq,
-                detail=f"Already applied up to {last_applied} - dropped", dapps_id=dapps_id, event=envelope)
-        return
+        if seq > last_applied + 1:
+            # Ask only for the hole directly below this event. Seqs already buffered below it arrived
+            # fine, so asking from last_applied would have each one in a run (say a backlog delivered
+            # after a gap) re-request the event that came just before it.
+            cur.execute("SELECT MAX(seq) FROM replication_pending WHERE origin = ? AND seq > ? AND seq < ?", (origin, last_applied, seq))
+            below = cur.fetchone()[0]
+            from_seq = (below or last_applied) + 1
+            wps_logger("REPLICATION INBOX", ORIGIN, f"Gap from {origin}: have {last_applied}, got {seq} - buffering" + (" and requesting resend" if from_seq < seq else ""))
+            cur.execute(
+                "INSERT OR REPLACE INTO replication_pending (origin, seq, event) VALUES (?, ?, ?)",
+                (origin, seq, json.dumps(envelope, separators=(',', ':')))
+            )
+            conn.commit()
+            detail = f"Gap: have {last_applied}, " + (f"requesting {from_seq}-{seq - 1}" if from_seq < seq else f"follows buffered {below}")
+            _record("in", "data", op, "buffered", peer=peer, origin=origin, seq=seq, detail=detail, dapps_id=dapps_id, event=envelope)
+            # DAPPS delivered it fine - the gap is an application-level concern, so the message is still acked
+            if from_seq < seq:
+                _request_sync(origin, from_seq, seq - 1)
+            return
 
-    if seq > last_applied + 1:
-        # Ask only for the hole directly below this event. Seqs already buffered below it arrived
-        # fine, so asking from last_applied would have each one in a run (say a backlog delivered
-        # after a gap) re-request the event that came just before it.
-        cur.execute("SELECT MAX(seq) FROM replication_pending WHERE origin = ? AND seq > ? AND seq < ?", (origin, last_applied, seq))
-        below = cur.fetchone()[0]
-        from_seq = (below or last_applied) + 1
-        wps_logger("REPLICATION INBOX", ORIGIN, f"Gap from {origin}: have {last_applied}, got {seq} - buffering" + (" and requesting resend" if from_seq < seq else ""))
-        cur.execute(
-            "INSERT OR REPLACE INTO replication_pending (origin, seq, event) VALUES (?, ?, ?)",
-            (origin, seq, json.dumps(envelope, separators=(',', ':')))
-        )
-        conn.commit()
-        detail = f"Gap: have {last_applied}, " + (f"requesting {from_seq}-{seq - 1}" if from_seq < seq else f"follows buffered {below}")
-        _record("in", "data", op, "buffered", peer=peer, origin=origin, seq=seq, detail=detail, dapps_id=dapps_id, event=envelope)
-        # DAPPS delivered it fine - the gap is an application-level concern, so the message is still acked
-        if from_seq < seq:
-            _request_sync(origin, from_seq, seq - 1)
-        return
-
-    outcome = _apply_one(conn, cur, origin, seq, envelope)
-    _record("in", "data", op, outcome, peer=peer, origin=origin, seq=seq, detail=batch_note, dapps_id=dapps_id, event=envelope)
-    _drain_pending(conn, cur, origin)
-    _queue_app_ack(origin, seq)
+        outcome = _apply_one(conn, cur, origin, seq, envelope)
+        _record("in", "data", op, outcome, peer=peer, origin=origin, seq=seq, detail=batch_note, dapps_id=dapps_id, event=envelope)
+        _drain_pending(conn, cur, origin)
+        _queue_app_ack(origin, seq)
+    finally:
+        conn.close()
 
 
 # --- Application-level acks: retire outbox rows once every peer has applied them ----------
@@ -1275,33 +1309,36 @@ def _handle_app_ack(envelope):
     seq = envelope["seq"]
     conn = db.get_db_connection()
     cur = conn.cursor()
-    if envelope.get("origin") != ORIGIN:
-        # Another origin's stream: with relay on, acks are per hop, so this is a neighbour
-        # we relay origin to confirming it has applied that far.
-        origin = envelope.get("origin")
-        if isinstance(origin, str) and _relays_to(peer, origin):
-            cur.execute(
-                "INSERT INTO replication_forward (peer, origin, submitted_seq, acked_seq) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(peer, origin) DO UPDATE SET "
-                "acked_seq = MAX(acked_seq, excluded.acked_seq), "
-                "submitted_seq = MAX(submitted_seq, excluded.submitted_seq)",
-                (peer, origin, seq, seq)
-            )
-            conn.commit()
-        return
-    # An ack also implies the peer already holds everything up to seq (e.g. via a
-    # sync.request resend), so advance submitted_seq too rather than re-submitting it.
-    # It also says where the peer wants our stream from, so a new peer's wait is over.
-    cur.execute(
-        "INSERT INTO replication_peer_ack (peer, peer_acked_seq, submitted_seq) VALUES (?, ?, ?) "
-        "ON CONFLICT(peer) DO UPDATE SET "
-        "peer_acked_seq = MAX(peer_acked_seq, excluded.peer_acked_seq), "
-        "submitted_seq = MAX(submitted_seq, excluded.submitted_seq), "
-        "awaiting_request = 0",
-        (peer, seq, seq)
-    )
-    conn.commit()
-    _retire_acked_outbox_rows(cur, conn)
+    try:
+        if envelope.get("origin") != ORIGIN:
+            # Another origin's stream: with relay on, acks are per hop, so this is a neighbour
+            # we relay origin to confirming it has applied that far.
+            origin = envelope.get("origin")
+            if isinstance(origin, str) and _relays_to(peer, origin):
+                cur.execute(
+                    "INSERT INTO replication_forward (peer, origin, submitted_seq, acked_seq) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(peer, origin) DO UPDATE SET "
+                    "acked_seq = MAX(acked_seq, excluded.acked_seq), "
+                    "submitted_seq = MAX(submitted_seq, excluded.submitted_seq)",
+                    (peer, origin, seq, seq)
+                )
+                conn.commit()
+            return
+        # An ack also implies the peer already holds everything up to seq (e.g. via a
+        # sync.request resend), so advance submitted_seq too rather than re-submitting it.
+        # It also says where the peer wants our stream from, so a new peer's wait is over.
+        cur.execute(
+            "INSERT INTO replication_peer_ack (peer, peer_acked_seq, submitted_seq) VALUES (?, ?, ?) "
+            "ON CONFLICT(peer) DO UPDATE SET "
+            "peer_acked_seq = MAX(peer_acked_seq, excluded.peer_acked_seq), "
+            "submitted_seq = MAX(submitted_seq, excluded.submitted_seq), "
+            "awaiting_request = 0",
+            (peer, seq, seq)
+        )
+        conn.commit()
+        _retire_acked_outbox_rows(cur, conn)
+    finally:
+        conn.close()
 
 
 # --- Reconciliation: periodic digest + on-demand sync.request/response --------------------
@@ -1327,41 +1364,44 @@ def _reconcile_pass():
 def _send_digest():
     conn = db.get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT next_seq - 1 FROM replication_self WHERE id = 1")
-    my_latest = cur.fetchone()[0]
+    try:
+        cur.execute("SELECT next_seq - 1 FROM replication_self WHERE id = 1")
+        my_latest = cur.fetchone()[0]
 
-    # With relay on, the digest also carries a vector of the other origins we pass on to each
-    # peer, at the latest seq we hold of each - so a gap anywhere upstream is visible downstream.
-    relayed_latest = {}
-    if RELAY:
-        cur.execute("SELECT origin, MAX(seq) FROM replication_log WHERE origin != ? GROUP BY origin", (ORIGIN,))
-        relayed_latest = dict(cur.fetchall())
+        # With relay on, the digest also carries a vector of the other origins we pass on to each
+        # peer, at the latest seq we hold of each - so a gap anywhere upstream is visible downstream.
+        relayed_latest = {}
+        if RELAY:
+            cur.execute("SELECT origin, MAX(seq) FROM replication_log WHERE origin != ? GROUP BY origin", (ORIGIN,))
+            relayed_latest = dict(cur.fetchall())
 
-    for peer in PEERS:
-        cur.execute("SELECT peer_acked_seq FROM replication_peer_ack WHERE peer = ?", (peer,))
-        row = cur.fetchone()
-        behind = (row[0] if row else 0) < my_latest
-        vector = {origin: latest for origin, latest in relayed_latest.items() if _relays_to(peer, origin)}
-        if vector:
-            cur.execute("SELECT origin, acked_seq FROM replication_forward WHERE peer = ?", (peer,))
-            acked = dict(cur.fetchall())
-            behind = behind or any(acked.get(origin, 0) < latest for origin, latest in vector.items())
-        presence = _digest_presence(cur, peer, relayed_latest)
-        # Presence that changed since the last digest may not have arrived, so its hash goes
-        # out even while traffic would otherwise make the digest redundant.
-        if presence == _presence_digest_sent.get(peer.upper()) and _digest_redundant(peer, behind):
-            wps_logger("REPLICATION RECONCILE", ORIGIN, f"Skipping digest to {peer} - recent traffic already shows where we are")
-            continue
-        digest = {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest, "presence": presence}
-        if vector:
-            digest["vector"] = vector
-        try:
-            # Short TTL: only the newest digest matters, so one that can't be delivered within a
-            # couple of intervals should expire in DAPPS rather than queue behind a down peer.
-            _submit_control(peer, digest, ttl=RECONCILE_INTERVAL_SECONDS * 2)
-            _presence_digest_sent[peer.upper()] = presence
-        except Exception as e:
-            wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to send digest to {peer}: {e}", "ERROR")
+        for peer in PEERS:
+            cur.execute("SELECT peer_acked_seq FROM replication_peer_ack WHERE peer = ?", (peer,))
+            row = cur.fetchone()
+            behind = (row[0] if row else 0) < my_latest
+            vector = {origin: latest for origin, latest in relayed_latest.items() if _relays_to(peer, origin)}
+            if vector:
+                cur.execute("SELECT origin, acked_seq FROM replication_forward WHERE peer = ?", (peer,))
+                acked = dict(cur.fetchall())
+                behind = behind or any(acked.get(origin, 0) < latest for origin, latest in vector.items())
+            presence = _digest_presence(cur, peer, relayed_latest)
+            # Presence that changed since the last digest may not have arrived, so its hash goes
+            # out even while traffic would otherwise make the digest redundant.
+            if presence == _presence_digest_sent.get(peer.upper()) and _digest_redundant(peer, behind):
+                wps_logger("REPLICATION RECONCILE", ORIGIN, f"Skipping digest to {peer} - recent traffic already shows where we are")
+                continue
+            digest = {"op": "digest", "origin": ORIGIN, "latest_seq": my_latest, "presence": presence}
+            if vector:
+                digest["vector"] = vector
+            try:
+                # Short TTL: only the newest digest matters, so one that can't be delivered within a
+                # couple of intervals should expire in DAPPS rather than queue behind a down peer.
+                _submit_control(peer, digest, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+                _presence_digest_sent[peer.upper()] = presence
+            except Exception as e:
+                wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to send digest to {peer}: {e}", "ERROR")
+    finally:
+        conn.close()
 
 
 _last_heard_from = _kept('_last_heard_from', dict)    # peer DAPPS callsign (upper) -> time.monotonic() anything was last received from it
@@ -1390,23 +1430,26 @@ def _digest_redundant(peer, behind):
 def _handle_digest(envelope, peer):
     conn = db.get_db_connection()
     cur = conn.cursor()
-    if envelope["origin"] != ORIGIN:
-        _compare_digest_entry(cur, envelope["origin"], envelope["latest_seq"], relayed=False)
+    try:
+        if envelope["origin"] != ORIGIN:
+            _compare_digest_entry(cur, envelope["origin"], envelope["latest_seq"], relayed=False)
 
-    vector = envelope.get("vector")
-    if RELAY and isinstance(vector, dict):
-        for origin, latest_seq in vector.items():
-            if not isinstance(origin, str) or not isinstance(latest_seq, int) or origin == ORIGIN or origin.upper() in _ORIGIN_TO_DAPPS:
-                continue
-            # A digest only names an origin's route if nothing has yet; data events settle it.
-            _learn_route(cur, conn, origin, peer, only_if_unknown=True)
-            if _next_hop(origin).upper() != peer.upper():
-                continue  # we get this origin from elsewhere
-            _bootstrap_new_origin(cur, conn, origin)
-            _compare_digest_entry(cur, origin, latest_seq, relayed=True)
+        vector = envelope.get("vector")
+        if RELAY and isinstance(vector, dict):
+            for origin, latest_seq in vector.items():
+                if not isinstance(origin, str) or not isinstance(latest_seq, int) or origin == ORIGIN or origin.upper() in _ORIGIN_TO_DAPPS:
+                    continue
+                # A digest only names an origin's route if nothing has yet; data events settle it.
+                _learn_route(cur, conn, origin, peer, only_if_unknown=True)
+                if _next_hop(origin).upper() != peer.upper():
+                    continue  # we get this origin from elsewhere
+                _bootstrap_new_origin(cur, conn, origin)
+                _compare_digest_entry(cur, origin, latest_seq, relayed=True)
 
-    # After the vector, so a relayed origin it first names is already routed through peer.
-    _check_digest_presence(cur, envelope.get("presence"), peer)
+        # After the vector, so a relayed origin it first names is already routed through peer.
+        _check_digest_presence(cur, envelope.get("presence"), peer)
+    finally:
+        conn.close()
 
 
 def _compare_digest_entry(cur, origin, latest_seq, relayed):
@@ -1483,51 +1526,54 @@ def _handle_sync_request(envelope):
 
     conn = db.get_db_connection()
     cur = conn.cursor()
-    cur.execute(
-        "SELECT seq, event FROM replication_log WHERE origin = ? AND seq BETWEEN ? AND ? ORDER BY seq ASC",
-        (origin, from_seq, to_seq)
-    )
-    rows = cur.fetchall()
-    wps_logger("REPLICATION RECONCILE", ORIGIN, f"Re-sending {len(rows)} event(s) of {origin} {from_seq}-{to_seq} to {requester}")
+    try:
+        cur.execute(
+            "SELECT seq, event FROM replication_log WHERE origin = ? AND seq BETWEEN ? AND ? ORDER BY seq ASC",
+            (origin, from_seq, to_seq)
+        )
+        rows = cur.fetchall()
+        wps_logger("REPLICATION RECONCILE", ORIGIN, f"Re-sending {len(rows)} event(s) of {origin} {from_seq}-{to_seq} to {requester}")
 
-    # The requester will keep asking until the range arrives, so make it visible when part of
-    # it isn't in our log - it can never be served and needs an operator. For a relayed origin,
-    # seqs we haven't applied yet aren't missing: they are relayed once they arrive.
-    served_to = to_seq
-    if origin != ORIGIN:
-        cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
-        row = cur.fetchone()
-        served_to = min(to_seq, row[0] if row else 0)
-    missing = sorted(set(range(from_seq, served_to + 1)) - {seq for seq, _ in rows})
-    if missing:
-        shown = ", ".join(str(s) for s in missing[:20]) + (f" ... ({len(missing)} total)" if len(missing) > 20 else "")
-        wps_logger("REPLICATION RECONCILE", ORIGIN, f"sync.request {from_seq}-{to_seq} from {requester}: not in replication_log as {origin}: {shown}", "ERROR")
-        _record("out", "sync", "sync.request", "failed", peer=requester, origin=origin,
-                detail=f"Cannot serve {len(missing)} of {to_seq - from_seq + 1} requested seq(s), not in replication_log as {origin}: {shown}")
+        # The requester will keep asking until the range arrives, so make it visible when part of
+        # it isn't in our log - it can never be served and needs an operator. For a relayed origin,
+        # seqs we haven't applied yet aren't missing: they are relayed once they arrive.
+        served_to = to_seq
+        if origin != ORIGIN:
+            cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
+            row = cur.fetchone()
+            served_to = min(to_seq, row[0] if row else 0)
+        missing = sorted(set(range(from_seq, served_to + 1)) - {seq for seq, _ in rows})
+        if missing:
+            shown = ", ".join(str(s) for s in missing[:20]) + (f" ... ({len(missing)} total)" if len(missing) > 20 else "")
+            wps_logger("REPLICATION RECONCILE", ORIGIN, f"sync.request {from_seq}-{to_seq} from {requester}: not in replication_log as {origin}: {shown}", "ERROR")
+            _record("out", "sync", "sync.request", "failed", peer=requester, origin=origin,
+                    detail=f"Cannot serve {len(missing)} of {to_seq - from_seq + 1} requested seq(s), not in replication_log as {origin}: {shown}")
 
-    # Live events after this range follow by the outbox/relay pump, if they aren't yet.
-    _start_peer_stream(cur, conn, requester, origin, max(served_to, from_seq - 1))
+        # Live events after this range follow by the outbox/relay pump, if they aren't yet.
+        _start_peer_stream(cur, conn, requester, origin, max(served_to, from_seq - 1))
 
-    for chunk in _batches([(seq, json.loads(event_json)) for seq, event_json in rows]):
-        envelopes = [envelope for _, envelope in chunk]
-        note = _batch_note(chunk)
-        try:
-            dapps_id = _dapps_submit(
-                requester, _events_payload(envelopes),
-                stream_id=_stream_id_for(origin, envelopes[0]["epoch"]),
-                gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS
-            )
-        except Exception as e:
-            label = _events_label(origin, chunk[0][0], chunk[-1][0])
-            wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to re-send {label} to {requester}: {e}", "ERROR")
+        for chunk in _batches([(seq, json.loads(event_json)) for seq, event_json in rows]):
+            envelopes = [envelope for _, envelope in chunk]
+            note = _batch_note(chunk)
+            try:
+                dapps_id = _dapps_submit(
+                    requester, _events_payload(envelopes),
+                    stream_id=_stream_id_for(origin, envelopes[0]["epoch"]),
+                    gap_timeout_seconds=0, ttl=STREAM_TTL_SECONDS
+                )
+            except Exception as e:
+                label = _events_label(origin, chunk[0][0], chunk[-1][0])
+                wps_logger("REPLICATION RECONCILE", ORIGIN, f"Failed to re-send {label} to {requester}: {e}", "ERROR")
+                for seq, envelope in chunk:
+                    _record("out", "data", envelope.get("op"), "failed", peer=requester, origin=origin, seq=seq,
+                            detail=f"Re-send for sync.request {from_seq}-{to_seq} failed: {e}")
+                continue
             for seq, envelope in chunk:
-                _record("out", "data", envelope.get("op"), "failed", peer=requester, origin=origin, seq=seq,
-                        detail=f"Re-send for sync.request {from_seq}-{to_seq} failed: {e}")
-            continue
-        for seq, envelope in chunk:
-            detail = f"Re-sent for sync.request {from_seq}-{to_seq}" + (f" - {note}" if note else "")
-            _record("out", "data", envelope.get("op"), "resent", peer=requester, origin=origin, seq=seq,
-                    detail=detail, dapps_id=dapps_id)
+                detail = f"Re-sent for sync.request {from_seq}-{to_seq}" + (f" - {note}" if note else "")
+                _record("out", "data", envelope.get("op"), "resent", peer=requester, origin=origin, seq=seq,
+                        detail=detail, dapps_id=dapps_id)
+    finally:
+        conn.close()
 
 
 def _start_peer_stream(cur, conn, peer, origin, after_seq):
@@ -1562,15 +1608,18 @@ def _fill_gap_to_pending(origin):
     '''
     conn = db.get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
-    row = cur.fetchone()
-    last_applied = row[0] if row else 0
-    cur.execute("SELECT MIN(seq) FROM replication_pending WHERE origin = ? AND seq > ?", (origin, last_applied))
-    row = cur.fetchone()
-    lowest_pending = row[0] if row else None
-    if lowest_pending is not None and lowest_pending > last_applied + 1:
-        wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Requesting {origin}/{last_applied + 1}-{lowest_pending - 1} to bridge to buffered events received during bootstrap")
-        _request_sync(origin, last_applied + 1, lowest_pending - 1)
+    try:
+        cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
+        row = cur.fetchone()
+        last_applied = row[0] if row else 0
+        cur.execute("SELECT MIN(seq) FROM replication_pending WHERE origin = ? AND seq > ?", (origin, last_applied))
+        row = cur.fetchone()
+        lowest_pending = row[0] if row else None
+        if lowest_pending is not None and lowest_pending > last_applied + 1:
+            wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Requesting {origin}/{last_applied + 1}-{lowest_pending - 1} to bridge to buffered events received during bootstrap")
+            _request_sync(origin, last_applied + 1, lowest_pending - 1)
+    finally:
+        conn.close()
 
 
 # --- Timestamp bootstrap: seq_at.request/response, for a fresh instance joining mid-history ---
@@ -1591,40 +1640,43 @@ def _handle_seq_at_request(envelope):
 
     conn = db.get_db_connection()
     cur = conn.cursor()
-    # replication_log.ts is stored in the native precision of the thing that changed - seconds
-    # for msg.* rows (lts/edts/ets), milliseconds for everything else (dts/edts/ets, or the
-    # capture-time default for user.update). bootstrapFromTs is documented as epoch-ms, so
-    # msg.* rows need normalising up to milliseconds before comparing.
-    cur.execute(
-        "SELECT MIN(seq) FROM replication_log WHERE origin = ? AND "
-        "(CASE WHEN op LIKE 'msg.%' THEN ts * 1000 ELSE ts END) >= ?",
-        (origin, target_ts)
-    )
-    row = cur.fetchone()
-    first_seq_at_or_after = row[0] if row and row[0] is not None else None
-
-    if first_seq_at_or_after is None:
-        # Nothing in our log is that new yet - the requester is fully caught up as of now.
-        if origin == ORIGIN:
-            cur.execute("SELECT next_seq - 1 FROM replication_self WHERE id = 1")
-        else:
-            cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
-        row = cur.fetchone()
-        if row is None:
-            return  # an origin we know nothing of - the requester will ask again
-        seed_seq = row[0]
-    else:
-        seed_seq = first_seq_at_or_after - 1
-
-    wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request from {requester} for {origin} at ts={target_ts}: answering seq={seed_seq}")
-    _start_peer_stream(cur, conn, requester, origin, seed_seq)
-    response = {"op": "seq_at.response", "origin": origin, "seq": seed_seq, "requested_by": requester}
-    if origin != ORIGIN:
-        response["by"] = DAPPS_CALLSIGN
     try:
-        _submit_control(requester, response)
-    except Exception as e:
-        wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Failed to send seq_at.response to {requester}: {e}", "ERROR")
+        # replication_log.ts is stored in the native precision of the thing that changed - seconds
+        # for msg.* rows (lts/edts/ets), milliseconds for everything else (dts/edts/ets, or the
+        # capture-time default for user.update). bootstrapFromTs is documented as epoch-ms, so
+        # msg.* rows need normalising up to milliseconds before comparing.
+        cur.execute(
+            "SELECT MIN(seq) FROM replication_log WHERE origin = ? AND "
+            "(CASE WHEN op LIKE 'msg.%' THEN ts * 1000 ELSE ts END) >= ?",
+            (origin, target_ts)
+        )
+        row = cur.fetchone()
+        first_seq_at_or_after = row[0] if row and row[0] is not None else None
+
+        if first_seq_at_or_after is None:
+            # Nothing in our log is that new yet - the requester is fully caught up as of now.
+            if origin == ORIGIN:
+                cur.execute("SELECT next_seq - 1 FROM replication_self WHERE id = 1")
+            else:
+                cur.execute("SELECT last_applied_seq FROM replication_origin_cursor WHERE origin = ?", (origin,))
+            row = cur.fetchone()
+            if row is None:
+                return  # an origin we know nothing of - the requester will ask again
+            seed_seq = row[0]
+        else:
+            seed_seq = first_seq_at_or_after - 1
+
+        wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"seq_at.request from {requester} for {origin} at ts={target_ts}: answering seq={seed_seq}")
+        _start_peer_stream(cur, conn, requester, origin, seed_seq)
+        response = {"op": "seq_at.response", "origin": origin, "seq": seed_seq, "requested_by": requester}
+        if origin != ORIGIN:
+            response["by"] = DAPPS_CALLSIGN
+        try:
+            _submit_control(requester, response)
+        except Exception as e:
+            wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Failed to send seq_at.response to {requester}: {e}", "ERROR")
+    finally:
+        conn.close()
 
 
 def _handle_seq_at_response(envelope):
@@ -1634,22 +1686,25 @@ def _handle_seq_at_response(envelope):
 
     conn = db.get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
-    if cur.fetchone() is None:
-        return  # already resolved (e.g. a duplicate response) or not something we asked for
+    try:
+        cur.execute("SELECT 1 FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
+        if cur.fetchone() is None:
+            return  # already resolved (e.g. a duplicate response) or not something we asked for
 
-    seed_seq = envelope["seq"]
-    cur.execute(
-        "INSERT INTO replication_origin_cursor (origin, last_applied_seq) VALUES (?, ?) "
-        "ON CONFLICT(origin) DO UPDATE SET last_applied_seq = excluded.last_applied_seq",
-        (origin, seed_seq)
-    )
-    cur.execute("DELETE FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
-    conn.commit()
-    wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Seeded cursor for {origin} at seq={seed_seq}")
+        seed_seq = envelope["seq"]
+        cur.execute(
+            "INSERT INTO replication_origin_cursor (origin, last_applied_seq) VALUES (?, ?) "
+            "ON CONFLICT(origin) DO UPDATE SET last_applied_seq = excluded.last_applied_seq",
+            (origin, seed_seq)
+        )
+        cur.execute("DELETE FROM replication_bootstrap_pending WHERE origin = ?", (origin,))
+        conn.commit()
+        wps_logger("REPLICATION BOOTSTRAP", ORIGIN, f"Seeded cursor for {origin} at seq={seed_seq}")
 
-    _drain_pending(conn, cur, origin)
-    _fill_gap_to_pending(origin)
+        _drain_pending(conn, cur, origin)
+        _fill_gap_to_pending(origin)
+    finally:
+        conn.close()
 
 
 def _start_bootstrap_if_configured(cur, conn):
@@ -1690,10 +1745,13 @@ def _retry_bootstrap_pending():
         return
     conn = db.get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT origin FROM replication_bootstrap_pending")
-    pending = [row[0] for row in cur.fetchall()]
-    for origin in pending:
-        _send_seq_at_request(origin)
+    try:
+        cur.execute("SELECT origin FROM replication_bootstrap_pending")
+        pending = [row[0] for row in cur.fetchall()]
+        for origin in pending:
+            _send_seq_at_request(origin)
+    finally:
+        conn.close()
 
 
 def _send_seq_at_request(origin):
@@ -1851,34 +1909,37 @@ def _handle_presence(envelope, peer):
         return
     conn = db.get_db_connection()
     cur = conn.cursor()
-    _learn_route(cur, conn, origin, peer, only_if_unknown=True)
-    if _next_hop(origin).upper() != peer.upper():
-        return  # we get this origin from elsewhere
-
-    newer = []
-    db.set_applying_remote(True)
     try:
-        for status in users:
-            if not isinstance(status, dict) or not isinstance(status.get("callsign"), str) or not isinstance(status.get("at"), int):
-                continue
-            callsign = status["callsign"]
-            current = _presence_is_newer(origin, callsign, status["at"])
-            _apply_online_status(cur, origin, callsign, status.get("name"), status.get("is_online"), status.get("ts"), presence=current)
-            if current:
-                _presence_at[(origin, callsign)] = status["at"]
-                newer.append(status)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        db.set_applying_remote(False)
+        _learn_route(cur, conn, origin, peer, only_if_unknown=True)
+        if _next_hop(origin).upper() != peer.upper():
+            return  # we get this origin from elsewhere
 
-    if newer:
-        for other in PEERS:
-            if _relays_to(other, origin):
-                _queue_presence(other, origin, newer)
-        _outbox_wake.set()
+        newer = []
+        db.set_applying_remote(True)
+        try:
+            for status in users:
+                if not isinstance(status, dict) or not isinstance(status.get("callsign"), str) or not isinstance(status.get("at"), int):
+                    continue
+                callsign = status["callsign"]
+                current = _presence_is_newer(origin, callsign, status["at"])
+                _apply_online_status(cur, origin, callsign, status.get("name"), status.get("is_online"), status.get("ts"), presence=current)
+                if current:
+                    _presence_at[(origin, callsign)] = status["at"]
+                    newer.append(status)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            db.set_applying_remote(False)
+
+        if newer:
+            for other in PEERS:
+                if _relays_to(other, origin):
+                    _queue_presence(other, origin, newer)
+            _outbox_wake.set()
+    finally:
+        conn.close()
 
 
 def _digest_presence(cur, peer, relayed_origins):
@@ -1976,30 +2037,33 @@ def _handle_online_request(envelope):
     requester = envelope["requested_by"]
     conn = db.get_db_connection()
     cur = conn.cursor()
-    online_resp = db.dbGetOnlineUsers(cur)
-    if online_resp["result"] != "success":
-        raise RuntimeError(f"dbGetOnlineUsers failed: {online_resp['error']}")
-    users = [{"callsign": u["callsign"], "name": u.get("name"), "ts": u.get("last_connected")} for u in online_resp["data"]]
-    response = {"op": "online.response", "origin": ORIGIN, "at": _next_presence_at(), "requested_by": requester, "users": users}
-
-    if RELAY:
-        remote_resp = db.dbGetRemoteOnlineUsers(cur)
-        if remote_resp["result"] != "success":
-            raise RuntimeError(f"dbGetRemoteOnlineUsers failed: {remote_resp['error']}")
-        cur.execute("SELECT origin FROM replication_origin_cursor")
-        relayed_origins = {row[0] for row in cur.fetchall()} | {u["online_origin"] for u in remote_resp["data"]}
-        response["relayed"] = [
-            {"origin": origin, "at": _presence_watermark(origin),
-             "users": [{"callsign": u["callsign"], "name": u.get("name"), "ts": u.get("last_connected")}
-                       for u in remote_resp["data"] if u["online_origin"] == origin]}
-            for origin in sorted(relayed_origins) if _relays_to(requester, origin)
-        ]
-
-    wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.request from {requester}: answering {len(users)} user(s)")
     try:
-        _submit_control(requester, response, ttl=RECONCILE_INTERVAL_SECONDS * 2)
-    except Exception as e:
-        wps_logger("REPLICATION PRESENCE", ORIGIN, f"Failed to send online.response to {requester}: {e}", "ERROR")
+        online_resp = db.dbGetOnlineUsers(cur)
+        if online_resp["result"] != "success":
+            raise RuntimeError(f"dbGetOnlineUsers failed: {online_resp['error']}")
+        users = [{"callsign": u["callsign"], "name": u.get("name"), "ts": u.get("last_connected")} for u in online_resp["data"]]
+        response = {"op": "online.response", "origin": ORIGIN, "at": _next_presence_at(), "requested_by": requester, "users": users}
+
+        if RELAY:
+            remote_resp = db.dbGetRemoteOnlineUsers(cur)
+            if remote_resp["result"] != "success":
+                raise RuntimeError(f"dbGetRemoteOnlineUsers failed: {remote_resp['error']}")
+            cur.execute("SELECT origin FROM replication_origin_cursor")
+            relayed_origins = {row[0] for row in cur.fetchall()} | {u["online_origin"] for u in remote_resp["data"]}
+            response["relayed"] = [
+                {"origin": origin, "at": _presence_watermark(origin),
+                 "users": [{"callsign": u["callsign"], "name": u.get("name"), "ts": u.get("last_connected")}
+                           for u in remote_resp["data"] if u["online_origin"] == origin]}
+                for origin in sorted(relayed_origins) if _relays_to(requester, origin)
+            ]
+
+        wps_logger("REPLICATION PRESENCE", ORIGIN, f"online.request from {requester}: answering {len(users)} user(s)")
+        try:
+            _submit_control(requester, response, ttl=RECONCILE_INTERVAL_SECONDS * 2)
+        except Exception as e:
+            wps_logger("REPLICATION PRESENCE", ORIGIN, f"Failed to send online.response to {requester}: {e}", "ERROR")
+    finally:
+        conn.close()
 
 
 def _handle_online_response(envelope, peer):
@@ -2020,22 +2084,25 @@ def _handle_online_response(envelope, peer):
 
     conn = db.get_db_connection()
     cur = conn.cursor()
-    _apply_online_snapshot(conn, cur, origin, envelope.get("at"), envelope.get("users"))
+    try:
+        _apply_online_snapshot(conn, cur, origin, envelope.get("at"), envelope.get("users"))
 
-    relayed = envelope.get("relayed")
-    if RELAY and isinstance(relayed, list):
-        for snapshot in relayed:
-            if not isinstance(snapshot, dict) or not isinstance(snapshot.get("origin"), str):
-                continue
-            relayed_origin = snapshot["origin"]
-            if relayed_origin == ORIGIN or relayed_origin.upper() in _ORIGIN_TO_DAPPS:
-                continue
-            _learn_route(cur, conn, relayed_origin, peer, only_if_unknown=True)
-            if _next_hop(relayed_origin).upper() == peer.upper():
-                _apply_online_snapshot(conn, cur, relayed_origin, snapshot.get("at"), snapshot.get("users"))
+        relayed = envelope.get("relayed")
+        if RELAY and isinstance(relayed, list):
+            for snapshot in relayed:
+                if not isinstance(snapshot, dict) or not isinstance(snapshot.get("origin"), str):
+                    continue
+                relayed_origin = snapshot["origin"]
+                if relayed_origin == ORIGIN or relayed_origin.upper() in _ORIGIN_TO_DAPPS:
+                    continue
+                _learn_route(cur, conn, relayed_origin, peer, only_if_unknown=True)
+                if _next_hop(relayed_origin).upper() == peer.upper():
+                    _apply_online_snapshot(conn, cur, relayed_origin, snapshot.get("at"), snapshot.get("users"))
 
-    with _online_request_lock:
-        _online_request_pending.discard(origin)
+        with _online_request_lock:
+            _online_request_pending.discard(origin)
+    finally:
+        conn.close()
 
 
 def _apply_online_snapshot(conn, cur, origin, at, users):
@@ -2452,12 +2519,15 @@ def _flush_users_cascade():
 def _log_backlog():
     conn = db.get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM replication_outbox")
-    outbox_backlog = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM replication_pending")
-    pending_gaps = cur.fetchone()[0]
-    if outbox_backlog or pending_gaps:
-        wps_logger("REPLICATION RECONCILE", ORIGIN, f"Backlog: {outbox_backlog} outbox row(s) awaiting peer ack, {pending_gaps} gap(s) buffered pending resend")
+    try:
+        cur.execute("SELECT COUNT(*) FROM replication_outbox")
+        outbox_backlog = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM replication_pending")
+        pending_gaps = cur.fetchone()[0]
+        if outbox_backlog or pending_gaps:
+            wps_logger("REPLICATION RECONCILE", ORIGIN, f"Backlog: {outbox_backlog} outbox row(s) awaiting peer ack, {pending_gaps} gap(s) buffered pending resend")
+    finally:
+        conn.close()
 
 
 def _sweep_pending():
@@ -2468,14 +2538,17 @@ def _sweep_pending():
     '''
     conn = db.get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT DISTINCT p.origin FROM replication_pending p "
-                "WHERE NOT EXISTS (SELECT 1 FROM replication_bootstrap_pending b WHERE b.origin = p.origin)")
-    for (origin,) in cur.fetchall():
-        try:
-            _drain_pending(conn, cur, origin)
-            _fill_gap_to_pending(origin)
-        except Exception as e:
-            wps_logger("REPLICATION RECONCILE", ORIGIN, f"Sweeping buffered events of {origin} failed: {e}", "ERROR")
+    try:
+        cur.execute("SELECT DISTINCT p.origin FROM replication_pending p "
+                    "WHERE NOT EXISTS (SELECT 1 FROM replication_bootstrap_pending b WHERE b.origin = p.origin)")
+        for (origin,) in cur.fetchall():
+            try:
+                _drain_pending(conn, cur, origin)
+                _fill_gap_to_pending(origin)
+            except Exception as e:
+                wps_logger("REPLICATION RECONCILE", ORIGIN, f"Sweeping buffered events of {origin} failed: {e}", "ERROR")
+    finally:
+        conn.close()
 
 
 # --- Startup -------------------------------------------------------------------------------
@@ -2560,29 +2633,32 @@ def start():
 
     conn = db.get_db_connection()
     cur = conn.cursor()
-    for peer in PEERS:
-        # Fold in rows an earlier version keyed by the peer's own spelling of its callsign.
-        cur.execute("SELECT MAX(peer_acked_seq), MAX(submitted_seq) FROM replication_peer_ack WHERE UPPER(peer) = UPPER(?) AND peer != ?", (peer, peer))
-        stray_acked, stray_submitted = cur.fetchone()
-        # A peer new to `peers` waits for its own request before anything is sent to it - see
-        # _start_peer_stream. Pushing the outbox from 0 would send it everything, whatever its
-        # bootstrapFromTs asked for. A peer that only changed spelling isn't new.
-        cur.execute("INSERT OR IGNORE INTO replication_peer_ack (peer, peer_acked_seq, awaiting_request) VALUES (?, 0, ?)",
-                    (peer, 1 if stray_acked is None else 0))
-        if stray_acked is not None:
-            cur.execute("UPDATE replication_peer_ack SET peer_acked_seq = MAX(peer_acked_seq, ?), submitted_seq = MAX(submitted_seq, ?) WHERE peer = ?",
-                        (stray_acked, stray_submitted, peer))
-            cur.execute("DELETE FROM replication_peer_ack WHERE UPPER(peer) = UPPER(?) AND peer != ?", (peer, peer))
-    conn.commit()
-    _retire_acked_outbox_rows(cur, conn)
+    try:
+        for peer in PEERS:
+            # Fold in rows an earlier version keyed by the peer's own spelling of its callsign.
+            cur.execute("SELECT MAX(peer_acked_seq), MAX(submitted_seq) FROM replication_peer_ack WHERE UPPER(peer) = UPPER(?) AND peer != ?", (peer, peer))
+            stray_acked, stray_submitted = cur.fetchone()
+            # A peer new to `peers` waits for its own request before anything is sent to it - see
+            # _start_peer_stream. Pushing the outbox from 0 would send it everything, whatever its
+            # bootstrapFromTs asked for. A peer that only changed spelling isn't new.
+            cur.execute("INSERT OR IGNORE INTO replication_peer_ack (peer, peer_acked_seq, awaiting_request) VALUES (?, 0, ?)",
+                        (peer, 1 if stray_acked is None else 0))
+            if stray_acked is not None:
+                cur.execute("UPDATE replication_peer_ack SET peer_acked_seq = MAX(peer_acked_seq, ?), submitted_seq = MAX(submitted_seq, ?) WHERE peer = ?",
+                            (stray_acked, stray_submitted, peer))
+                cur.execute("DELETE FROM replication_peer_ack WHERE UPPER(peer) = UPPER(?) AND peer != ?", (peer, peer))
+        conn.commit()
+        _retire_acked_outbox_rows(cur, conn)
 
-    _load_routes(cur)
-    _merge_origin_aliases(cur, conn)
-    _start_bootstrap_if_configured(cur, conn)
-    _retry_bootstrap_pending()
+        _load_routes(cur)
+        _merge_origin_aliases(cur, conn)
+        _start_bootstrap_if_configured(cur, conn)
+        _retry_bootstrap_pending()
 
-    threading.Thread(target=_outbox_pump_loop, daemon=True, name="replication_outbox_pump").start()
-    threading.Thread(target=_inbox_pump_loop, daemon=True, name="replication_inbox_pump").start()
-    threading.Thread(target=_reconcile_loop, daemon=True, name="replication_reconcile_pump").start()
+        threading.Thread(target=_outbox_pump_loop, daemon=True, name="replication_outbox_pump").start()
+        threading.Thread(target=_inbox_pump_loop, daemon=True, name="replication_inbox_pump").start()
+        threading.Thread(target=_reconcile_loop, daemon=True, name="replication_reconcile_pump").start()
 
-    console_log(f"Replication started: origin={ORIGIN} app={APP_SLUG} peers={PEERS} relay={RELAY} dapps={DAPPS_REST_URL}")
+        console_log(f"Replication started: origin={ORIGIN} app={APP_SLUG} peers={PEERS} relay={RELAY} dapps={DAPPS_REST_URL}")
+    finally:
+        conn.close()

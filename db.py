@@ -137,13 +137,16 @@ def get_db_connection():
 # SQLite allows one writer at a time. A connection that starts a write and doesn't commit holds
 # the lock, and every other writer waits up to DB_BUSY_TIMEOUT_SECONDS, then fails with
 # "database is locked". dbConnectionWatchdog, run every second by wps.py, logs to wps.log any
-# connection holding a write transaction for LONG_TRANSACTION_SECONDS, naming where it was
+# connection holding a write transaction for LONG_TRANSACTION_SECONDS (or any transaction past
+# STUCK_TRANSACTION_SECONDS, which only a holder lasts), naming where it was
 # opened and what that thread is doing now, and reports hourly how many connections are open
 # and who opened them, so a leak shows.
 
 # Python's default is 5 seconds
 DB_BUSY_TIMEOUT_SECONDS = 30
 LONG_TRANSACTION_SECONDS = 2
+# Every writer waiting for the lock has given up by now, so a transaction this old holds it
+STUCK_TRANSACTION_SECONDS = DB_BUSY_TIMEOUT_SECONDS + 10
 CONNECTION_REPORT_SECONDS = 3600
 
 class TrackedConnection(sqlite3.Connection):
@@ -171,6 +174,9 @@ def _connection_opener():
 _open_connections = globals().get('_open_connections') or weakref.WeakSet()
 _open_connections_lock = globals().get('_open_connections_lock') or threading.Lock()
 _last_connection_report = globals().get('_last_connection_report', 0.0)
+# id(connection) -> (transaction_since, opened_thread, opened_by) for each long transaction
+# reported, so its end is logged even when the connection is gone rather than committed
+_reported_transactions = globals().get('_reported_transactions') or {}
 
 def dbConnectionWatchdog():
     '''
@@ -185,35 +191,52 @@ def dbConnectionWatchdog():
         connections = list(_open_connections)
 
     frames = None
+    open_ids = set()
     for conn in connections:
         try:
             in_transaction = conn.in_transaction
             changes = conn.total_changes
         except sqlite3.ProgrammingError:
             continue  # closed
+        open_ids.add(id(conn))
         since = getattr(conn, 'transaction_since', None)
         if not in_transaction:
             conn.idle_changes = changes
-            if getattr(conn, 'transaction_reported', False):
+            if _reported_transactions.pop(id(conn), None):
                 wps_logger("DB WATCHDOG", "WPS", f"Write transaction released after {now - since:.0f}s, opened by "
                            f"{conn.opened_thread}: {conn.opened_by}", "ERROR")
             conn.transaction_since = None
             conn.transaction_reported = False
-        elif changes == getattr(conn, 'idle_changes', 0):
-            # Python opens the transaction just before a write, so a writer still waiting for the
-            # lock is in one too. Only a connection that has written something holds the lock.
-            pass
-        elif since is None:
-            conn.transaction_since = now
-        elif not conn.transaction_reported and now - since >= LONG_TRANSACTION_SECONDS:
-            conn.transaction_reported = True
-            if frames is None:
-                frames = sys._current_frames()
-            frame = frames.get(conn.opened_thread_id)
-            doing = ("".join(traceback.format_stack(frame, limit=8)).rstrip() if frame
-                     else "its thread has ended, so the connection is no longer in use")
-            wps_logger("DB WATCHDOG", "WPS", f"Write transaction held for {now - since:.0f}s, blocking other writers. "
-                       f"Opened by {conn.opened_thread}: {conn.opened_by}. That thread is now at:\n{doing}", "ERROR")
+            continue
+        if since is None:
+            conn.transaction_since = since = now
+        if conn.transaction_reported:
+            continue
+        # Python opens the transaction just before a write, so a writer still waiting for the lock
+        # is in one too: a connection that has written something holds the lock. But so does one
+        # whose write changed no rows (an UPDATE matching nothing, an ignored INSERT OR IGNORE),
+        # which only shows by outlasting the busy timeout - every waiter has given up by then.
+        if changes != getattr(conn, 'idle_changes', 0) and now - since >= LONG_TRANSACTION_SECONDS:
+            held = "held"
+        elif now - since >= STUCK_TRANSACTION_SECONDS:
+            held = "held without changing a row"
+        else:
+            continue
+        conn.transaction_reported = True
+        _reported_transactions[id(conn)] = (since, conn.opened_thread, conn.opened_by)
+        if frames is None:
+            frames = sys._current_frames()
+        frame = frames.get(conn.opened_thread_id)
+        doing = ("".join(traceback.format_stack(frame, limit=8)).rstrip() if frame
+                 else "its thread has ended, so the connection is no longer in use")
+        wps_logger("DB WATCHDOG", "WPS", f"Write transaction {held} for {now - since:.0f}s, blocking other writers. "
+                   f"Opened by {conn.opened_thread}: {conn.opened_by}. That thread is now at:\n{doing}", "ERROR")
+
+    # A reported connection that was closed or garbage collected mid-transaction was rolled back
+    for conn_id in [conn_id for conn_id in _reported_transactions if conn_id not in open_ids]:
+        since, opened_thread, opened_by = _reported_transactions.pop(conn_id)
+        wps_logger("DB WATCHDOG", "WPS", f"Write transaction released after {now - since:.0f}s when its connection was "
+                   f"closed or discarded, opened by {opened_thread}: {opened_by}", "ERROR")
 
     if now - _last_connection_report >= CONNECTION_REPORT_SECONDS:
         _last_connection_report = now
