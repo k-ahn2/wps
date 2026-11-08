@@ -1953,15 +1953,18 @@ def close_connection(CONN_DB_CURSOR, callsign, CONN):
         return
 
     user_updated_fields = {
-        "last_disconnected": disconnect_timestamp,
         "paused_channels": []
     }
 
     # Mark user offline only when there are no remaining active sockets for this callsign.
+    # last_disconnected goes with it: a stale socket closing after a reconnect would otherwise
+    # leave last_disconnected later than last_connected for a user who is still online, and the
+    # users digest carries that to every peer.
     should_broadcast_disconnect = False
     if remaining_connections_for_callsign == 0:
         wps_logger("DISCONNECT HANDLER", callsign, "Last active connection closed, marking user offline")
         user_updated_fields["is_online"] = 0
+        user_updated_fields["last_disconnected"] = disconnect_timestamp
         should_broadcast_disconnect = True
     else:
         wps_logger("DISCONNECT HANDLER", callsign, f"{remaining_connections_for_callsign} active connection(s) remain, keeping user marked online")
