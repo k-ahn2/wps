@@ -2196,12 +2196,24 @@ def _avatar_key(entry):
     return (entry[_U_AVATAR_TS] or 0, entry[_U_AVATAR_HASH]) if entry[_U_AVATAR_HASH] else (0, "")
 
 
+def _avatar_newer(theirs, mine):
+    '''
+    Whether avatar key theirs, (timestamp, hash), beats mine. A different avatar wins by the later
+    time. The same avatar wins by the earlier time - when it was first set - so an instance that
+    stamped it later (a sync before avatars kept their origin's time) settles back to that, rather
+    than moving every instance's watermark on and offering clients an avatar they already have.
+    '''
+    if theirs[1] and theirs[1] == mine[1]:
+        return 0 < theirs[0] < mine[0]
+    return theirs > mine
+
+
 def _user_entry_newer(mine, theirs):
     '''Whether mine holds anything newer than theirs.'''
     return (_name_key(mine) > _name_key(theirs)
             or (mine[_U_LAST_CONNECTED] or 0) > (theirs[_U_LAST_CONNECTED] or 0)
             or (mine[_U_LAST_DISCONNECTED] or 0) > (theirs[_U_LAST_DISCONNECTED] or 0)
-            or _avatar_key(mine) > _avatar_key(theirs))
+            or _avatar_newer(_avatar_key(mine), _avatar_key(theirs)))
 
 
 def _users_event_for_log(envelope):
@@ -2359,6 +2371,10 @@ def _apply_user_entry(cur, entry, local):
         changes.append("created")
 
     update = {}
+    # The same avatar at an earlier time needs only its time; a different one is sent on its own
+    if entry[_U_AVATAR_HASH] == local[_U_AVATAR_HASH] and _avatar_newer(_avatar_key(entry), _avatar_key(local)):
+        update["avatar_last_updated"] = entry[_U_AVATAR_TS]
+        changes.append("avatar time")
     if _name_key(entry) > _name_key(local):
         update["name"] = entry[_U_NAME]
         update["name_last_updated"] = entry[_U_NAME_TS] or 0
@@ -2408,7 +2424,8 @@ def _handle_users_digest(envelope, peer):
             if changes:
                 changed.add(entry[_U_CALLSIGN])
                 applied.append(f"{entry[_U_CALLSIGN]} ({', '.join(changes)})")
-            if _avatar_key(entry) > _avatar_key(mine or _NO_USER):
+            if (entry[_U_AVATAR_HASH] != (mine or _NO_USER)[_U_AVATAR_HASH]
+                    and _avatar_newer(_avatar_key(entry), _avatar_key(mine or _NO_USER))):
                 want.append(entry[_U_CALLSIGN])
 
         back = []
@@ -2467,7 +2484,7 @@ def _handle_users_avatar(envelope, peer):
             _record("in", "users", "users.avatar", "ignored", peer=peer, detail=f"{callsign} is not a user here")
             return
         mine = (user.get("avatar_last_updated") or 0, db.avatarHash(user.get("avatar"))) if user.get("avatar") else (0, "")
-        if (ts, db.avatarHash(avatar)) <= mine:
+        if not _avatar_newer((ts, db.avatarHash(avatar)), mine):
             _record("in", "users", "users.avatar", "stale", peer=peer, detail=f"Avatar for {callsign} is no newer than the one here")
             return
         # avatar_last_updated is the clients' watermark, and keeps the time the avatar was set

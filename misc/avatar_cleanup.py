@@ -6,6 +6,7 @@ origin's time in avatar_ts, which nothing uses now.
     python3 misc/avatar_cleanup.py list  [--db PATH]
     python3 misc/avatar_cleanup.py clean [--db PATH] [--apply]
     python3 misc/avatar_cleanup.py reset [--db PATH] [--apply] [--resync]
+    python3 misc/avatar_cleanup.py restore [--db PATH] [--apply]
 
 list   every avatar: callsign, avatar_ts, avatar_last_updated, hash. Run it on both nodes and
        compare before a reset, so no avatar held only by the node being reset is lost.
@@ -16,6 +17,10 @@ reset  removes every avatar (avatar, avatar_ts, avatar_last_updated), so the nex
        brings them all back from the peer with their original times. For GB7NBH.
        --resync also clears replication_user_sync, so the sync starts at the first reconcile
        tick after a restart rather than waiting for tomorrow's userSyncTime.
+restore  for a peer upgraded without a reset: moves avatar_ts, the origin's time, back into
+       avatar_last_updated wherever it is earlier, then removes avatar_ts. The next user sync
+       carries those earlier times to every instance whose copy of the same avatar was stamped
+       later, MB7NPW included.
 
 Without --apply nothing is written. With it, the database is first copied to
 <db>.bak-<YYYYmmdd-HHMMSS>. Stop WPS first, and run the updated code on both nodes before the
@@ -69,7 +74,7 @@ def backup(conn, db_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Clean up avatar timestamps from the nightly user sync")
-    parser.add_argument("mode", choices=["list", "clean", "reset"])
+    parser.add_argument("mode", choices=["list", "clean", "reset", "restore"])
     parser.add_argument("--db", help="database file (default: dbFilename from env.json)")
     parser.add_argument("--apply", action="store_true", help="write the changes (default is a dry run)")
     parser.add_argument("--resync", action="store_true", help="reset only: run the user sync at the next reconcile tick")
@@ -102,6 +107,28 @@ def main():
         cur.execute("""
         UPDATE users
         SET user = json_remove(user, '$.avatar_ts')
+        WHERE json_extract(user, '$.avatar_ts') IS NOT NULL
+        """)
+        print(f"Updated {cur.rowcount} user(s)")
+
+    elif args.mode == "restore":
+        def change(ts, last_updated, avatar):
+            if ts is None:
+                return ""
+            return "time restored" if ts < (last_updated or 0) else "avatar_ts removed"
+        show(rows, change)
+        count = sum(1 for _, ts, _, _ in rows if ts is not None)
+        earlier = sum(1 for _, ts, last_updated, _ in rows if ts is not None and ts < (last_updated or 0))
+        print(f"{count} avatar_ts value(s) to remove, {earlier} of them earlier and restored to avatar_last_updated")
+        if not args.apply or not count:
+            print("Dry run - nothing written" if not args.apply else "Nothing to do")
+            return
+        backup(conn, db_path)
+        cur.execute("""
+        UPDATE users
+        SET user = json_remove(json_set(user, '$.avatar_last_updated',
+                       MIN(json_extract(user, '$.avatar_ts'), COALESCE(json_extract(user, '$.avatar_last_updated'), json_extract(user, '$.avatar_ts')))),
+                   '$.avatar_ts')
         WHERE json_extract(user, '$.avatar_ts') IS NOT NULL
         """)
         print(f"Updated {cur.rowcount} user(s)")

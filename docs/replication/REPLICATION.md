@@ -460,7 +460,7 @@ sequenceDiagram
 - **Newest wins**, field by field:
     - **Name:** the later `name_last_updated`. A placeholder name (none, or `-`) loses to any real one.
     - **Last connected and last disconnected:** each only moves forward.
-    - **Avatar:** the later `avatar_last_updated`.
+    - **Avatar:** a different avatar (by hash) goes to the later `avatar_last_updated`. The same avatar goes to the earlier one, the time it was first set, and only that time is taken: the avatar isn't sent again. An instance that stamped an avatar later than its origin, as the sync did before avatars kept their origin's time, settles back to the origin's time, so clients aren't offered avatars they already have.
     - **Ties:** a tie on timestamp goes to the greater name or avatar hash, so both sides settle on the same value.
     - **Watermark rule:** as with `user.update`, `last_connected` is moved up to `name_last_updated` if needed, so a name is never later than the last seen time clients use as their watermark.
 - **Missing users** are created as presence creates them, with default subscriptions and `created_by_replication`.
